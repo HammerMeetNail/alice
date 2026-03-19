@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"log"
 	"os"
@@ -40,6 +41,16 @@ func main() {
 			return nil
 		})
 		if err != nil {
+			var keyErr *edge.CredentialStoreKeyRequiredError
+			if errors.As(err, &keyErr) {
+				log.Printf("edge connector bootstrap failed: %v", err)
+				log.Fatalf("Set %s or runtime.credentials_key_file before retrying.", cfg.CredentialsKeyEnvVar())
+			}
+			var decryptErr *edge.CredentialStoreDecryptError
+			if errors.As(err, &decryptErr) {
+				log.Printf("edge connector bootstrap failed: %v", err)
+				log.Fatalf("Check %s or runtime.credentials_key_file and retry.", cfg.CredentialsKeyEnvVar())
+			}
 			log.Fatalf("edge connector bootstrap failed: %v", err)
 		}
 		if err := encoder.Encode(result); err != nil {
@@ -50,6 +61,23 @@ func main() {
 
 	report, err := runtime.RunOnce(context.Background())
 	if err != nil {
+		var reauthErr *edge.ConnectorReauthRequiredError
+		if errors.As(err, &reauthErr) {
+			log.Printf("edge runtime failed: %v", err)
+			log.Fatalf("Re-authorize with: go run ./cmd/edge-agent -config %s -bootstrap-connector %s", *configPath, reauthErr.ConnectorType)
+		}
+
+		var keyErr *edge.CredentialStoreKeyRequiredError
+		if errors.As(err, &keyErr) {
+			log.Printf("edge runtime failed: %v", err)
+			log.Fatalf("Set %s or runtime.credentials_key_file before retrying.", cfg.CredentialsKeyEnvVar())
+		}
+		var decryptErr *edge.CredentialStoreDecryptError
+		if errors.As(err, &decryptErr) {
+			log.Printf("edge runtime failed: %v", err)
+			log.Fatalf("Check %s or runtime.credentials_key_file and retry.", cfg.CredentialsKeyEnvVar())
+		}
+
 		log.Fatalf("edge runtime failed: %v", err)
 	}
 	if err := encoder.Encode(report); err != nil {

@@ -217,6 +217,7 @@ Implemented now:
   - persisted Ed25519 keypair and bearer-token state
   - persisted connector cursor state for live pollers
   - a dedicated local connector credential store with 0600 permission enforcement
+  - optional AES-GCM encryption for the connector credential store from an env var or local key file
   - local OAuth-style connector bootstrap with PKCE, loopback callbacks, and persisted connector credentials
   - automatic refresh-token exchange for expired stored OAuth credentials when refresh tokens are available
   - connector secret loading from env vars, local token files, or the dedicated credential store
@@ -230,7 +231,7 @@ Implemented now:
   - watched query-result retrieval
   - incoming-request polling
 - end-to-end MCP test coverage for registration, artifact publish, grant creation, peer listing, query submission/result retrieval, request send/respond, and approval resolution
-- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, live GitHub/Jira/Calendar polling, connector cursor persistence, connector OAuth bootstrap, credential-store permission checks, refresh-token renewal, query-result retrieval, and request polling against the current server
+- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, live GitHub/Jira/Calendar polling, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
 - targeted HTTP test coverage for the permissioned query flow and request/approval flow in memory and, when configured, against PostgreSQL
 - Podman-based container workflow for local execution with both the server and PostgreSQL
 
@@ -243,7 +244,7 @@ Current implementation assumptions:
 - the first Gatekeeper request and approval flow exists, but approval policy is still explicit/manual rather than risk-engine driven
 - query time windows use source observation timestamps when artifacts carry source refs
 - the edge runtime uses JSON config plus local fixture files, with live polling now available for GitHub, Jira, and Google Calendar via env vars, token files, or locally bootstrapped OAuth credentials
-- live connector pollers persist local cursor state, and the edge runtime now stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks and refreshes expired OAuth credentials when refresh tokens are available, but encrypted local credential storage beyond filesystem permissions is still not implemented
+- live connector pollers persist local cursor state, and the edge runtime now stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
 - richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
 - local container runs use PostgreSQL; tests and ad hoc runs can still fall back to in-memory storage when no database URL is set
 
@@ -269,13 +270,15 @@ For local edge runtime use, run `go run ./cmd/edge-agent -config examples/edge-a
 
 For local connector bootstrap use, run `go run ./cmd/edge-agent -config examples/edge-agent-github-oauth-config.json -bootstrap-connector github` or the equivalent Jira/Google Calendar OAuth example. The bootstrap mode prints a provider authorization URL, waits on a localhost callback, exchanges the code with PKCE, and persists the resulting connector credential into a dedicated local credentials file derived from the state path or set explicitly through `runtime.credentials_file`.
 
+If you also set `ALICE_EDGE_CREDENTIAL_KEY` or configure `runtime.credentials_key_file`, that dedicated credentials file is AES-GCM encrypted at rest. If the runtime later encounters an expired stored connector credential that cannot be refreshed, the CLI now prints the exact `-bootstrap-connector` command to rerun for that connector.
+
 For live connector use:
 
 - set `ALICE_GITHUB_TOKEN` or bootstrap GitHub OAuth first, then run `go run ./cmd/edge-agent -config examples/edge-agent-github-live-config.json` for GitHub repository polling
 - set `ALICE_JIRA_TOKEN` or bootstrap Jira OAuth first, then run `go run ./cmd/edge-agent -config examples/edge-agent-jira-live-config.json` for Jira project polling
 - set `ALICE_GCAL_TOKEN` or bootstrap Google Calendar OAuth first, then run `go run ./cmd/edge-agent -config examples/edge-agent-gcal-live-config.json` for Google Calendar polling
 
-Each live connector path persists a local last-seen cursor in the edge state file so subsequent runs can narrow polling and avoid republishing stale events. The live connector configs also accept `token_file` as a local-file alternative to env vars, and the OAuth bootstrap path stores connector credentials in a separate `0600` credentials file so later polls can reuse them without process env injection. When a stored OAuth credential expires and includes a refresh token, the runtime now refreshes it automatically before polling.
+Each live connector path persists a local last-seen cursor in the edge state file so subsequent runs can narrow polling and avoid republishing stale events. The live connector configs also accept `token_file` as a local-file alternative to env vars, and the OAuth bootstrap path stores connector credentials in a separate `0600` credentials file so later polls can reuse them without process env injection. When a stored OAuth credential expires and includes a refresh token, the runtime now refreshes it automatically before polling. If the credential store is encrypted, the same key must be present on later runs through `ALICE_EDGE_CREDENTIAL_KEY` or `runtime.credentials_key_file`.
 
 The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL instance is exposed on `127.0.0.1:5432`.
 
@@ -283,9 +286,9 @@ The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL insta
 
 The next recommended implementation steps are:
 
-1. add encrypted local credential storage and clearer re-auth UX on top of the current dedicated connector credential store
-2. deepen derivation beyond the current project-level heuristics with better correlation, supersession, and higher-signal blocker/commitment rules
-3. add better incremental sync behavior such as pagination, webhook intake, and stronger local policy/redaction around retained raw data
+1. deepen derivation beyond the current project-level heuristics with better correlation, supersession, and higher-signal blocker/commitment rules
+2. add better incremental sync behavior such as pagination, webhook intake, and stronger local policy/redaction around retained raw data
+3. harden local operator workflows further with rotation tooling and safer credential-key management
 
 Use `docs/implementation-plan.md` as the source of truth for the current step-by-step handoff.
 

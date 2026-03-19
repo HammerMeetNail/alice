@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1256,6 +1257,7 @@ func TestRuntimeRunOnceRefreshesExpiredGitHubConnectorToken(t *testing.T) {
 	defer oauthProvider.Close()
 
 	tempDir := t.TempDir()
+	t.Setenv("ALICE_EDGE_CREDENTIAL_KEY", "test-edge-credential-key")
 	if err := os.WriteFile(filepath.Join(tempDir, "github-client-secret.txt"), []byte("github-secret\n"), 0o600); err != nil {
 		t.Fatalf("write github client secret file: %v", err)
 	}
@@ -1302,7 +1304,11 @@ func TestRuntimeRunOnceRefreshesExpiredGitHubConnectorToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load refresh github config: %v", err)
 	}
-	if err := SaveCredentialStore(cfg.CredentialsPath(), CredentialStore{
+	options, err := NewRuntime(cfg).credentialStoreOptions()
+	if err != nil {
+		t.Fatalf("load credential store options: %v", err)
+	}
+	if err := SaveCredentialStoreWithOptions(cfg.CredentialsPath(), CredentialStore{
 		ConnectorCredentials: map[string]ConnectorCredential{
 			"github": {
 				AccessToken:  "expired-github-token",
@@ -1312,8 +1318,16 @@ func TestRuntimeRunOnceRefreshesExpiredGitHubConnectorToken(t *testing.T) {
 				ObtainedAt:   time.Now().UTC().Add(-1 * time.Hour),
 			},
 		},
-	}); err != nil {
+	}, options); err != nil {
 		t.Fatalf("write credential store with expired github token: %v", err)
+	}
+
+	rawCredentialStore, err := os.ReadFile(cfg.CredentialsPath())
+	if err != nil {
+		t.Fatalf("read encrypted credential store: %v", err)
+	}
+	if strings.Contains(string(rawCredentialStore), "expired-github-token") {
+		t.Fatalf("expected encrypted credential store not to contain raw access token")
 	}
 
 	report, err := NewRuntime(cfg).RunOnce(context.Background())
@@ -1324,7 +1338,7 @@ func TestRuntimeRunOnceRefreshesExpiredGitHubConnectorToken(t *testing.T) {
 		t.Fatalf("expected one artifact after github token refresh, got %d", len(report.PublishedArtifacts))
 	}
 
-	credentials, err := LoadCredentialStore(cfg.CredentialsPath())
+	credentials, err := LoadCredentialStoreWithOptions(cfg.CredentialsPath(), options)
 	if err != nil {
 		t.Fatalf("load credential store after refresh: %v", err)
 	}
@@ -1349,6 +1363,179 @@ func TestLoadCredentialStoreRejectsOpenPermissions(t *testing.T) {
 	_, err := LoadCredentialStore(path)
 	if err == nil || !strings.Contains(err.Error(), "must not be group or world accessible") {
 		t.Fatalf("expected permission error for open credential store, got %v", err)
+	}
+}
+
+func TestCredentialStoreRoundTripWithEncryption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	options := CredentialStoreOptions{EncryptionSecret: "test-edge-credential-key"}
+
+	store := CredentialStore{
+		ConnectorCredentials: map[string]ConnectorCredential{
+			"github": {
+				AccessToken:  "bootstrapped-github-token",
+				RefreshToken: "github-refresh-token",
+				TokenType:    "Bearer",
+				Scope:        "repo read:user",
+				ObtainedAt:   time.Now().UTC(),
+			},
+		},
+	}
+	if err := SaveCredentialStoreWithOptions(path, store, options); err != nil {
+		t.Fatalf("save encrypted credential store: %v", err)
+	}
+
+	rawData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read encrypted credential store: %v", err)
+	}
+	if strings.Contains(string(rawData), "bootstrapped-github-token") {
+		t.Fatalf("expected encrypted credential store not to contain raw access token")
+	}
+
+	_, err = LoadCredentialStore(path)
+	var keyErr *CredentialStoreKeyRequiredError
+	if !errors.As(err, &keyErr) {
+		t.Fatalf("expected encrypted credential store to require a key, got %v", err)
+	}
+
+	loaded, err := LoadCredentialStoreWithOptions(path, options)
+	if err != nil {
+		t.Fatalf("load encrypted credential store with key: %v", err)
+	}
+	credential := loaded.ConnectorCredential("github")
+	if credential.AccessToken != "bootstrapped-github-token" {
+		t.Fatalf("expected encrypted credential round-trip token, got %q", credential.AccessToken)
+	}
+}
+
+func TestLoadEncryptedCredentialStoreRejectsWrongKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := SaveCredentialStoreWithOptions(path, CredentialStore{
+		ConnectorCredentials: map[string]ConnectorCredential{
+			"github": {
+				AccessToken: "bootstrapped-github-token",
+				ObtainedAt:  time.Now().UTC(),
+			},
+		},
+	}, CredentialStoreOptions{EncryptionSecret: "correct-key"}); err != nil {
+		t.Fatalf("save encrypted credential store: %v", err)
+	}
+
+	_, err := LoadCredentialStoreWithOptions(path, CredentialStoreOptions{EncryptionSecret: "wrong-key"})
+	var decryptErr *CredentialStoreDecryptError
+	if !errors.As(err, &decryptErr) {
+		t.Fatalf("expected decrypt error for wrong key, got %v", err)
+	}
+}
+
+func TestPrepareCredentialStoreRewritesPlaintextStoreWhenKeyConfigured(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("ALICE_EDGE_CREDENTIAL_KEY", "test-edge-credential-key")
+
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: "http://127.0.0.1:8080",
+		},
+		Runtime: RuntimeConfig{
+			StateFile:       "sam-state.json",
+			CredentialsFile: "sam-credentials.json",
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load credential migration config: %v", err)
+	}
+	if err := SaveCredentialStore(cfg.CredentialsPath(), CredentialStore{
+		ConnectorCredentials: map[string]ConnectorCredential{
+			"github": {
+				AccessToken: "plaintext-token",
+				TokenType:   "Bearer",
+				ObtainedAt:  time.Now().UTC(),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write plaintext credential store: %v", err)
+	}
+
+	state := State{}
+	credentials, err := NewRuntime(cfg).prepareCredentialStore(context.Background(), &state)
+	if err != nil {
+		t.Fatalf("prepare credential store with encryption key: %v", err)
+	}
+	if got := credentials.ConnectorCredential("github").AccessToken; got != "plaintext-token" {
+		t.Fatalf("expected migrated github access token, got %q", got)
+	}
+
+	rawData, err := os.ReadFile(cfg.CredentialsPath())
+	if err != nil {
+		t.Fatalf("read rewritten credential store: %v", err)
+	}
+	if strings.Contains(string(rawData), "plaintext-token") {
+		t.Fatalf("expected rewritten credential store to be encrypted")
+	}
+}
+
+func TestRuntimeRunOnceReturnsConnectorReauthRequiredError(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: "http://127.0.0.1:8080",
+		},
+		Runtime: RuntimeConfig{
+			StateFile:       "sam-state.json",
+			CredentialsFile: "sam-credentials.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				OAuth: ConnectorOAuthConfig{
+					Enabled:          true,
+					ClientID:         "github-client",
+					AuthorizationURL: "https://example.com/authorize",
+					TokenURL:         "https://example.com/token",
+					CallbackURL:      "http://127.0.0.1:8787/oauth/github/callback",
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load github reauth config: %v", err)
+	}
+	if err := SaveCredentialStore(cfg.CredentialsPath(), CredentialStore{
+		ConnectorCredentials: map[string]ConnectorCredential{
+			"github": {
+				AccessToken: "expired-github-token",
+				TokenType:   "Bearer",
+				ExpiresAt:   time.Now().UTC().Add(-2 * time.Minute),
+				ObtainedAt:  time.Now().UTC().Add(-1 * time.Hour),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write credential store with expired github token: %v", err)
+	}
+
+	_, err = NewRuntime(cfg).RunOnce(context.Background())
+	var reauthErr *ConnectorReauthRequiredError
+	if !errors.As(err, &reauthErr) {
+		t.Fatalf("expected connector reauth error, got %v", err)
+	}
+	if reauthErr.ConnectorType != "github" {
+		t.Fatalf("expected github connector reauth error, got %q", reauthErr.ConnectorType)
 	}
 }
 

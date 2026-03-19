@@ -34,6 +34,8 @@ type ServerConfig struct {
 type RuntimeConfig struct {
 	StateFile            string   `json:"state_file"`
 	CredentialsFile      string   `json:"credentials_file"`
+	CredentialsKeyEnvVar string   `json:"credentials_key_env_var"`
+	CredentialsKeyFile   string   `json:"credentials_key_file"`
 	ArtifactFixtureFile  string   `json:"artifact_fixture_file"`
 	QueryWatchIDs        []string `json:"query_watch_ids"`
 	PollIncomingRequests bool     `json:"poll_incoming_requests"`
@@ -135,6 +137,9 @@ func (c *Config) applyDefaults() {
 	}
 	if len(c.Agent.Capabilities) == 0 {
 		c.Agent.Capabilities = []string{"publish_artifact", "respond_query", "request_approval"}
+	}
+	if strings.TrimSpace(c.Runtime.CredentialsKeyEnvVar) == "" {
+		c.Runtime.CredentialsKeyEnvVar = "ALICE_EDGE_CREDENTIAL_KEY"
 	}
 	if c.GitHubLiveEnabled() {
 		if strings.TrimSpace(c.Connectors.GitHub.APIBaseURL) == "" {
@@ -272,6 +277,14 @@ func (c Config) CredentialsPath() string {
 		return statePath + ".credentials"
 	}
 	return strings.TrimSuffix(statePath, ext) + ".credentials" + ext
+}
+
+func (c Config) CredentialsKeyEnvVar() string {
+	return strings.TrimSpace(c.Runtime.CredentialsKeyEnvVar)
+}
+
+func (c Config) CredentialsKeyFile() string {
+	return c.resolvePath(c.Runtime.CredentialsKeyFile)
 }
 
 func (c Config) ArtifactFixturePath() string {

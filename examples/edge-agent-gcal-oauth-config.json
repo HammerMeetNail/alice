@@ -31,6 +31,7 @@
   "runtime": {
     "state_file": "../.alice/edge-agent-gcal-oauth-state.json",
     "credentials_file": "../.alice/edge-agent-gcal-credentials.json",
+    "credentials_key_env_var": "ALICE_EDGE_CREDENTIAL_KEY",
     "query_watch_ids": [],
     "poll_incoming_requests": true
   }

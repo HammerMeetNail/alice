@@ -56,7 +56,11 @@ func (r *Runtime) BootstrapConnector(ctx context.Context, connectorType string, 
 	if err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
-	credentials, err := LoadCredentialStore(r.cfg.CredentialsPath())
+	options, err := r.credentialStoreOptions()
+	if err != nil {
+		return ConnectorBootstrapResult{}, err
+	}
+	credentials, err := LoadCredentialStoreWithOptions(r.cfg.CredentialsPath(), options)
 	if err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
@@ -81,7 +85,7 @@ func (r *Runtime) BootstrapConnector(ctx context.Context, connectorType string, 
 	migrated := credentials.MigrateFromState(&state)
 	state.PendingConnectorAuths[provider.connectorType] = pending
 	if migrated {
-		if err := SaveCredentialStore(r.cfg.CredentialsPath(), credentials); err != nil {
+		if err := SaveCredentialStoreWithOptions(r.cfg.CredentialsPath(), credentials, options); err != nil {
 			return ConnectorBootstrapResult{}, err
 		}
 	}
@@ -166,7 +170,11 @@ func (r *Runtime) BootstrapConnector(ctx context.Context, connectorType string, 
 }
 
 func (r *Runtime) prepareCredentialStore(ctx context.Context, state *State) (CredentialStore, error) {
-	store, err := LoadCredentialStore(r.cfg.CredentialsPath())
+	options, err := r.credentialStoreOptions()
+	if err != nil {
+		return CredentialStore{}, err
+	}
+	store, err := LoadCredentialStoreWithOptions(r.cfg.CredentialsPath(), options)
 	if err != nil {
 		return CredentialStore{}, err
 	}
@@ -181,8 +189,9 @@ func (r *Runtime) prepareCredentialStore(ctx context.Context, state *State) (Cre
 	if err != nil {
 		return CredentialStore{}, err
 	}
-	if migrated || refreshed {
-		if err := SaveCredentialStore(r.cfg.CredentialsPath(), store); err != nil {
+	persistEncryptedStore := options.EncryptionSecret != "" && len(store.ConnectorCredentials) > 0
+	if migrated || refreshed || persistEncryptedStore {
+		if err := SaveCredentialStoreWithOptions(r.cfg.CredentialsPath(), store, options); err != nil {
 			return CredentialStore{}, err
 		}
 	}
@@ -238,7 +247,11 @@ func (r *Runtime) completeConnectorBootstrap(ctx context.Context, provider conne
 	state.normalizePublishedArtifacts()
 	delete(state.PendingConnectorAuths, provider.connectorType)
 	credentials.SetConnectorCredential(provider.connectorType, credential)
-	if err := SaveCredentialStore(r.cfg.CredentialsPath(), credentials); err != nil {
+	options, err := r.credentialStoreOptions()
+	if err != nil {
+		return ConnectorBootstrapResult{}, err
+	}
+	if err := SaveCredentialStoreWithOptions(r.cfg.CredentialsPath(), credentials, options); err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
 	if err := SaveState(r.cfg.StatePath(), state); err != nil {
@@ -264,6 +277,14 @@ func (r *Runtime) clearPendingConnectorAuth(connectorType string) error {
 	return SaveState(r.cfg.StatePath(), state)
 }
 
+func (r *Runtime) credentialStoreOptions() (CredentialStoreOptions, error) {
+	secret, err := loadOptionalSecret("edge credential encryption key", r.cfg.CredentialsKeyEnvVar(), r.cfg.CredentialsKeyFile())
+	if err != nil {
+		return CredentialStoreOptions{}, err
+	}
+	return CredentialStoreOptions{EncryptionSecret: secret}, nil
+}
+
 func (r *Runtime) refreshExpiredConnectorCredentials(ctx context.Context, store *CredentialStore) (bool, error) {
 	updated := false
 	for _, connectorType := range []string{"github", "jira", "gcal"} {
@@ -277,7 +298,10 @@ func (r *Runtime) refreshExpiredConnectorCredentials(ctx context.Context, store 
 
 		provider, err := r.oauthProvider(connectorType)
 		if err != nil {
-			return false, fmt.Errorf("%s connector token expired and no oauth re-auth flow is configured", connectorType)
+			return false, &ConnectorReauthRequiredError{
+				ConnectorType: connectorType,
+				Reason:        "stored credential expired and no oauth re-authorization flow is configured",
+			}
 		}
 		refreshed, err := refreshConnectorCredential(ctx, provider, current)
 		if err != nil {
@@ -418,7 +442,10 @@ func exchangeConnectorAuthorizationCode(ctx context.Context, provider connectorO
 
 func refreshConnectorCredential(ctx context.Context, provider connectorOAuthProvider, current ConnectorCredential) (ConnectorCredential, error) {
 	if strings.TrimSpace(current.RefreshToken) == "" {
-		return ConnectorCredential{}, fmt.Errorf("%s connector token expired and no refresh token is available; run bootstrap again", provider.connectorType)
+		return ConnectorCredential{}, &ConnectorReauthRequiredError{
+			ConnectorType: provider.connectorType,
+			Reason:        "stored credential expired and no refresh token is available",
+		}
 	}
 
 	clientSecret, err := loadOptionalSecret(provider.connectorType+" client secret", provider.oauth.ClientSecretEnvVar, provider.oauth.ClientSecretFile)
@@ -458,7 +485,17 @@ func refreshConnectorCredential(ctx context.Context, provider connectorOAuthProv
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return ConnectorCredential{}, fmt.Errorf("refresh-token exchange returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		reason := fmt.Sprintf("refresh-token exchange returned status %d", resp.StatusCode)
+		if trimmed := strings.TrimSpace(string(body)); trimmed != "" {
+			reason += ": " + trimmed
+		}
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+			return ConnectorCredential{}, &ConnectorReauthRequiredError{
+				ConnectorType: provider.connectorType,
+				Reason:        reason,
+			}
+		}
+		return ConnectorCredential{}, fmt.Errorf(reason)
 	}
 
 	var payload oauthTokenResponse
