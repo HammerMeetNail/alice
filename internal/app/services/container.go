@@ -7,7 +7,9 @@ import (
 )
 
 type AgentService interface {
-	RegisterAgent(orgSlug, ownerEmail, agentName, clientType, publicKey string, capabilities []string) (core.Organization, core.User, core.Agent, error)
+	BeginRegistration(orgSlug, ownerEmail, agentName, clientType, publicKey string, capabilities []string) (core.AgentRegistrationChallenge, string, error)
+	CompleteRegistration(challengeID, challengeSignature string) (core.Organization, core.User, core.Agent, string, time.Time, error)
+	AuthenticateAgent(accessToken string) (core.Agent, core.User, error)
 	RequireAgent(agentID string) (core.Agent, core.User, error)
 	FindUserByEmail(email string) (core.User, bool, error)
 	FindUserByID(userID string) (core.User, bool, error)

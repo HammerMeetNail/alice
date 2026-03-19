@@ -204,16 +204,17 @@ Implemented now:
 
 - Go coordination server entrypoint and HTTP health endpoint
 - domain models for agents, artifacts, grants, queries, and audit events
+- registration challenge and short-lived bearer-token auth for agent registration and authenticated requests
 - JSON schemas for artifact, query, and policy-grant payloads
-- repository interfaces plus PostgreSQL-backed storage with embedded startup migrations
+- repository interfaces plus PostgreSQL-backed storage with embedded startup migrations, including auth challenge and token tables
 - in-memory storage fallback when `ALICE_DATABASE_URL` is not set
-- HTTP routes for registration, artifact publish, permission grants, peer listing, query submit/result, and audit summary
+- HTTP routes for registration challenge, registration completion, artifact publish, permission grants, peer listing, query submit/result, and audit summary
 - targeted test coverage for the permissioned query flow in memory and, when configured, against PostgreSQL
 - Podman-based container workflow for local execution with both the server and PostgreSQL
 
 Current implementation assumptions:
 
-- auth is temporary `X-Agent-ID` header auth
+- agent registration is a signed Ed25519 challenge flow that returns a short-lived bearer token
 - access control is explicit-grant-only
 - queries are answered from centrally stored derived artifacts
 - there is no MCP surface, edge runtime, connector ingestion, or Gatekeeper request flow yet
@@ -241,10 +242,9 @@ The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL insta
 
 The next recommended implementation steps are:
 
-1. add real auth for agent registration and requests
-2. expose the MCP tool surface
-3. add Gatekeeper request and approval flows
-4. add the first edge runtime skeleton before live connectors
+1. expose the MCP tool surface on top of the existing HTTP/service layer
+2. add Gatekeeper request and approval flows
+3. add the first edge runtime skeleton before live connectors
 
 Use `docs/implementation-plan.md` as the source of truth for the current step-by-step handoff.
 

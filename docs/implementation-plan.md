@@ -13,12 +13,14 @@ Last updated: 2026-03-18
 The repository is no longer design-only. The current implementation includes:
 
 - a Go module and runnable coordination server entrypoint
-- canonical Go domain models for agents, artifacts, grants, queries, and audit events
+- canonical Go domain models for agents, auth challenges/tokens, artifacts, grants, queries, and audit events
 - JSON schema files for artifact, query, and policy-grant payloads
 - repository interfaces for the currently implemented entities
 - a PostgreSQL storage layer with embedded startup migrations
 - an in-memory storage layer that remains available as a fallback when `ALICE_DATABASE_URL` is not set
+- a signed registration challenge flow with short-lived bearer-token issuance for agents
 - HTTP routes for:
+  - `POST /v1/agents/register/challenge`
   - `POST /v1/agents/register`
   - `POST /v1/artifacts`
   - `POST /v1/policy-grants`
@@ -36,7 +38,7 @@ The repository is no longer design-only. The current implementation includes:
 
 These are implementation choices already present in the codebase and should be treated as the current default unless deliberately changed.
 
-- auth is temporary header-based auth using `X-Agent-ID`
+- auth uses a signed Ed25519 registration challenge and short-lived bearer tokens
 - the server answers queries from centrally stored derived artifacts
 - access control is explicit-grant-only for now
 - manager-specific visibility defaults are not implemented
@@ -55,6 +57,7 @@ From the technical specification’s recommended order:
   - initial JSON schemas exist
 - step 2 is partially complete:
   - agents
+  - agent auth and token issuance
   - policy grants
   - artifacts
   - queries
@@ -64,7 +67,6 @@ From the technical specification’s recommended order:
 
 Not yet complete inside step 2:
 
-- real auth and token issuance
 - org graph and richer authorization rules
 
 ---
@@ -90,6 +92,8 @@ Definition of done:
 - the existing query-flow test can run against a real DB-backed repository layer
 
 ### step b: add real auth for agent registration and requests
+
+Status: complete for the current HTTP surface
 
 Implement:
 
@@ -157,11 +161,11 @@ Use fixture-driven data first. Do not start with live GitHub/Jira/Calendar auth.
 
 ## 6. suggested first task for the next session
 
-Start with real auth and keep the current HTTP and PostgreSQL behavior stable.
+Start the MCP surface and keep the current HTTP and PostgreSQL behavior stable underneath it.
 
 Concrete first changes:
 
-1. replace temporary `X-Agent-ID` request auth with a registration challenge and token issuance flow
-2. add authentication middleware for the existing HTTP routes
-3. keep the current route contracts stable where possible so the Postgres-backed tests continue to pass
-4. update this file, `README.md`, and `AGENTS.md` once the auth assumptions change
+1. add an `internal/mcp/` package that wraps the existing services instead of duplicating query/policy logic
+2. expose `register_agent`, `publish_artifact`, `query_peer_status`, `get_query_result`, `grant_permission`, and `list_allowed_peers`
+3. add at least one local CLI-native smoke test or fixture-driven integration path that exercises the MCP tools end to end
+4. keep `README.md`, `AGENTS.md`, and this file aligned once the MCP entrypoint exists

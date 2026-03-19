@@ -30,6 +30,30 @@ CREATE TABLE IF NOT EXISTS agents (
     last_seen_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agent_registration_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    org_slug TEXT NOT NULL,
+    owner_email TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    client_type TEXT NOT NULL,
+    public_key TEXT NOT NULL,
+    capabilities JSONB NOT NULL DEFAULT '[]'::jsonb,
+    nonce TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS agent_tokens (
+    token_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL,
+    issued_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    last_used_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES organizations(org_id),
@@ -120,6 +144,12 @@ CREATE INDEX IF NOT EXISTS idx_policy_grants_pair_created_at
 
 CREATE INDEX IF NOT EXISTS idx_policy_grants_grantee_created_at
     ON policy_grants (grantee_user_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_registration_challenges_expires_at
+    ON agent_registration_challenges (expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_tokens_agent_expires_at
+    ON agent_tokens (agent_id, expires_at);
 
 CREATE INDEX IF NOT EXISTS idx_queries_to_user_created_at
     ON queries (to_user_id, created_at);

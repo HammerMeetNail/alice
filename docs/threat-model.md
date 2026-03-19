@@ -785,8 +785,8 @@ The test suite should include at minimum:
 
 - [ ] deny-by-default policy engine
 - [ ] scoped permission grants
-- [ ] signed or strongly authenticated agent registration
-- [ ] short-lived server-issued access tokens
+- [x] signed or strongly authenticated agent registration
+- [x] short-lived server-issued access tokens
 - [ ] connector OAuth state validation
 - [ ] webhook signature validation where supported
 - [ ] provenance-tagged content fragments

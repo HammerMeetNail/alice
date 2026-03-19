@@ -3,6 +3,9 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -36,11 +39,64 @@ func TestPermissionedQueryFlow(t *testing.T) {
 	}
 }
 
+func TestProtectedRoutesRequireBearerToken(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+	registered := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	rec := performJSON(t, handler, http.MethodGet, "/v1/peers", "", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performJSONWithHeaders(t, handler, http.MethodGet, "/v1/peers", map[string]string{
+		"X-Agent-ID": registered.AgentID,
+	}, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("legacy X-Agent-ID status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRegisterAgentRejectsInvalidSignature(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate registration key: %v", err)
+	}
+
+	challenge := issueRegistrationChallenge(t, handler, fixture.OrgSlug, fixture.AliceEmail, base64.StdEncoding.EncodeToString(publicKey))
+
+	_, wrongPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate wrong signing key: %v", err)
+	}
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/register", "", map[string]any{
+		"challenge_id":        challenge.ChallengeID,
+		"challenge_signature": base64.StdEncoding.EncodeToString(ed25519.Sign(wrongPrivateKey, []byte(challenge.Challenge))),
+	})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid signature status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 type testFixture struct {
 	OrgSlug      string
 	AliceEmail   string
 	BobEmail     string
 	ProjectScope string
+}
+
+type registeredAgent struct {
+	AgentID     string
+	AccessToken string
+}
+
+type registrationChallenge struct {
+	ChallengeID string
+	Challenge   string
 }
 
 func newFixture(t *testing.T) testFixture {
@@ -87,6 +143,8 @@ type testRepositories interface {
 	storage.OrganizationRepository
 	storage.UserRepository
 	storage.AgentRepository
+	storage.AgentRegistrationChallengeRepository
+	storage.AgentTokenRepository
 	storage.ArtifactRepository
 	storage.PolicyGrantRepository
 	storage.QueryRepository
@@ -94,7 +152,7 @@ type testRepositories interface {
 }
 
 func buildTestHandler(cfg config.Config, repos testRepositories) http.Handler {
-	agentService := agents.NewService(repos, repos, repos, cfg)
+	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg)
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService)
@@ -112,10 +170,10 @@ func buildTestHandler(cfg config.Config, repos testRepositories) http.Handler {
 func runPermissionedQueryFlow(t *testing.T, handler http.Handler, fixture testFixture) {
 	t.Helper()
 
-	aliceAgentID := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
-	bobAgentID := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+	bob := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
 
-	publishArtifact(t, handler, bobAgentID, core.Artifact{
+	publishArtifact(t, handler, bob.AccessToken, core.Artifact{
 		Type:              core.ArtifactTypeSummary,
 		Title:             "Working on payments",
 		Content:           "Focused on payments retry work.",
@@ -135,7 +193,7 @@ func runPermissionedQueryFlow(t *testing.T, handler http.Handler, fixture testFi
 		Confidence:     0.9,
 	})
 
-	grantPermission(t, handler, bobAgentID, map[string]any{
+	grantPermission(t, handler, bob.AccessToken, map[string]any{
 		"grantee_user_email":     fixture.AliceEmail,
 		"scope_type":             "project",
 		"scope_ref":              fixture.ProjectScope,
@@ -144,8 +202,8 @@ func runPermissionedQueryFlow(t *testing.T, handler http.Handler, fixture testFi
 		"allowed_purposes":       []string{"status_check"},
 	})
 
-	queryID := queryPeerStatus(t, handler, aliceAgentID, fixture)
-	result := getQueryResult(t, handler, aliceAgentID, queryID)
+	queryID := queryPeerStatus(t, handler, alice.AccessToken, fixture)
+	result := getQueryResult(t, handler, alice.AccessToken, queryID)
 
 	response := result["response"].(map[string]any)
 	artifacts := response["artifacts"].([]any)
@@ -154,7 +212,37 @@ func runPermissionedQueryFlow(t *testing.T, handler http.Handler, fixture testFi
 	}
 }
 
-func registerAgent(t *testing.T, handler http.Handler, orgSlug, email string) string {
+func registerAgent(t *testing.T, handler http.Handler, orgSlug, email string) registeredAgent {
+	t.Helper()
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate registration key: %v", err)
+	}
+
+	challenge := issueRegistrationChallenge(t, handler, orgSlug, email, base64.StdEncoding.EncodeToString(publicKey))
+	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(challenge.Challenge)))
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/register", "", map[string]any{
+		"challenge_id":        challenge.ChallengeID,
+		"challenge_signature": signature,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register agent status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+
+	return registeredAgent{
+		AgentID:     payload["agent_id"].(string),
+		AccessToken: payload["access_token"].(string),
+	}
+}
+
+func issueRegistrationChallenge(t *testing.T, handler http.Handler, orgSlug, email, publicKey string) registrationChallenge {
 	t.Helper()
 
 	body := map[string]any{
@@ -162,35 +250,43 @@ func registerAgent(t *testing.T, handler http.Handler, orgSlug, email string) st
 		"owner_email":  email,
 		"agent_name":   email + "-agent",
 		"client_type":  "codex",
-		"public_key":   "dev-key",
+		"public_key":   publicKey,
 		"capabilities": []string{"publish_artifact", "respond_query"},
 	}
-	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/register", "", body)
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/register/challenge", "", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("registration challenge status = %d body=%s", rec.Code, rec.Body.String())
+	}
 
 	var payload map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode register response: %v", err)
+		t.Fatalf("decode registration challenge response: %v", err)
 	}
-	return payload["agent_id"].(string)
+
+	return registrationChallenge{
+		ChallengeID: payload["challenge_id"].(string),
+		Challenge:   payload["challenge"].(string),
+	}
 }
 
-func publishArtifact(t *testing.T, handler http.Handler, agentID string, artifact core.Artifact) {
+func publishArtifact(t *testing.T, handler http.Handler, accessToken string, artifact core.Artifact) {
 	t.Helper()
-	rec := performJSON(t, handler, http.MethodPost, "/v1/artifacts", agentID, map[string]any{"artifact": artifact})
+	rec := performJSON(t, handler, http.MethodPost, "/v1/artifacts", accessToken, map[string]any{"artifact": artifact})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("publish artifact status = %d", rec.Code)
 	}
 }
 
-func grantPermission(t *testing.T, handler http.Handler, agentID string, body map[string]any) {
+func grantPermission(t *testing.T, handler http.Handler, accessToken string, body map[string]any) {
 	t.Helper()
-	rec := performJSON(t, handler, http.MethodPost, "/v1/policy-grants", agentID, body)
+	rec := performJSON(t, handler, http.MethodPost, "/v1/policy-grants", accessToken, body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("grant permission status = %d", rec.Code)
 	}
 }
 
-func queryPeerStatus(t *testing.T, handler http.Handler, agentID string, fixture testFixture) string {
+func queryPeerStatus(t *testing.T, handler http.Handler, accessToken string, fixture testFixture) string {
 	t.Helper()
 	body := map[string]any{
 		"to_user_email":   fixture.BobEmail,
@@ -203,7 +299,7 @@ func queryPeerStatus(t *testing.T, handler http.Handler, agentID string, fixture
 			"end":   time.Now().UTC().Add(1 * time.Hour).Format(time.RFC3339),
 		},
 	}
-	rec := performJSON(t, handler, http.MethodPost, "/v1/queries", agentID, body)
+	rec := performJSON(t, handler, http.MethodPost, "/v1/queries", accessToken, body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("query status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -215,9 +311,9 @@ func queryPeerStatus(t *testing.T, handler http.Handler, agentID string, fixture
 	return payload["query_id"].(string)
 }
 
-func getQueryResult(t *testing.T, handler http.Handler, agentID, queryID string) map[string]any {
+func getQueryResult(t *testing.T, handler http.Handler, accessToken, queryID string) map[string]any {
 	t.Helper()
-	rec := performJSON(t, handler, http.MethodGet, "/v1/queries/"+queryID, agentID, nil)
+	rec := performJSON(t, handler, http.MethodGet, "/v1/queries/"+queryID, accessToken, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get query result status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -229,7 +325,18 @@ func getQueryResult(t *testing.T, handler http.Handler, agentID, queryID string)
 	return payload
 }
 
-func performJSON(t *testing.T, handler http.Handler, method, path, agentID string, body any) *httptest.ResponseRecorder {
+func performJSON(t *testing.T, handler http.Handler, method, path, accessToken string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+
+	headers := map[string]string{}
+	if accessToken != "" {
+		headers["Authorization"] = "Bearer " + accessToken
+	}
+
+	return performJSONWithHeaders(t, handler, method, path, headers, body)
+}
+
+func performJSONWithHeaders(t *testing.T, handler http.Handler, method, path string, headers map[string]string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 
 	var reader *bytes.Reader
@@ -247,9 +354,10 @@ func performJSON(t *testing.T, handler http.Handler, method, path, agentID strin
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if agentID != "" {
-		req.Header.Set("X-Agent-ID", agentID)
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
+
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -20,6 +21,9 @@ type router struct {
 	mux      *http.ServeMux
 }
 
+type currentAgentContextKey struct{}
+type currentUserContextKey struct{}
+
 func NewRouter(services services.Container) http.Handler {
 	r := &router{
 		services: services,
@@ -31,13 +35,14 @@ func NewRouter(services services.Container) http.Handler {
 
 func (r *router) routes() {
 	r.mux.HandleFunc("GET /healthz", r.handleHealthz)
+	r.mux.HandleFunc("POST /v1/agents/register/challenge", r.handleBeginRegisterAgent)
 	r.mux.HandleFunc("POST /v1/agents/register", r.handleRegisterAgent)
-	r.mux.HandleFunc("POST /v1/artifacts", r.handlePublishArtifact)
-	r.mux.HandleFunc("POST /v1/policy-grants", r.handleGrantPermission)
-	r.mux.HandleFunc("GET /v1/peers", r.handleListAllowedPeers)
-	r.mux.HandleFunc("POST /v1/queries", r.handleQueryPeerStatus)
-	r.mux.HandleFunc("GET /v1/queries/", r.handleGetQueryResult)
-	r.mux.HandleFunc("GET /v1/audit/summary", r.handleAuditSummary)
+	r.mux.Handle("POST /v1/artifacts", r.requireAuth(http.HandlerFunc(r.handlePublishArtifact)))
+	r.mux.Handle("POST /v1/policy-grants", r.requireAuth(http.HandlerFunc(r.handleGrantPermission)))
+	r.mux.Handle("GET /v1/peers", r.requireAuth(http.HandlerFunc(r.handleListAllowedPeers)))
+	r.mux.Handle("POST /v1/queries", r.requireAuth(http.HandlerFunc(r.handleQueryPeerStatus)))
+	r.mux.Handle("GET /v1/queries/", r.requireAuth(http.HandlerFunc(r.handleGetQueryResult)))
+	r.mux.Handle("GET /v1/audit/summary", r.requireAuth(http.HandlerFunc(r.handleAuditSummary)))
 }
 
 func (r *router) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -53,29 +58,71 @@ type registerAgentRequest struct {
 	Capabilities []string `json:"capabilities"`
 }
 
-func (r *router) handleRegisterAgent(w http.ResponseWriter, req *http.Request) {
+func (r *router) handleBeginRegisterAgent(w http.ResponseWriter, req *http.Request) {
 	var input registerAgentRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
-	org, user, agent, err := r.services.Agents.RegisterAgent(input.OrgSlug, input.OwnerEmail, input.AgentName, input.ClientType, input.PublicKey, input.Capabilities)
+	challenge, payload, err := r.services.Agents.BeginRegistration(input.OrgSlug, input.OwnerEmail, input.AgentName, input.ClientType, input.PublicKey, input.Capabilities)
 	if err != nil {
-		writeServiceError(w, err, "agent registration failed")
+		writeServiceError(w, err, "registration challenge failed")
 		return
 	}
 
+	writeJSON(w, http.StatusOK, map[string]any{
+		"challenge_id": challenge.ChallengeID,
+		"challenge":    payload,
+		"algorithm":    "ed25519",
+		"expires_at":   challenge.ExpiresAt,
+	})
+}
+
+type completeRegisterAgentRequest struct {
+	ChallengeID        string `json:"challenge_id"`
+	ChallengeSignature string `json:"challenge_signature"`
+}
+
+func (r *router) handleRegisterAgent(w http.ResponseWriter, req *http.Request) {
+	var input completeRegisterAgentRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	org, user, agent, accessToken, expiresAt, err := r.services.Agents.CompleteRegistration(input.ChallengeID, input.ChallengeSignature)
+	if err != nil {
+		switch {
+		case errors.Is(err, agents.ErrUnknownRegistrationChallenge):
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		case errors.Is(err, agents.ErrExpiredRegistrationChallenge),
+			errors.Is(err, agents.ErrUsedRegistrationChallenge),
+			errors.Is(err, agents.ErrInvalidRegistrationSignature):
+			writeAuthError(w, err.Error())
+			return
+		default:
+			writeServiceError(w, err, "agent registration failed")
+			return
+		}
+	}
+
 	if _, err := r.services.Audit.Record("agent.registered", "agent", agent.AgentID, org.OrgID, agent.AgentID, "", "allow", "", nil, map[string]any{
-		"owner_email": user.Email,
+		"owner_email":      user.Email,
+		"auth_method":      "ed25519_challenge",
+		"token_expires_at": expiresAt,
 	}); err != nil {
 		log.Printf("audit record failed for agent registration: %v", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"agent_id": agent.AgentID,
-		"org_id":   org.OrgID,
-		"status":   agent.Status,
+		"agent_id":     agent.AgentID,
+		"org_id":       org.OrgID,
+		"status":       agent.Status,
+		"access_token": accessToken,
+		"token_type":   "Bearer",
+		"expires_at":   expiresAt,
 	})
 }
 
@@ -84,8 +131,9 @@ type publishArtifactRequest struct {
 }
 
 func (r *router) handlePublishArtifact(w http.ResponseWriter, req *http.Request) {
-	agent, user, ok := r.requireAgent(w, req)
+	agent, user, ok := currentActor(req)
 	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
 		return
 	}
 
@@ -123,8 +171,9 @@ type grantPermissionRequest struct {
 }
 
 func (r *router) handleGrantPermission(w http.ResponseWriter, req *http.Request) {
-	agent, user, ok := r.requireAgent(w, req)
+	agent, user, ok := currentActor(req)
 	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
 		return
 	}
 
@@ -163,8 +212,9 @@ func (r *router) handleGrantPermission(w http.ResponseWriter, req *http.Request)
 }
 
 func (r *router) handleListAllowedPeers(w http.ResponseWriter, req *http.Request) {
-	agent, user, ok := r.requireAgent(w, req)
+	agent, user, ok := currentActor(req)
 	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
 		return
 	}
 
@@ -207,8 +257,9 @@ type queryPeerStatusRequest struct {
 }
 
 func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request) {
-	agent, user, ok := r.requireAgent(w, req)
+	agent, user, ok := currentActor(req)
 	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
 		return
 	}
 
@@ -288,8 +339,9 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 }
 
 func (r *router) handleGetQueryResult(w http.ResponseWriter, req *http.Request) {
-	agent, _, ok := r.requireAgent(w, req)
+	agent, _, ok := currentActor(req)
 	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
 		return
 	}
 
@@ -316,8 +368,9 @@ func (r *router) handleGetQueryResult(w http.ResponseWriter, req *http.Request) 
 }
 
 func (r *router) handleAuditSummary(w http.ResponseWriter, req *http.Request) {
-	agent, _, ok := r.requireAgent(w, req)
+	agent, _, ok := currentActor(req)
 	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
 		return
 	}
 
@@ -339,24 +392,61 @@ func (r *router) handleAuditSummary(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
-func (r *router) requireAgent(w http.ResponseWriter, req *http.Request) (core.Agent, core.User, bool) {
-	agentID := strings.TrimSpace(req.Header.Get("X-Agent-ID"))
-	if agentID == "" {
-		writeError(w, http.StatusUnauthorized, "missing X-Agent-ID header")
-		return core.Agent{}, core.User{}, false
-	}
-
-	agent, user, err := r.services.Agents.RequireAgent(agentID)
-	if err != nil {
-		if errors.Is(err, agents.ErrUnknownAgent) || errors.Is(err, agents.ErrUnknownAgentOwner) {
-			writeError(w, http.StatusUnauthorized, err.Error())
-			return core.Agent{}, core.User{}, false
+func (r *router) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		accessToken, ok := accessTokenFromRequest(req)
+		if !ok {
+			writeAuthError(w, "missing bearer token")
+			return
 		}
-		writeError(w, http.StatusInternalServerError, "agent authentication failed")
+
+		agent, user, err := r.services.Agents.AuthenticateAgent(accessToken)
+		if err != nil {
+			switch {
+			case errors.Is(err, agents.ErrUnknownAgentToken),
+				errors.Is(err, agents.ErrInvalidAgentToken),
+				errors.Is(err, agents.ErrExpiredAgentToken),
+				errors.Is(err, agents.ErrRevokedAgentToken),
+				errors.Is(err, agents.ErrUnknownAgent),
+				errors.Is(err, agents.ErrUnknownAgentOwner):
+				writeAuthError(w, "invalid or expired access token")
+				return
+			default:
+				writeError(w, http.StatusInternalServerError, "agent authentication failed")
+				return
+			}
+		}
+
+		ctx := context.WithValue(req.Context(), currentAgentContextKey{}, agent)
+		ctx = context.WithValue(ctx, currentUserContextKey{}, user)
+		next.ServeHTTP(w, req.WithContext(ctx))
+	})
+}
+
+func currentActor(req *http.Request) (core.Agent, core.User, bool) {
+	agent, ok := req.Context().Value(currentAgentContextKey{}).(core.Agent)
+	if !ok {
 		return core.Agent{}, core.User{}, false
 	}
-
+	user, ok := req.Context().Value(currentUserContextKey{}).(core.User)
+	if !ok {
+		return core.Agent{}, core.User{}, false
+	}
 	return agent, user, true
+}
+
+func accessTokenFromRequest(req *http.Request) (string, bool) {
+	authorization := strings.TrimSpace(req.Header.Get("Authorization"))
+	if authorization != "" {
+		prefix := "bearer "
+		if len(authorization) < len(prefix) || !strings.EqualFold(authorization[:len(prefix)], prefix) {
+			return "", false
+		}
+		return strings.TrimSpace(authorization[len(prefix):]), true
+	}
+
+	token := strings.TrimSpace(req.Header.Get("X-Agent-Token"))
+	return token, token != ""
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
@@ -369,6 +459,11 @@ func writeError(w http.ResponseWriter, statusCode int, message string) {
 	writeJSON(w, statusCode, map[string]any{
 		"error": message,
 	})
+}
+
+func writeAuthError(w http.ResponseWriter, message string) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="alice"`)
+	writeError(w, http.StatusUnauthorized, message)
 }
 
 func writeServiceError(w http.ResponseWriter, err error, fallback string) {

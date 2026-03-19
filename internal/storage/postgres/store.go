@@ -19,13 +19,15 @@ type Store struct {
 }
 
 var (
-	_ storage.OrganizationRepository = (*Store)(nil)
-	_ storage.UserRepository         = (*Store)(nil)
-	_ storage.AgentRepository        = (*Store)(nil)
-	_ storage.ArtifactRepository     = (*Store)(nil)
-	_ storage.PolicyGrantRepository  = (*Store)(nil)
-	_ storage.QueryRepository        = (*Store)(nil)
-	_ storage.AuditRepository        = (*Store)(nil)
+	_ storage.OrganizationRepository               = (*Store)(nil)
+	_ storage.UserRepository                       = (*Store)(nil)
+	_ storage.AgentRepository                      = (*Store)(nil)
+	_ storage.AgentRegistrationChallengeRepository = (*Store)(nil)
+	_ storage.AgentTokenRepository                 = (*Store)(nil)
+	_ storage.ArtifactRepository                   = (*Store)(nil)
+	_ storage.PolicyGrantRepository                = (*Store)(nil)
+	_ storage.QueryRepository                      = (*Store)(nil)
+	_ storage.AuditRepository                      = (*Store)(nil)
 )
 
 func Open(ctx context.Context, dsn string) (*Store, error) {

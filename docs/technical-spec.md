@@ -1416,6 +1416,7 @@ MCP is the public tool surface. Internally, the coordination server should also 
 ### 18.1 Suggested internal HTTP routes
 
 ```text
+POST   /v1/agents/register/challenge
 POST   /v1/agents/register
 POST   /v1/artifacts
 GET    /v1/artifacts/:id

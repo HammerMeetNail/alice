@@ -74,6 +74,17 @@ func ValidateAgentRegistration(orgSlug, ownerEmail, agentName, clientType, publi
 	}
 }
 
+func ValidateRegistrationCompletion(challengeID, challengeSignature string) error {
+	switch {
+	case strings.TrimSpace(challengeID) == "":
+		return invalid("challenge_id is required")
+	case strings.TrimSpace(challengeSignature) == "":
+		return invalid("challenge_signature is required")
+	default:
+		return nil
+	}
+}
+
 func ValidateArtifactInput(artifact Artifact) error {
 	if !slices.Contains(allowedArtifactTypes, artifact.Type) {
 		return invalidf("invalid artifact type %q", artifact.Type)

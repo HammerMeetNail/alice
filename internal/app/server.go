@@ -29,6 +29,8 @@ type repositories interface {
 	storage.OrganizationRepository
 	storage.UserRepository
 	storage.AgentRepository
+	storage.AgentRegistrationChallengeRepository
+	storage.AgentTokenRepository
 	storage.ArtifactRepository
 	storage.PolicyGrantRepository
 	storage.QueryRepository
@@ -81,7 +83,7 @@ func newContainer(cfg config.Config) (services.Container, func() error, error) {
 }
 
 func buildContainer(repos repositories, cfg config.Config) services.Container {
-	agentService := agents.NewService(repos, repos, repos, cfg)
+	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg)
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService)

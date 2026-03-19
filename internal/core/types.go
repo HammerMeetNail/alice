@@ -129,6 +129,30 @@ type Agent struct {
 	LastSeenAt   time.Time `json:"last_seen_at"`
 }
 
+type AgentRegistrationChallenge struct {
+	ChallengeID  string     `json:"challenge_id"`
+	OrgSlug      string     `json:"org_slug"`
+	OwnerEmail   string     `json:"owner_email"`
+	AgentName    string     `json:"agent_name"`
+	ClientType   string     `json:"client_type"`
+	PublicKey    string     `json:"public_key"`
+	Capabilities []string   `json:"capabilities"`
+	Nonce        string     `json:"nonce"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ExpiresAt    time.Time  `json:"expires_at"`
+	UsedAt       *time.Time `json:"used_at,omitempty"`
+}
+
+type AgentToken struct {
+	TokenID    string     `json:"token_id"`
+	AgentID    string     `json:"agent_id"`
+	TokenHash  string     `json:"-"`
+	IssuedAt   time.Time  `json:"issued_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	LastUsedAt time.Time  `json:"last_used_at"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
 type SourceReference struct {
 	SourceSystem string      `json:"source_system"`
 	SourceType   string      `json:"source_type"`

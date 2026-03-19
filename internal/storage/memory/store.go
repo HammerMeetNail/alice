@@ -19,6 +19,8 @@ type Store struct {
 	usersByEmail    map[string]string
 	agents          map[string]core.Agent
 	agentsByUser    map[string]string
+	challenges      map[string]core.AgentRegistrationChallenge
+	tokens          map[string]core.AgentToken
 	artifacts       map[string]core.Artifact
 	artifactsByUser map[string][]string
 	grants          map[string]core.PolicyGrant
@@ -28,13 +30,15 @@ type Store struct {
 }
 
 var (
-	_ storage.OrganizationRepository = (*Store)(nil)
-	_ storage.UserRepository         = (*Store)(nil)
-	_ storage.AgentRepository        = (*Store)(nil)
-	_ storage.ArtifactRepository     = (*Store)(nil)
-	_ storage.PolicyGrantRepository  = (*Store)(nil)
-	_ storage.QueryRepository        = (*Store)(nil)
-	_ storage.AuditRepository        = (*Store)(nil)
+	_ storage.OrganizationRepository               = (*Store)(nil)
+	_ storage.UserRepository                       = (*Store)(nil)
+	_ storage.AgentRepository                      = (*Store)(nil)
+	_ storage.AgentRegistrationChallengeRepository = (*Store)(nil)
+	_ storage.AgentTokenRepository                 = (*Store)(nil)
+	_ storage.ArtifactRepository                   = (*Store)(nil)
+	_ storage.PolicyGrantRepository                = (*Store)(nil)
+	_ storage.QueryRepository                      = (*Store)(nil)
+	_ storage.AuditRepository                      = (*Store)(nil)
 )
 
 func New() *Store {
@@ -45,6 +49,8 @@ func New() *Store {
 		usersByEmail:    make(map[string]string),
 		agents:          make(map[string]core.Agent),
 		agentsByUser:    make(map[string]string),
+		challenges:      make(map[string]core.AgentRegistrationChallenge),
+		tokens:          make(map[string]core.AgentToken),
 		artifacts:       make(map[string]core.Artifact),
 		artifactsByUser: make(map[string][]string),
 		grants:          make(map[string]core.PolicyGrant),
@@ -138,6 +144,38 @@ func (s *Store) FindAgentByUserID(userID string) (core.Agent, bool, error) {
 	}
 	agent, ok := s.agents[agentID]
 	return agent, ok, nil
+}
+
+func (s *Store) SaveAgentRegistrationChallenge(challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.challenges[challenge.ChallengeID] = challenge
+	return challenge, nil
+}
+
+func (s *Store) FindAgentRegistrationChallenge(challengeID string) (core.AgentRegistrationChallenge, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	challenge, ok := s.challenges[challengeID]
+	return challenge, ok, nil
+}
+
+func (s *Store) SaveAgentToken(token core.AgentToken) (core.AgentToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.tokens[token.TokenID] = token
+	return token, nil
+}
+
+func (s *Store) FindAgentTokenByID(tokenID string) (core.AgentToken, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	token, ok := s.tokens[tokenID]
+	return token, ok, nil
 }
 
 func (s *Store) SaveArtifact(artifact core.Artifact) (core.Artifact, error) {

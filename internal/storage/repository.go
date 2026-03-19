@@ -23,6 +23,16 @@ type AgentRepository interface {
 	FindAgentByUserID(userID string) (core.Agent, bool, error)
 }
 
+type AgentRegistrationChallengeRepository interface {
+	SaveAgentRegistrationChallenge(challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error)
+	FindAgentRegistrationChallenge(challengeID string) (core.AgentRegistrationChallenge, bool, error)
+}
+
+type AgentTokenRepository interface {
+	SaveAgentToken(token core.AgentToken) (core.AgentToken, error)
+	FindAgentTokenByID(tokenID string) (core.AgentToken, bool, error)
+}
+
 type ArtifactRepository interface {
 	SaveArtifact(artifact core.Artifact) (core.Artifact, error)
 	ListArtifactsByOwner(userID string) ([]core.Artifact, error)

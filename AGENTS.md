@@ -7,7 +7,7 @@ The repository is in early implementation. The root now contains runnable server
 - `docs/threat-model.md`: security goals, trust boundaries, and threat analysis
 - `docs/implementation-plan.md`: current implementation status, encoded assumptions, and the next recommended steps
 - `cmd/server/`: coordination server entrypoint
-- `internal/`: current server packages and in-memory implementation
+- `internal/`: current server packages including auth, HTTP API, and memory/PostgreSQL implementations
 - `api/jsonschema/`: current machine-readable schema files
 
 Keep the implementation plan, `README.md`, and this file aligned whenever the codebase meaningfully changes.
