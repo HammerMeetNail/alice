@@ -1,0 +1,13 @@
+{
+  "issues": [
+    {
+      "key": "PAY-123",
+      "issue_type": "bug",
+      "status": "in_progress",
+      "updated_at": "2026-03-19T12:10:00Z",
+      "project_refs": [
+        "payments-api"
+      ]
+    }
+  ]
+}

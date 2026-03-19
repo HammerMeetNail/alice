@@ -8,7 +8,9 @@ The repository is in early implementation. The root now contains runnable server
 - `docs/implementation-plan.md`: current implementation status, encoded assumptions, and the next recommended steps
 - `cmd/server/`: coordination server HTTP entrypoint
 - `cmd/mcp-server/`: stdio MCP entrypoint for local tool clients
-- `internal/`: current server packages including auth, HTTP API, MCP, Gatekeeper flows, and memory/PostgreSQL implementations
+- `cmd/edge-agent/`: local edge runtime skeleton entrypoint
+- `internal/`: current server and edge-runtime packages including auth, HTTP API, MCP, Gatekeeper flows, normalized edge connector events, the first live GitHub poller, and memory/PostgreSQL implementations
+- `examples/`: runnable local example configs plus artifact fixtures, connector fixtures, and a live GitHub polling example
 - `api/jsonschema/`: current machine-readable schema files
 
 Keep the implementation plan, `README.md`, and this file aligned whenever the codebase meaningfully changes.
@@ -22,7 +24,7 @@ Run these commands from the repository root:
 - `make logs`: tail server container logs
 - `make test`: run the Go test suite
 - `make test-postgres`: run the query-flow test path against the local PostgreSQL service
-- `git diff -- README.md AGENTS.md docs/`: inspect documentation changes before committing
+- `git diff -- README.md AGENTS.md docs/ examples/`: inspect documentation and example-config changes before committing
 
 Podman is the expected local container runtime for this repository, and the default local stack includes PostgreSQL.
 

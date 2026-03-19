@@ -1,0 +1,14 @@
+{
+  "events": [
+    {
+      "event_id": "event-42",
+      "category": "focus_block",
+      "start_at": "2026-03-19T14:00:00Z",
+      "end_at": "2026-03-19T15:00:00Z",
+      "project_refs": [
+        "payments-api"
+      ],
+      "attendee_count": 1
+    }
+  ]
+}

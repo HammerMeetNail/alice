@@ -59,7 +59,8 @@ func (s *Service) Evaluate(query core.Query) (core.QueryResponse, error) {
 	policyBasis := make([]string, 0)
 
 	for _, artifact := range allArtifacts {
-		if !artifact.CreatedAt.IsZero() && (artifact.CreatedAt.Before(query.TimeWindow.Start) || artifact.CreatedAt.After(query.TimeWindow.End)) {
+		activityTime := artifactActivityTime(artifact)
+		if !activityTime.IsZero() && (activityTime.Before(query.TimeWindow.Start) || activityTime.After(query.TimeWindow.End)) {
 			continue
 		}
 		if artifact.ExpiresAt != nil && artifact.ExpiresAt.Before(time.Now().UTC()) {
@@ -210,4 +211,17 @@ func dedupe(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func artifactActivityTime(artifact core.Artifact) time.Time {
+	var latestObservedAt time.Time
+	for _, ref := range artifact.SourceRefs {
+		if ref.ObservedAt.After(latestObservedAt) {
+			latestObservedAt = ref.ObservedAt
+		}
+	}
+	if !latestObservedAt.IsZero() {
+		return latestObservedAt
+	}
+	return artifact.CreatedAt
 }

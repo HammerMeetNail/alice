@@ -1,0 +1,14 @@
+{
+  "pull_requests": [
+    {
+      "repository": "org/payments",
+      "number": 128,
+      "state": "open",
+      "review_status": "changes_requested",
+      "updated_at": "2026-03-19T12:00:00Z",
+      "project_refs": [
+        "payments-api"
+      ]
+    }
+  ]
+}

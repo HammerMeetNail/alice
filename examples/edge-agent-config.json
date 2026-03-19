@@ -1,0 +1,28 @@
+{
+  "agent": {
+    "org_slug": "example-corp",
+    "owner_email": "jane@example.com",
+    "agent_name": "jane-agent",
+    "client_type": "edge_agent"
+  },
+  "server": {
+    "base_url": "http://127.0.0.1:8080"
+  },
+  "connectors": {
+    "github": {
+      "fixture_file": "github-fixtures.json"
+    },
+    "jira": {
+      "fixture_file": "jira-fixtures.json"
+    },
+    "gcal": {
+      "fixture_file": "gcal-fixtures.json"
+    }
+  },
+  "runtime": {
+    "state_file": "../.alice/edge-agent-state.json",
+    "artifact_fixture_file": "edge-agent-fixtures.json",
+    "query_watch_ids": [],
+    "poll_incoming_requests": true
+  }
+}

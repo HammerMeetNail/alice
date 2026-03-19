@@ -1,0 +1,27 @@
+{
+  "artifacts": [
+    {
+      "type": "summary",
+      "title": "Working on payments retry logic",
+      "content": "Focused on webhook retry improvements and review follow-up.",
+      "structured_payload": {
+        "project_refs": [
+          "payments-api"
+        ]
+      },
+      "source_refs": [
+        {
+          "source_system": "github",
+          "source_type": "pull_request",
+          "source_id": "repo:org/payments:pr:128",
+          "observed_at": "2026-03-19T12:00:00Z",
+          "trust_class": "structured_system",
+          "sensitivity": "medium"
+        }
+      ],
+      "visibility_mode": "explicit_grants_only",
+      "sensitivity": "medium",
+      "confidence": 0.91
+    }
+  ]
+}

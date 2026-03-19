@@ -14,6 +14,7 @@ The repository is no longer design-only. The current implementation includes:
 
 - a Go module and runnable coordination server entrypoint
 - a stdio MCP server entrypoint for local CLI-native clients
+- a local edge runtime skeleton entrypoint with JSON config loading and persisted local state
 - canonical Go domain models for agents, auth challenges/tokens, artifacts, grants, queries, requests, approvals, and audit events
 - JSON schema files for artifact, query, and policy-grant payloads
 - repository interfaces for the currently implemented entities
@@ -21,6 +22,8 @@ The repository is no longer design-only. The current implementation includes:
 - an in-memory storage layer that remains available as a fallback when `ALICE_DATABASE_URL` is not set
 - a signed registration challenge flow with short-lived bearer-token issuance for agents
 - an MCP wrapper layer that maps the current tool surface onto the existing HTTP route contracts
+- a normalized edge connector event layer shared by fixture and live connector ingestion
+- an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, poll live GitHub PR metadata through env-backed token auth plus repository mapping, retrieve watched query results, and poll incoming requests
 - HTTP routes for:
   - `POST /v1/agents/register/challenge`
   - `POST /v1/agents/register`
@@ -39,6 +42,7 @@ The repository is no longer design-only. The current implementation includes:
 - a targeted handler test covering the permissioned query flow against memory and, when configured, PostgreSQL
 - a targeted handler test covering the request and approval flow against memory and, when configured, PostgreSQL
 - a targeted MCP test covering local registration, artifact publish, grant, peer listing, query/result retrieval, request response, and approval resolution
+- a targeted edge runtime test covering registration reuse, fixture publication, fixture-derived artifacts, live GitHub polling, query-result retrieval, and incoming-request polling
 - a Podman-based local container workflow through `make local` and `make down` that runs both the server and PostgreSQL
 
 ---
@@ -54,7 +58,10 @@ These are implementation choices already present in the codebase and should be t
 - the server uses PostgreSQL when `ALICE_DATABASE_URL` is set and otherwise falls back to in-memory storage
 - the public surface now includes HTTP plus a local stdio MCP server for the implemented Reporter and Gatekeeper tools
 - request approvals are explicit and API-driven; no user-facing approval UI or automatic risk policy exists yet
-- no edge runtime or connector ingestion exists yet
+- query time windows prefer source observation timestamps when an artifact carries source refs
+- the edge runtime uses local JSON config plus artifact fixtures and a normalized event pipeline for GitHub/Jira/calendar inputs
+- the first live connector path is GitHub polling with env-backed token auth and repository-to-project mapping
+- Jira and calendar ingestion remain fixture-driven
 
 ---
 
@@ -93,6 +100,14 @@ Not yet complete inside step 2:
   - `respond_to_request`
   - `list_pending_approvals`
   - `resolve_approval`
+
+- step 5 is partially complete:
+  - fixture-driven GitHub ingestion
+  - fixture-driven Jira ingestion
+  - fixture-driven calendar ingestion
+  - deterministic local artifact derivation from connector fixtures
+  - a normalized event layer shared by fixture and live connector ingestion
+  - live GitHub polling via env-backed token auth and repository mapping
 
 ---
 
@@ -167,6 +182,8 @@ Definition of done:
 
 ### step e: add the first edge runtime skeleton
 
+Status: complete for the current local runtime skeleton
+
 Implement:
 
 - local config loading
@@ -190,11 +207,11 @@ Use fixture-driven data first. Do not start with live GitHub/Jira/Calendar auth.
 
 ## 6. suggested first task for the next session
 
-Start the first edge runtime skeleton while keeping the current HTTP and MCP server behavior stable.
+Extend live connector coverage beyond GitHub while making connector polling more stateful.
 
 Concrete first changes:
 
-1. add a new `cmd/edge-agent/` entrypoint plus an `internal/edge/` package for local config loading and bootstrap
-2. wire agent registration through the existing MCP or HTTP auth flow and persist the issued token locally for the runtime session
-3. add fixture-driven artifact publication plus query/result and request inbox polling paths
-4. update `README.md`, `AGENTS.md`, and this file once the edge runtime skeleton exists
+1. add live Jira and calendar polling/auth paths that feed the existing normalized event layer without removing the fixture paths
+2. persist connector cursor or last-seen state locally so polling can avoid re-fetching full result sets every run
+3. deepen local derivation so multiple normalized events can combine into richer summaries, blockers, and commitments
+4. keep raw source content local and continue publishing only derived artifacts through the existing runtime client
