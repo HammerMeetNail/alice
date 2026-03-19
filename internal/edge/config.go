@@ -33,6 +33,7 @@ type ServerConfig struct {
 
 type RuntimeConfig struct {
 	StateFile            string   `json:"state_file"`
+	CredentialsFile      string   `json:"credentials_file"`
 	ArtifactFixtureFile  string   `json:"artifact_fixture_file"`
 	QueryWatchIDs        []string `json:"query_watch_ids"`
 	PollIncomingRequests bool     `json:"poll_incoming_requests"`
@@ -258,6 +259,19 @@ func (c Config) Validate() error {
 
 func (c Config) StatePath() string {
 	return c.resolvePath(c.Runtime.StateFile)
+}
+
+func (c Config) CredentialsPath() string {
+	if strings.TrimSpace(c.Runtime.CredentialsFile) != "" {
+		return c.resolvePath(c.Runtime.CredentialsFile)
+	}
+
+	statePath := c.StatePath()
+	ext := filepath.Ext(statePath)
+	if ext == "" {
+		return statePath + ".credentials"
+	}
+	return strings.TrimSuffix(statePath, ext) + ".credentials" + ext
 }
 
 func (c Config) ArtifactFixturePath() string {

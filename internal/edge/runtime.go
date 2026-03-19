@@ -56,6 +56,10 @@ func (r *Runtime) RunOnce(ctx context.Context) (Report, error) {
 	if err := r.ensureKeyMaterial(&state); err != nil {
 		return Report{}, err
 	}
+	credentials, err := r.prepareCredentialStore(ctx, &state)
+	if err != nil {
+		return Report{}, err
+	}
 
 	report := Report{}
 	registrationPerformed, err := r.ensureSession(ctx, &state)
@@ -67,7 +71,7 @@ func (r *Runtime) RunOnce(ctx context.Context) (Report, error) {
 	report.OrgID = state.OrgID
 	report.TokenExpiresAt = state.TokenExpiresAt
 
-	published, skipped, err := r.publishArtifacts(ctx, &state, &report.RegistrationPerformed)
+	published, skipped, err := r.publishArtifacts(ctx, &state, credentials, &report.RegistrationPerformed)
 	if err != nil {
 		return Report{}, err
 	}
@@ -159,8 +163,8 @@ func (r *Runtime) ensureSession(ctx context.Context, state *State) (bool, error)
 	return true, nil
 }
 
-func (r *Runtime) publishArtifacts(ctx context.Context, state *State, registrationPerformed *bool) ([]PublishedArtifact, []string, error) {
-	artifacts, cursorUpdates, err := r.configuredArtifacts(ctx, *state)
+func (r *Runtime) publishArtifacts(ctx context.Context, state *State, credentials CredentialStore, registrationPerformed *bool) ([]PublishedArtifact, []string, error) {
+	artifacts, cursorUpdates, err := r.configuredArtifacts(ctx, *state, credentials)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -201,7 +205,7 @@ func (r *Runtime) publishArtifacts(ctx context.Context, state *State, registrati
 	return published, skipped, nil
 }
 
-func (r *Runtime) configuredArtifacts(ctx context.Context, state State) ([]core.Artifact, map[string]time.Time, error) {
+func (r *Runtime) configuredArtifacts(ctx context.Context, state State, credentials CredentialStore) ([]core.Artifact, map[string]time.Time, error) {
 	artifacts := make([]core.Artifact, 0)
 
 	fixturePath := r.cfg.ArtifactFixturePath()
@@ -213,7 +217,7 @@ func (r *Runtime) configuredArtifacts(ctx context.Context, state State) ([]core.
 		artifacts = append(artifacts, fixtures.Artifacts...)
 	}
 
-	derivedArtifacts, cursorUpdates, err := loadConnectorArtifacts(ctx, r.cfg, state)
+	derivedArtifacts, cursorUpdates, err := loadConnectorArtifacts(ctx, r.cfg, state, credentials)
 	if err != nil {
 		return nil, nil, err
 	}

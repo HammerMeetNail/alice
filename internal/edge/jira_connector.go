@@ -67,8 +67,8 @@ func (s *jiraLiveSource) Name() string {
 	return "jira_live"
 }
 
-func (s *jiraLiveSource) Poll(ctx context.Context, state State) ([]NormalizedEvent, error) {
-	token, err := loadConnectorSecret("jira", s.tokenEnvVar, s.tokenFile, state.ConnectorCredential("jira"))
+func (s *jiraLiveSource) Poll(ctx context.Context, state State, credentials CredentialStore) ([]NormalizedEvent, error) {
+	token, err := loadConnectorSecret("jira", s.tokenEnvVar, s.tokenFile, credentials.ConnectorCredential("jira"))
 	if err != nil {
 		return nil, err
 	}

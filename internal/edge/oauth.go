@@ -56,6 +56,10 @@ func (r *Runtime) BootstrapConnector(ctx context.Context, connectorType string, 
 	if err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
+	credentials, err := LoadCredentialStore(r.cfg.CredentialsPath())
+	if err != nil {
+		return ConnectorBootstrapResult{}, err
+	}
 
 	provider, err := r.oauthProvider(connectorType)
 	if err != nil {
@@ -74,7 +78,13 @@ func (r *Runtime) BootstrapConnector(ctx context.Context, connectorType string, 
 	}
 
 	state.normalizePublishedArtifacts()
+	migrated := credentials.MigrateFromState(&state)
 	state.PendingConnectorAuths[provider.connectorType] = pending
+	if migrated {
+		if err := SaveCredentialStore(r.cfg.CredentialsPath(), credentials); err != nil {
+			return ConnectorBootstrapResult{}, err
+		}
+	}
 	if err := SaveState(r.cfg.StatePath(), state); err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
@@ -141,7 +151,7 @@ func (r *Runtime) BootstrapConnector(ctx context.Context, connectorType string, 
 	for {
 		select {
 		case callback := <-callbacks:
-			result, err := r.completeConnectorBootstrap(ctx, provider, pending, prompt, callback)
+			result, err := r.completeConnectorBootstrap(ctx, provider, pending, credentials, prompt, callback)
 			callback.reply <- err
 			close(callback.reply)
 			return result, err
@@ -153,6 +163,30 @@ func (r *Runtime) BootstrapConnector(ctx context.Context, connectorType string, 
 			return ConnectorBootstrapResult{}, fmt.Errorf("wait for connector callback: %w", ctx.Err())
 		}
 	}
+}
+
+func (r *Runtime) prepareCredentialStore(ctx context.Context, state *State) (CredentialStore, error) {
+	store, err := LoadCredentialStore(r.cfg.CredentialsPath())
+	if err != nil {
+		return CredentialStore{}, err
+	}
+
+	migrated := store.MigrateFromState(state)
+	if migrated {
+		if err := SaveState(r.cfg.StatePath(), *state); err != nil {
+			return CredentialStore{}, err
+		}
+	}
+	refreshed, err := r.refreshExpiredConnectorCredentials(ctx, &store)
+	if err != nil {
+		return CredentialStore{}, err
+	}
+	if migrated || refreshed {
+		if err := SaveCredentialStore(r.cfg.CredentialsPath(), store); err != nil {
+			return CredentialStore{}, err
+		}
+	}
+	return store, nil
 }
 
 func (r *Runtime) oauthProvider(connectorType string) (connectorOAuthProvider, error) {
@@ -177,7 +211,7 @@ func (r *Runtime) oauthProvider(connectorType string) (connectorOAuthProvider, e
 	}
 }
 
-func (r *Runtime) completeConnectorBootstrap(ctx context.Context, provider connectorOAuthProvider, pending PendingConnectorAuth, prompt ConnectorBootstrapPrompt, callback connectorCallbackRequest) (ConnectorBootstrapResult, error) {
+func (r *Runtime) completeConnectorBootstrap(ctx context.Context, provider connectorOAuthProvider, pending PendingConnectorAuth, credentials CredentialStore, prompt ConnectorBootstrapPrompt, callback connectorCallbackRequest) (ConnectorBootstrapResult, error) {
 	if callback.authorizationErr != "" {
 		_ = r.clearPendingConnectorAuth(provider.connectorType)
 		return ConnectorBootstrapResult{}, fmt.Errorf("provider returned oauth error %q", callback.authorizationErr)
@@ -202,8 +236,11 @@ func (r *Runtime) completeConnectorBootstrap(ctx context.Context, provider conne
 		return ConnectorBootstrapResult{}, err
 	}
 	state.normalizePublishedArtifacts()
-	state.ConnectorCredentials[provider.connectorType] = credential
 	delete(state.PendingConnectorAuths, provider.connectorType)
+	credentials.SetConnectorCredential(provider.connectorType, credential)
+	if err := SaveCredentialStore(r.cfg.CredentialsPath(), credentials); err != nil {
+		return ConnectorBootstrapResult{}, err
+	}
 	if err := SaveState(r.cfg.StatePath(), state); err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
@@ -225,6 +262,44 @@ func (r *Runtime) clearPendingConnectorAuth(connectorType string) error {
 	state.normalizePublishedArtifacts()
 	delete(state.PendingConnectorAuths, connectorType)
 	return SaveState(r.cfg.StatePath(), state)
+}
+
+func (r *Runtime) refreshExpiredConnectorCredentials(ctx context.Context, store *CredentialStore) (bool, error) {
+	updated := false
+	for _, connectorType := range []string{"github", "jira", "gcal"} {
+		current := store.ConnectorCredential(connectorType)
+		if !connectorCredentialNeedsRefresh(current) {
+			continue
+		}
+		if r.connectorHasExternalCredentialSource(connectorType) {
+			continue
+		}
+
+		provider, err := r.oauthProvider(connectorType)
+		if err != nil {
+			return false, fmt.Errorf("%s connector token expired and no oauth re-auth flow is configured", connectorType)
+		}
+		refreshed, err := refreshConnectorCredential(ctx, provider, current)
+		if err != nil {
+			return false, err
+		}
+		store.SetConnectorCredential(connectorType, refreshed)
+		updated = true
+	}
+	return updated, nil
+}
+
+func (r *Runtime) connectorHasExternalCredentialSource(connectorType string) bool {
+	switch connectorType {
+	case "github":
+		return externalConnectorSecretAvailable(r.cfg.GitHubTokenEnvVar(), r.cfg.GitHubTokenFile())
+	case "jira":
+		return externalConnectorSecretAvailable(r.cfg.JiraTokenEnvVar(), r.cfg.JiraTokenFile())
+	case "gcal":
+		return externalConnectorSecretAvailable(r.cfg.GCalTokenEnvVar(), r.cfg.GCalTokenFile())
+	default:
+		return false
+	}
 }
 
 func newPendingConnectorAuth(provider connectorOAuthProvider, callbackURL string) (PendingConnectorAuth, string, error) {
@@ -339,6 +414,91 @@ func exchangeConnectorAuthorizationCode(ctx context.Context, provider connectorO
 		credential.ExpiresAt = credential.ObtainedAt.Add(time.Duration(payload.ExpiresIn) * time.Second)
 	}
 	return credential, nil
+}
+
+func refreshConnectorCredential(ctx context.Context, provider connectorOAuthProvider, current ConnectorCredential) (ConnectorCredential, error) {
+	if strings.TrimSpace(current.RefreshToken) == "" {
+		return ConnectorCredential{}, fmt.Errorf("%s connector token expired and no refresh token is available; run bootstrap again", provider.connectorType)
+	}
+
+	clientSecret, err := loadOptionalSecret(provider.connectorType+" client secret", provider.oauth.ClientSecretEnvVar, provider.oauth.ClientSecretFile)
+	if err != nil {
+		return ConnectorCredential{}, err
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", current.RefreshToken)
+	form.Set("client_id", provider.oauth.ClientID)
+	if strings.TrimSpace(clientSecret) != "" {
+		form.Set("client_secret", clientSecret)
+	}
+	if strings.TrimSpace(current.Scope) != "" {
+		form.Set("scope", current.Scope)
+	}
+	for key, value := range provider.oauth.ExtraTokenParams {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		form.Set(key, value)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.oauth.TokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return ConnectorCredential{}, fmt.Errorf("build refresh-token request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return ConnectorCredential{}, fmt.Errorf("perform refresh-token exchange: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return ConnectorCredential{}, fmt.Errorf("refresh-token exchange returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var payload oauthTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return ConnectorCredential{}, fmt.Errorf("decode refresh-token response: %w", err)
+	}
+	if strings.TrimSpace(payload.AccessToken) == "" {
+		return ConnectorCredential{}, fmt.Errorf("refresh-token response did not include access_token")
+	}
+
+	refreshed := ConnectorCredential{
+		AccessToken:  payload.AccessToken,
+		RefreshToken: payload.RefreshToken,
+		TokenType:    payload.TokenType,
+		Scope:        payload.Scope,
+		ObtainedAt:   time.Now().UTC(),
+	}
+	if strings.TrimSpace(refreshed.RefreshToken) == "" {
+		refreshed.RefreshToken = current.RefreshToken
+	}
+	if strings.TrimSpace(refreshed.Scope) == "" {
+		refreshed.Scope = current.Scope
+	}
+	if strings.TrimSpace(refreshed.TokenType) == "" {
+		refreshed.TokenType = current.TokenType
+	}
+	if payload.ExpiresIn > 0 {
+		refreshed.ExpiresAt = refreshed.ObtainedAt.Add(time.Duration(payload.ExpiresIn) * time.Second)
+	}
+	return refreshed, nil
+}
+
+func connectorCredentialNeedsRefresh(credential ConnectorCredential) bool {
+	if strings.TrimSpace(credential.AccessToken) == "" {
+		return false
+	}
+	if credential.ExpiresAt.IsZero() {
+		return false
+	}
+	return !time.Now().UTC().Before(credential.ExpiresAt.Add(-30 * time.Second))
 }
 
 func listenLoopbackCallback(rawCallbackURL string) (net.Listener, string, string, error) {

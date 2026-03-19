@@ -60,6 +60,7 @@ func LoadState(path string) (State, error) {
 func SaveState(path string, state State) error {
 	state.normalizePublishedArtifacts()
 	state.PublishedFixtures = nil
+	state.ConnectorCredentials = nil
 
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -117,11 +118,4 @@ func (s *State) SetCursorTime(key string, value time.Time) {
 		return
 	}
 	s.ConnectorCursors[key] = value.UTC().Format(time.RFC3339Nano)
-}
-
-func (s State) ConnectorCredential(connectorType string) ConnectorCredential {
-	if s.ConnectorCredentials == nil {
-		return ConnectorCredential{}
-	}
-	return s.ConnectorCredentials[connectorType]
 }

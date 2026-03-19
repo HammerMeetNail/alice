@@ -22,5 +22,5 @@ type NormalizedEvent struct {
 
 type EventSource interface {
 	Name() string
-	Poll(ctx context.Context, state State) ([]NormalizedEvent, error)
+	Poll(ctx context.Context, state State, credentials CredentialStore) ([]NormalizedEvent, error)
 }

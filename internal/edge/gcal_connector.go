@@ -60,8 +60,8 @@ func (s *gcalLiveSource) Name() string {
 	return "gcal_live"
 }
 
-func (s *gcalLiveSource) Poll(ctx context.Context, state State) ([]NormalizedEvent, error) {
-	token, err := loadConnectorSecret("gcal", s.tokenEnvVar, s.tokenFile, state.ConnectorCredential("gcal"))
+func (s *gcalLiveSource) Poll(ctx context.Context, state State, credentials CredentialStore) ([]NormalizedEvent, error) {
+	token, err := loadConnectorSecret("gcal", s.tokenEnvVar, s.tokenFile, credentials.ConnectorCredential("gcal"))
 	if err != nil {
 		return nil, err
 	}

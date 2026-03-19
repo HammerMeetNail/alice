@@ -100,7 +100,8 @@ The following assets must be protected.
 - OAuth callback state and PKCE verifier material
 
 Current implementation note:
-- the local edge runtime now persists bootstrapped connector tokens in its state file with `0600` filesystem permissions
+- the local edge runtime now persists bootstrapped connector tokens in a dedicated `0600` credentials file separate from the general state file
+- refresh tokens may also be stored there when a connector returns them so the runtime can renew short-lived access tokens locally
 - encrypted-at-rest local connector credential storage remains a follow-on requirement
 
 ## 4.2 Private user work context

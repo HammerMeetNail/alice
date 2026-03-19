@@ -23,7 +23,7 @@ The repository is no longer design-only. The current implementation includes:
 - a signed registration challenge flow with short-lived bearer-token issuance for agents
 - an MCP wrapper layer that maps the current tool surface onto the existing HTTP route contracts
 - a normalized edge connector event layer shared by fixture and live connector ingestion
-- an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, bootstrap GitHub/Jira/Calendar connectors through a local OAuth loopback callback, poll live GitHub/Jira/Calendar metadata through env-backed token auth, token-file loading, or bootstrapped local credentials, persist local connector cursor state, derive project-level aggregate status/blocker/commitment artifacts, retrieve watched query results, and poll incoming requests
+- an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, bootstrap GitHub/Jira/Calendar connectors through a local OAuth loopback callback, persist bootstrapped connector credentials in a dedicated local credential store, refresh expired OAuth credentials when refresh tokens are available, poll live GitHub/Jira/Calendar metadata through env-backed token auth, token-file loading, or bootstrapped local credentials, persist local connector cursor state, derive project-level aggregate status/blocker/commitment artifacts, retrieve watched query results, and poll incoming requests
 - HTTP routes for:
   - `POST /v1/agents/register/challenge`
   - `POST /v1/agents/register`
@@ -61,7 +61,7 @@ These are implementation choices already present in the codebase and should be t
 - query time windows prefer source observation timestamps when an artifact carries source refs
 - the edge runtime uses local JSON config plus artifact fixtures and a normalized event pipeline for GitHub/Jira/calendar inputs
 - live polling exists for GitHub, Jira, and calendar inputs through env-backed token auth, token files, bootstrapped local credentials, and source-specific config
-- live connector pollers persist local cursor state, and the edge runtime can now complete a local OAuth bootstrap with PKCE and callback-state validation, but encrypted local credential storage and refresh-token handling are still not implemented
+- live connector pollers persist local cursor state, and the edge runtime can now complete a local OAuth bootstrap with PKCE and callback-state validation, persist connector credentials in a dedicated local credential store with file-permission checks, and refresh expired OAuth credentials when refresh tokens are available, but encrypted local credential storage beyond filesystem permissions is still not implemented
 - richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
 
 ---
@@ -114,7 +114,9 @@ Not yet complete inside step 2:
   - persisted connector cursor state for incremental live polling
   - connector secret loading via env vars or token files
   - local OAuth bootstrap flows for GitHub, Jira, and calendar connectors through a loopback callback
-  - persisted connector credentials in edge state reused by live pollers
+  - persisted connector credentials in a dedicated local credential store reused by live pollers
+  - dedicated local connector credential storage separate from the general edge state file
+  - automatic refresh-token exchange for expired stored OAuth credentials
   - project-level aggregate status_delta, blocker, and commitment artifacts derived from cross-source events
 
 ---
@@ -215,11 +217,11 @@ Use fixture-driven data first. Do not start with live GitHub/Jira/Calendar auth.
 
 ## 6. suggested first task for the next session
 
-Build on the new connector bootstrap path with stronger token lifecycle handling and richer incremental behavior.
+Build on the new dedicated credential-store path with stronger local protection and richer incremental behavior.
 
 Concrete first changes:
 
-1. add refresh-token handling, re-auth flows, and stronger local credential protection on top of the current loopback OAuth bootstrap
+1. add encrypted local credential storage and clearer re-auth flows on top of the current dedicated credential store and refresh support
 2. deepen derivation beyond the current project-level heuristics with better correlation, supersession, and higher-signal blocker/commitment rules
 3. add better incremental sync behavior such as pagination, webhook intake, and connector-specific backoff/retry handling
 4. keep raw source content local and continue publishing only derived artifacts through the existing runtime client

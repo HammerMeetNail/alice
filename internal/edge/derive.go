@@ -59,16 +59,16 @@ func (s fixtureEventSource) Name() string {
 	return s.name
 }
 
-func (s fixtureEventSource) Poll(ctx context.Context, state State) ([]NormalizedEvent, error) {
+func (s fixtureEventSource) Poll(ctx context.Context, state State, _ CredentialStore) ([]NormalizedEvent, error) {
 	return s.load(ctx, state)
 }
 
-func loadConnectorArtifacts(ctx context.Context, cfg Config, state State) ([]core.Artifact, map[string]time.Time, error) {
+func loadConnectorArtifacts(ctx context.Context, cfg Config, state State, credentials CredentialStore) ([]core.Artifact, map[string]time.Time, error) {
 	sources := configuredEventSources(cfg)
 	events := make([]NormalizedEvent, 0)
 	cursorUpdates := make(map[string]time.Time)
 	for _, source := range sources {
-		sourceEvents, err := source.Poll(ctx, state)
+		sourceEvents, err := source.Poll(ctx, state, credentials)
 		if err != nil {
 			return nil, nil, fmt.Errorf("poll %s: %w", source.Name(), err)
 		}

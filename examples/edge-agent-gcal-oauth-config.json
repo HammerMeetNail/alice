@@ -30,6 +30,7 @@
   },
   "runtime": {
     "state_file": "../.alice/edge-agent-gcal-oauth-state.json",
+    "credentials_file": "../.alice/edge-agent-gcal-credentials.json",
     "query_watch_ids": [],
     "poll_incoming_requests": true
   }

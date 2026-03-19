@@ -9,7 +9,7 @@ The repository is in early implementation. The root now contains runnable server
 - `cmd/server/`: coordination server HTTP entrypoint
 - `cmd/mcp-server/`: stdio MCP entrypoint for local tool clients
 - `cmd/edge-agent/`: local edge runtime skeleton entrypoint
-- `internal/`: current server and edge-runtime packages including auth, HTTP API, MCP, Gatekeeper flows, normalized edge connector events, live GitHub/Jira/Calendar pollers, connector cursor state, loopback OAuth connector bootstrap, local connector credential loading, project-level aggregate derivation, and memory/PostgreSQL implementations
+- `internal/`: current server and edge-runtime packages including auth, HTTP API, MCP, Gatekeeper flows, normalized edge connector events, live GitHub/Jira/Calendar pollers, connector cursor state, loopback OAuth connector bootstrap, dedicated local connector credential storage, refresh-token handling, project-level aggregate derivation, and memory/PostgreSQL implementations
 - `examples/`: runnable local example configs plus artifact fixtures, connector fixtures, live polling examples, and OAuth bootstrap examples for GitHub, Jira, and Google Calendar
 - `api/jsonschema/`: current machine-readable schema files
 

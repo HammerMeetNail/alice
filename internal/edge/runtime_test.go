@@ -168,7 +168,8 @@ func TestRuntimeRunOnceDerivesArtifactsFromConnectorFixtures(t *testing.T) {
 			BaseURL: server.URL,
 		},
 		Runtime: RuntimeConfig{
-			StateFile: "sam-state.json",
+			StateFile:       "sam-state.json",
+			CredentialsFile: "sam-credentials.json",
 		},
 		Connectors: ConnectorsConfig{
 			GitHub: GitHubConnectorConfig{
@@ -1096,7 +1097,14 @@ func TestRuntimeBootstrapGitHubConnectorPersistsCredentialAndUsesIt(t *testing.T
 	if err != nil {
 		t.Fatalf("load state after bootstrap: %v", err)
 	}
-	credential := state.ConnectorCredential("github")
+	if len(state.ConnectorCredentials) != 0 {
+		t.Fatalf("expected connector credentials to be removed from the general state file")
+	}
+	credentials, err := LoadCredentialStore(cfg.CredentialsPath())
+	if err != nil {
+		t.Fatalf("load credential store after bootstrap: %v", err)
+	}
+	credential := credentials.ConnectorCredential("github")
 	if credential.AccessToken != "bootstrapped-github-token" {
 		t.Fatalf("expected bootstrapped github access token to be stored, got %q", credential.AccessToken)
 	}
@@ -1126,7 +1134,8 @@ func TestRuntimeBootstrapConnectorRejectsStateMismatch(t *testing.T) {
 			BaseURL: "http://127.0.0.1:8080",
 		},
 		Runtime: RuntimeConfig{
-			StateFile: "sam-state.json",
+			StateFile:       "sam-state.json",
+			CredentialsFile: "sam-credentials.json",
 		},
 		Connectors: ConnectorsConfig{
 			GitHub: GitHubConnectorConfig{
@@ -1167,11 +1176,179 @@ func TestRuntimeBootstrapConnectorRejectsStateMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load state after mismatch bootstrap: %v", err)
 	}
-	if got := state.ConnectorCredential("github").AccessToken; got != "" {
+	credentials, err := LoadCredentialStore(cfg.CredentialsPath())
+	if err != nil {
+		t.Fatalf("load credential store after mismatch bootstrap: %v", err)
+	}
+	if got := credentials.ConnectorCredential("github").AccessToken; got != "" {
 		t.Fatalf("expected no stored github credential after state mismatch, got %q", got)
 	}
 	if _, ok := state.PendingConnectorAuths["github"]; ok {
 		t.Fatalf("expected pending github oauth state to be cleared after mismatch")
+	}
+}
+
+func TestRuntimeRunOnceRefreshesExpiredGitHubConnectorToken(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	pullUpdatedAt := time.Date(2026, 3, 19, 21, 0, 0, 0, time.UTC)
+	oauthProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse refresh-token form: %v", err)
+			}
+			if got := r.Form.Get("grant_type"); got != "refresh_token" {
+				t.Fatalf("unexpected refresh grant type: %q", got)
+			}
+			if got := r.Form.Get("refresh_token"); got != "github-refresh-token" {
+				t.Fatalf("unexpected refresh token: %q", got)
+			}
+			if got := r.Form.Get("client_id"); got != "github-client" {
+				t.Fatalf("unexpected refresh client_id: %q", got)
+			}
+			if got := r.Form.Get("client_secret"); got != "github-secret" {
+				t.Fatalf("unexpected refresh client secret: %q", got)
+			}
+			payload := map[string]any{
+				"access_token": "refreshed-github-token",
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Fatalf("encode refresh-token response: %v", err)
+			}
+		case "/repos/acme/payments-api/pulls":
+			if got := r.Header.Get("Authorization"); got != "Bearer refreshed-github-token" {
+				t.Fatalf("unexpected github auth header after refresh: %q", got)
+			}
+			payload := []map[string]any{
+				{
+					"number":     128,
+					"state":      "open",
+					"draft":      false,
+					"title":      "Retry payments handler",
+					"updated_at": pullUpdatedAt.Format(time.RFC3339),
+					"user": map[string]any{
+						"login": "sam",
+					},
+					"requested_reviewers": []map[string]any{},
+					"assignees":           []map[string]any{},
+				},
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Fatalf("encode github payload: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected refresh/github path: %s", r.URL.Path)
+		}
+	}))
+	defer oauthProvider.Close()
+
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "github-client-secret.txt"), []byte("github-secret\n"), 0o600); err != nil {
+		t.Fatalf("write github client secret file: %v", err)
+	}
+
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile:       "sam-state.json",
+			CredentialsFile: "sam-credentials.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				Enabled:    true,
+				APIBaseURL: oauthProvider.URL,
+				ActorLogin: "sam",
+				Repositories: []GitHubRepositoryConfig{
+					{
+						Name:        "acme/payments-api",
+						ProjectRefs: []string{"payments-api"},
+					},
+				},
+				OAuth: ConnectorOAuthConfig{
+					Enabled:          true,
+					ClientID:         "github-client",
+					ClientSecretFile: "github-client-secret.txt",
+					AuthorizationURL: oauthProvider.URL + "/authorize",
+					TokenURL:         oauthProvider.URL + "/token",
+					CallbackURL:      "http://127.0.0.1:8787/oauth/github/callback",
+					Scopes:           []string{"repo", "read:user"},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load refresh github config: %v", err)
+	}
+	if err := SaveCredentialStore(cfg.CredentialsPath(), CredentialStore{
+		ConnectorCredentials: map[string]ConnectorCredential{
+			"github": {
+				AccessToken:  "expired-github-token",
+				RefreshToken: "github-refresh-token",
+				TokenType:    "Bearer",
+				ExpiresAt:    time.Now().UTC().Add(-2 * time.Minute),
+				ObtainedAt:   time.Now().UTC().Add(-1 * time.Hour),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write credential store with expired github token: %v", err)
+	}
+
+	report, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with refreshed github token: %v", err)
+	}
+	if len(report.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one artifact after github token refresh, got %d", len(report.PublishedArtifacts))
+	}
+
+	credentials, err := LoadCredentialStore(cfg.CredentialsPath())
+	if err != nil {
+		t.Fatalf("load credential store after refresh: %v", err)
+	}
+	credential := credentials.ConnectorCredential("github")
+	if credential.AccessToken != "refreshed-github-token" {
+		t.Fatalf("expected refreshed github token to be stored, got %q", credential.AccessToken)
+	}
+	if credential.RefreshToken != "github-refresh-token" {
+		t.Fatalf("expected github refresh token to be preserved, got %q", credential.RefreshToken)
+	}
+	if credential.ExpiresAt.IsZero() || !credential.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("expected refreshed github credential to have a future expiry, got %s", credential.ExpiresAt.Format(time.RFC3339))
+	}
+}
+
+func TestLoadCredentialStoreRejectsOpenPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(path, []byte(`{"connector_credentials":{}}`), 0o644); err != nil {
+		t.Fatalf("write open-permission credential store: %v", err)
+	}
+
+	_, err := LoadCredentialStore(path)
+	if err == nil || !strings.Contains(err.Error(), "must not be group or world accessible") {
+		t.Fatalf("expected permission error for open credential store, got %v", err)
 	}
 }
 

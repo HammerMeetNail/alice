@@ -57,3 +57,17 @@ func loadOptionalSecret(label, envVar, filePath string) (string, error) {
 
 	return "", nil
 }
+
+func externalConnectorSecretAvailable(envVar, filePath string) bool {
+	if strings.TrimSpace(envVar) != "" && strings.TrimSpace(os.Getenv(envVar)) != "" {
+		return true
+	}
+	if strings.TrimSpace(filePath) == "" {
+		return false
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(data)) != ""
+}

@@ -54,8 +54,8 @@ func (s *gitHubLiveSource) Name() string {
 	return "github_live"
 }
 
-func (s *gitHubLiveSource) Poll(ctx context.Context, state State) ([]NormalizedEvent, error) {
-	token, err := loadConnectorSecret("github", s.tokenEnvVar, s.tokenFile, state.ConnectorCredential("github"))
+func (s *gitHubLiveSource) Poll(ctx context.Context, _ State, credentials CredentialStore) ([]NormalizedEvent, error) {
+	token, err := loadConnectorSecret("github", s.tokenEnvVar, s.tokenFile, credentials.ConnectorCredential("github"))
 	if err != nil {
 		return nil, err
 	}
