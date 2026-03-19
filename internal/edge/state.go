@@ -9,15 +9,33 @@ import (
 )
 
 type State struct {
-	AgentID            string            `json:"agent_id"`
-	OrgID              string            `json:"org_id"`
-	PublicKey          string            `json:"public_key"`
-	PrivateKey         string            `json:"private_key"`
-	AccessToken        string            `json:"access_token"`
-	TokenExpiresAt     time.Time         `json:"token_expires_at"`
-	PublishedArtifacts map[string]string `json:"published_artifacts,omitempty"`
-	PublishedFixtures  map[string]string `json:"published_fixtures,omitempty"`
-	ConnectorCursors   map[string]string `json:"connector_cursors,omitempty"`
+	AgentID               string                          `json:"agent_id"`
+	OrgID                 string                          `json:"org_id"`
+	PublicKey             string                          `json:"public_key"`
+	PrivateKey            string                          `json:"private_key"`
+	AccessToken           string                          `json:"access_token"`
+	TokenExpiresAt        time.Time                       `json:"token_expires_at"`
+	PublishedArtifacts    map[string]string               `json:"published_artifacts,omitempty"`
+	PublishedFixtures     map[string]string               `json:"published_fixtures,omitempty"`
+	ConnectorCursors      map[string]string               `json:"connector_cursors,omitempty"`
+	ConnectorCredentials  map[string]ConnectorCredential  `json:"connector_credentials,omitempty"`
+	PendingConnectorAuths map[string]PendingConnectorAuth `json:"pending_connector_auths,omitempty"`
+}
+
+type ConnectorCredential struct {
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	TokenType    string    `json:"token_type,omitempty"`
+	Scope        string    `json:"scope,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	ObtainedAt   time.Time `json:"obtained_at"`
+}
+
+type PendingConnectorAuth struct {
+	State        string    `json:"state"`
+	CodeVerifier string    `json:"code_verifier"`
+	RedirectURL  string    `json:"redirect_url"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 func LoadState(path string) (State, error) {
@@ -69,6 +87,12 @@ func (s *State) normalizePublishedArtifacts() {
 	if s.ConnectorCursors == nil {
 		s.ConnectorCursors = map[string]string{}
 	}
+	if s.ConnectorCredentials == nil {
+		s.ConnectorCredentials = map[string]ConnectorCredential{}
+	}
+	if s.PendingConnectorAuths == nil {
+		s.PendingConnectorAuths = map[string]PendingConnectorAuth{}
+	}
 }
 
 func (s State) CursorTime(key string) time.Time {
@@ -93,4 +117,11 @@ func (s *State) SetCursorTime(key string, value time.Time) {
 		return
 	}
 	s.ConnectorCursors[key] = value.UTC().Format(time.RFC3339Nano)
+}
+
+func (s State) ConnectorCredential(connectorType string) ConnectorCredential {
+	if s.ConnectorCredentials == nil {
+		return ConnectorCredential{}
+	}
+	return s.ConnectorCredentials[connectorType]
 }

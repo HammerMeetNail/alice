@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 type gcalLiveSource struct {
 	baseURL     string
 	tokenEnvVar string
+	tokenFile   string
 	calendars   []GCalCalendarConfig
 	httpClient  *http.Client
 }
@@ -48,6 +48,7 @@ func newGCalLiveSource(cfg Config) EventSource {
 	return &gcalLiveSource{
 		baseURL:     cfg.GCalAPIBaseURL(),
 		tokenEnvVar: cfg.GCalTokenEnvVar(),
+		tokenFile:   cfg.GCalTokenFile(),
 		calendars:   append([]GCalCalendarConfig(nil), cfg.Connectors.GCal.Calendars...),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -60,9 +61,9 @@ func (s *gcalLiveSource) Name() string {
 }
 
 func (s *gcalLiveSource) Poll(ctx context.Context, state State) ([]NormalizedEvent, error) {
-	token := strings.TrimSpace(os.Getenv(s.tokenEnvVar))
-	if token == "" {
-		return nil, fmt.Errorf("gcal connector requires %s", s.tokenEnvVar)
+	token, err := loadConnectorSecret("gcal", s.tokenEnvVar, s.tokenFile, state.ConnectorCredential("gcal"))
+	if err != nil {
+		return nil, err
 	}
 
 	events := make([]NormalizedEvent, 0)

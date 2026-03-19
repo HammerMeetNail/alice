@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,18 +65,18 @@ func (s fixtureEventSource) Poll(ctx context.Context, state State) ([]Normalized
 
 func loadConnectorArtifacts(ctx context.Context, cfg Config, state State) ([]core.Artifact, map[string]time.Time, error) {
 	sources := configuredEventSources(cfg)
-	artifacts := make([]core.Artifact, 0)
+	events := make([]NormalizedEvent, 0)
 	cursorUpdates := make(map[string]time.Time)
 	for _, source := range sources {
-		events, err := source.Poll(ctx, state)
+		sourceEvents, err := source.Poll(ctx, state)
 		if err != nil {
 			return nil, nil, fmt.Errorf("poll %s: %w", source.Name(), err)
 		}
-		freshEvents, sourceUpdates := filterEventsSinceCursors(state, events)
+		freshEvents, sourceUpdates := filterEventsSinceCursors(state, sourceEvents)
 		mergeCursorUpdates(cursorUpdates, sourceUpdates)
-		artifacts = append(artifacts, deriveArtifacts(freshEvents)...)
+		events = append(events, freshEvents...)
 	}
-	return artifacts, cursorUpdates, nil
+	return deriveArtifacts(events), cursorUpdates, nil
 }
 
 func configuredEventSources(cfg Config) []EventSource {
@@ -239,7 +240,14 @@ func deriveArtifacts(events []NormalizedEvent) []core.Artifact {
 			artifacts = append(artifacts, deriveGCalArtifact(event))
 		}
 	}
+	artifacts = append(artifacts, deriveAggregateArtifacts(events)...)
 	return artifacts
+}
+
+type projectEventGroup struct {
+	GitHub []NormalizedEvent
+	Jira   []NormalizedEvent
+	GCal   []NormalizedEvent
 }
 
 func deriveGitHubArtifact(event NormalizedEvent) core.Artifact {
@@ -334,6 +342,222 @@ func deriveGCalArtifact(event NormalizedEvent) core.Artifact {
 	}
 }
 
+func deriveAggregateArtifacts(events []NormalizedEvent) []core.Artifact {
+	groups := groupEventsByProject(events)
+	if len(groups) == 0 {
+		return nil
+	}
+
+	projectRefs := make([]string, 0, len(groups))
+	for projectRef := range groups {
+		projectRefs = append(projectRefs, projectRef)
+	}
+	sort.Strings(projectRefs)
+
+	artifacts := make([]core.Artifact, 0)
+	for _, projectRef := range projectRefs {
+		group := groups[projectRef]
+		if len(group.GitHub) > 0 && len(group.Jira) > 0 {
+			artifacts = append(artifacts, deriveProjectStatusDelta(projectRef, group))
+		}
+		if hasProjectBlocker(group) {
+			artifacts = append(artifacts, deriveProjectBlocker(projectRef, group))
+		}
+		if len(group.GCal) > 0 && (len(group.GitHub) > 0 || len(group.Jira) > 0) {
+			artifacts = append(artifacts, deriveProjectCommitment(projectRef, group))
+		}
+	}
+	return artifacts
+}
+
+func groupEventsByProject(events []NormalizedEvent) map[string]projectEventGroup {
+	groups := make(map[string]projectEventGroup)
+	for _, event := range events {
+		refs := dedupeStrings(event.ProjectRefs)
+		for _, projectRef := range refs {
+			if strings.TrimSpace(projectRef) == "" {
+				continue
+			}
+			group := groups[projectRef]
+			switch event.SourceSystem {
+			case "github":
+				group.GitHub = append(group.GitHub, event)
+			case "jira":
+				group.Jira = append(group.Jira, event)
+			case "gcal":
+				group.GCal = append(group.GCal, event)
+			}
+			groups[projectRef] = group
+		}
+	}
+	return groups
+}
+
+func deriveProjectStatusDelta(projectRef string, group projectEventGroup) core.Artifact {
+	gitHubEvent := latestEvent(group.GitHub)
+	jiraEvent := latestEvent(group.Jira)
+
+	issueKey := eventStringAttribute(jiraEvent, "issue_key", jiraEvent.SourceID)
+	issueStatus := normalizeLabel(eventStringAttribute(jiraEvent, "status", "in_progress"), "in_progress")
+	repository := eventStringAttribute(gitHubEvent, "repository", "unknown")
+	pullRequestNumber := eventIntAttribute(gitHubEvent, "number", 0)
+	reviewStatus := normalizeLabel(eventStringAttribute(gitHubEvent, "review_status", "in_progress"), "in_progress")
+
+	content := fmt.Sprintf(
+		"Project activity indicates %s is in %s while %s PR #%d remains active with review status %s.",
+		issueKey,
+		issueStatus,
+		repository,
+		pullRequestNumber,
+		reviewStatus,
+	)
+
+	return core.Artifact{
+		Type:    core.ArtifactTypeStatusDelta,
+		Title:   fmt.Sprintf("Cross-system update for %s", projectRef),
+		Content: content,
+		StructuredPayload: map[string]any{
+			"project_refs":           []string{projectRef},
+			"source_systems":         []string{"github", "jira"},
+			"issue_key":              issueKey,
+			"repository":             repository,
+			"pull_request_number":    pullRequestNumber,
+			"review_status":          reviewStatus,
+			"aggregated_event_count": len(group.GitHub) + len(group.Jira),
+		},
+		SourceRefs:     sourceReferencesForEvents(append(append([]NormalizedEvent{}, group.GitHub...), group.Jira...)),
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Sensitivity:    maxSensitivityForEvents(group.GitHub, group.Jira),
+		Confidence:     0.83,
+	}
+}
+
+func deriveProjectBlocker(projectRef string, group projectEventGroup) core.Artifact {
+	repository := eventStringAttribute(latestEvent(group.GitHub), "repository", "unknown")
+	pullRequestNumber := eventIntAttribute(latestEvent(group.GitHub), "number", 0)
+	issueKey := eventStringAttribute(latestEvent(group.Jira), "issue_key", "")
+	content := fmt.Sprintf(
+		"Project activity indicates a potential blocker on %s: review changes or blocked Jira status need follow-up before work can move forward.",
+		projectRef,
+	)
+
+	return core.Artifact{
+		Type:    core.ArtifactTypeBlocker,
+		Title:   fmt.Sprintf("Potential blocker on %s", projectRef),
+		Content: content,
+		StructuredPayload: map[string]any{
+			"project_refs":        []string{projectRef},
+			"source_systems":      []string{"github", "jira"},
+			"issue_key":           issueKey,
+			"repository":          repository,
+			"pull_request_number": pullRequestNumber,
+		},
+		SourceRefs:     sourceReferencesForEvents(append(append([]NormalizedEvent{}, group.GitHub...), group.Jira...)),
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Sensitivity:    maxSensitivityForEvents(group.GitHub, group.Jira),
+		Confidence:     0.72,
+	}
+}
+
+func deriveProjectCommitment(projectRef string, group projectEventGroup) core.Artifact {
+	calendarEvent := latestEvent(group.GCal)
+	category := normalizeLabel(eventStringAttribute(calendarEvent, "category", "work"), "work")
+	startAt := eventTimeAttribute(calendarEvent, "start_at", calendarEvent.ObservedAt)
+
+	content := fmt.Sprintf(
+		"Calendar activity indicates planned %s time for %s while related work signals remain active, suggesting near-term follow-up on this project.",
+		category,
+		projectRef,
+	)
+
+	return core.Artifact{
+		Type:    core.ArtifactTypeCommitment,
+		Title:   fmt.Sprintf("Planned follow-up for %s", projectRef),
+		Content: content,
+		StructuredPayload: map[string]any{
+			"project_refs":           []string{projectRef},
+			"source_systems":         []string{"gcal", "github", "jira"},
+			"category":               category,
+			"start_at":               startAt,
+			"aggregated_event_count": len(group.GCal) + len(group.GitHub) + len(group.Jira),
+		},
+		SourceRefs:     sourceReferencesForEvents(append(append(append([]NormalizedEvent{}, group.GCal...), group.GitHub...), group.Jira...)),
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Sensitivity:    maxSensitivityForEvents(group.GCal, group.GitHub, group.Jira),
+		Confidence:     0.68,
+	}
+}
+
+func hasProjectBlocker(group projectEventGroup) bool {
+	if len(group.GitHub) == 0 || len(group.Jira) == 0 {
+		return false
+	}
+	for _, event := range group.Jira {
+		status := normalizeLabel(eventStringAttribute(event, "status", ""), "")
+		if strings.Contains(status, "block") {
+			return true
+		}
+	}
+	for _, event := range group.GitHub {
+		reviewStatus := normalizeLabel(eventStringAttribute(event, "review_status", ""), "")
+		if reviewStatus == "changes_requested" {
+			return true
+		}
+	}
+	return false
+}
+
+func latestEvent(events []NormalizedEvent) NormalizedEvent {
+	var latest NormalizedEvent
+	for _, event := range events {
+		if event.ObservedAt.After(latest.ObservedAt) {
+			latest = event
+		}
+	}
+	return latest
+}
+
+func sourceReferencesForEvents(eventGroups ...[]NormalizedEvent) []core.SourceReference {
+	seen := make(map[string]struct{})
+	refs := make([]core.SourceReference, 0)
+	for _, events := range eventGroups {
+		for _, event := range events {
+			key := event.SourceSystem + "|" + event.SourceType + "|" + event.SourceID
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			refs = append(refs, sourceReferenceForEvent(event))
+		}
+	}
+	return refs
+}
+
+func maxSensitivityForEvents(eventGroups ...[]NormalizedEvent) core.Sensitivity {
+	maxValue := core.SensitivityLow
+	for _, events := range eventGroups {
+		for _, event := range events {
+			if sensitivityRank(event.Sensitivity) > sensitivityRank(maxValue) {
+				maxValue = event.Sensitivity
+			}
+		}
+	}
+	return maxValue
+}
+
+func sensitivityRank(value core.Sensitivity) int {
+	switch value {
+	case core.SensitivityRestricted:
+		return 4
+	case core.SensitivityHigh:
+		return 3
+	case core.SensitivityMedium:
+		return 2
+	default:
+		return 1
+	}
+}
+
 func sourceReferenceForEvent(event NormalizedEvent) core.SourceReference {
 	return core.SourceReference{
 		SourceSystem: event.SourceSystem,
@@ -369,6 +593,23 @@ func mergeCursorUpdates(target map[string]time.Time, updates map[string]time.Tim
 			target[key] = value
 		}
 	}
+}
+
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func eventStringAttribute(event NormalizedEvent, key, fallback string) string {

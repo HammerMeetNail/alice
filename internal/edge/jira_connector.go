@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 type jiraLiveSource struct {
 	baseURL        string
 	tokenEnvVar    string
+	tokenFile      string
 	actorAccountID string
 	actorEmail     string
 	projects       []JiraProjectConfig
@@ -53,6 +53,7 @@ func newJiraLiveSource(cfg Config) EventSource {
 	return &jiraLiveSource{
 		baseURL:        cfg.JiraAPIBaseURL(),
 		tokenEnvVar:    cfg.JiraTokenEnvVar(),
+		tokenFile:      cfg.JiraTokenFile(),
 		actorAccountID: strings.TrimSpace(cfg.Connectors.Jira.ActorAccountID),
 		actorEmail:     strings.TrimSpace(cfg.Connectors.Jira.ActorEmail),
 		projects:       append([]JiraProjectConfig(nil), cfg.Connectors.Jira.Projects...),
@@ -67,9 +68,9 @@ func (s *jiraLiveSource) Name() string {
 }
 
 func (s *jiraLiveSource) Poll(ctx context.Context, state State) ([]NormalizedEvent, error) {
-	token := strings.TrimSpace(os.Getenv(s.tokenEnvVar))
-	if token == "" {
-		return nil, fmt.Errorf("jira connector requires %s", s.tokenEnvVar)
+	token, err := loadConnectorSecret("jira", s.tokenEnvVar, s.tokenFile, state.ConnectorCredential("jira"))
+	if err != nil {
+		return nil, err
 	}
 
 	events := make([]NormalizedEvent, 0)

@@ -97,6 +97,11 @@ The following assets must be protected.
 - public/private key material
 - short-lived access tokens
 - OAuth connector tokens
+- OAuth callback state and PKCE verifier material
+
+Current implementation note:
+- the local edge runtime now persists bootstrapped connector tokens in its state file with `0600` filesystem permissions
+- encrypted-at-rest local connector credential storage remains a follow-on requirement
 
 ## 4.2 Private user work context
 
@@ -787,7 +792,7 @@ The test suite should include at minimum:
 - [ ] scoped permission grants
 - [x] signed or strongly authenticated agent registration
 - [x] short-lived server-issued access tokens
-- [ ] connector OAuth state validation
+- [x] connector OAuth state validation for the current loopback bootstrap path
 - [ ] webhook signature validation where supported
 - [ ] provenance-tagged content fragments
 - [ ] content/policy separation in model input construction

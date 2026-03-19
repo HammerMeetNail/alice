@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 type gitHubLiveSource struct {
 	baseURL      string
 	tokenEnvVar  string
+	tokenFile    string
 	actorLogin   string
 	repositories []GitHubRepositoryConfig
 	httpClient   *http.Client
@@ -41,6 +41,7 @@ func newGitHubLiveSource(cfg Config) EventSource {
 	return &gitHubLiveSource{
 		baseURL:      cfg.GitHubAPIBaseURL(),
 		tokenEnvVar:  cfg.GitHubTokenEnvVar(),
+		tokenFile:    cfg.GitHubTokenFile(),
 		actorLogin:   resolveGitHubActorLogin(cfg.Agent.OwnerEmail, cfg.Connectors.GitHub.ActorLogin),
 		repositories: append([]GitHubRepositoryConfig(nil), cfg.Connectors.GitHub.Repositories...),
 		httpClient: &http.Client{
@@ -53,10 +54,10 @@ func (s *gitHubLiveSource) Name() string {
 	return "github_live"
 }
 
-func (s *gitHubLiveSource) Poll(ctx context.Context, _ State) ([]NormalizedEvent, error) {
-	token := strings.TrimSpace(os.Getenv(s.tokenEnvVar))
-	if token == "" {
-		return nil, fmt.Errorf("github connector requires %s", s.tokenEnvVar)
+func (s *gitHubLiveSource) Poll(ctx context.Context, state State) ([]NormalizedEvent, error) {
+	token, err := loadConnectorSecret("github", s.tokenEnvVar, s.tokenFile, state.ConnectorCredential("github"))
+	if err != nil {
+		return nil, err
 	}
 
 	events := make([]NormalizedEvent, 0)

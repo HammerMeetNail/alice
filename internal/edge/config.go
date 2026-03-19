@@ -3,6 +3,8 @@ package edge
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,11 +44,26 @@ type ConnectorsConfig struct {
 	GCal   GCalConnectorConfig   `json:"gcal"`
 }
 
+type ConnectorOAuthConfig struct {
+	Enabled            bool              `json:"enabled"`
+	ClientID           string            `json:"client_id"`
+	ClientSecretEnvVar string            `json:"client_secret_env_var"`
+	ClientSecretFile   string            `json:"client_secret_file"`
+	AuthorizationURL   string            `json:"authorization_url"`
+	TokenURL           string            `json:"token_url"`
+	CallbackURL        string            `json:"callback_url"`
+	Scopes             []string          `json:"scopes"`
+	ExtraAuthParams    map[string]string `json:"extra_auth_params"`
+	ExtraTokenParams   map[string]string `json:"extra_token_params"`
+}
+
 type GitHubConnectorConfig struct {
 	Enabled      bool                     `json:"enabled"`
 	FixtureFile  string                   `json:"fixture_file"`
 	APIBaseURL   string                   `json:"api_base_url"`
 	TokenEnvVar  string                   `json:"token_env_var"`
+	TokenFile    string                   `json:"token_file"`
+	OAuth        ConnectorOAuthConfig     `json:"oauth"`
 	ActorLogin   string                   `json:"actor_login"`
 	Repositories []GitHubRepositoryConfig `json:"repositories"`
 }
@@ -57,13 +74,15 @@ type GitHubRepositoryConfig struct {
 }
 
 type JiraConnectorConfig struct {
-	Enabled        bool                `json:"enabled"`
-	FixtureFile    string              `json:"fixture_file"`
-	APIBaseURL     string              `json:"api_base_url"`
-	TokenEnvVar    string              `json:"token_env_var"`
-	ActorAccountID string              `json:"actor_account_id"`
-	ActorEmail     string              `json:"actor_email"`
-	Projects       []JiraProjectConfig `json:"projects"`
+	Enabled        bool                 `json:"enabled"`
+	FixtureFile    string               `json:"fixture_file"`
+	APIBaseURL     string               `json:"api_base_url"`
+	TokenEnvVar    string               `json:"token_env_var"`
+	TokenFile      string               `json:"token_file"`
+	OAuth          ConnectorOAuthConfig `json:"oauth"`
+	ActorAccountID string               `json:"actor_account_id"`
+	ActorEmail     string               `json:"actor_email"`
+	Projects       []JiraProjectConfig  `json:"projects"`
 }
 
 type JiraProjectConfig struct {
@@ -76,6 +95,8 @@ type GCalConnectorConfig struct {
 	FixtureFile string               `json:"fixture_file"`
 	APIBaseURL  string               `json:"api_base_url"`
 	TokenEnvVar string               `json:"token_env_var"`
+	TokenFile   string               `json:"token_file"`
+	OAuth       ConnectorOAuthConfig `json:"oauth"`
 	Calendars   []GCalCalendarConfig `json:"calendars"`
 }
 
@@ -122,6 +143,17 @@ func (c *Config) applyDefaults() {
 			c.Connectors.GitHub.TokenEnvVar = "ALICE_GITHUB_TOKEN"
 		}
 	}
+	if c.GitHubOAuthEnabled() {
+		c.applyOAuthDefaults(
+			&c.Connectors.GitHub.OAuth,
+			"github",
+			"https://github.com/login/oauth/authorize",
+			"https://github.com/login/oauth/access_token",
+			"ALICE_GITHUB_CLIENT_SECRET",
+			[]string{"repo", "read:user"},
+			nil,
+		)
+	}
 	if c.JiraLiveEnabled() {
 		if strings.TrimSpace(c.Connectors.Jira.TokenEnvVar) == "" {
 			c.Connectors.Jira.TokenEnvVar = "ALICE_JIRA_TOKEN"
@@ -130,6 +162,20 @@ func (c *Config) applyDefaults() {
 			c.Connectors.Jira.ActorEmail = c.Agent.OwnerEmail
 		}
 	}
+	if c.JiraOAuthEnabled() {
+		c.applyOAuthDefaults(
+			&c.Connectors.Jira.OAuth,
+			"jira",
+			"https://auth.atlassian.com/authorize",
+			"https://auth.atlassian.com/oauth/token",
+			"ALICE_JIRA_CLIENT_SECRET",
+			[]string{"read:jira-user", "read:jira-work", "offline_access"},
+			map[string]string{
+				"audience": "api.atlassian.com",
+				"prompt":   "consent",
+			},
+		)
+	}
 	if c.GCalLiveEnabled() {
 		if strings.TrimSpace(c.Connectors.GCal.APIBaseURL) == "" {
 			c.Connectors.GCal.APIBaseURL = "https://www.googleapis.com/calendar/v3"
@@ -137,6 +183,21 @@ func (c *Config) applyDefaults() {
 		if strings.TrimSpace(c.Connectors.GCal.TokenEnvVar) == "" {
 			c.Connectors.GCal.TokenEnvVar = "ALICE_GCAL_TOKEN"
 		}
+	}
+	if c.GCalOAuthEnabled() {
+		c.applyOAuthDefaults(
+			&c.Connectors.GCal.OAuth,
+			"gcal",
+			"https://accounts.google.com/o/oauth2/v2/auth",
+			"https://oauth2.googleapis.com/token",
+			"ALICE_GCAL_CLIENT_SECRET",
+			[]string{"https://www.googleapis.com/auth/calendar.readonly"},
+			map[string]string{
+				"access_type":            "offline",
+				"include_granted_scopes": "true",
+				"prompt":                 "consent",
+			},
+		)
 	}
 }
 
@@ -181,6 +242,15 @@ func (c Config) Validate() error {
 		}
 		if c.GCalLiveEnabled() && len(c.Connectors.GCal.Calendars) == 0 {
 			return fmt.Errorf("connectors.gcal.calendars is required when gcal live polling is enabled")
+		}
+		if err := validateOAuthConfig("connectors.github.oauth", c.Connectors.GitHub.OAuth, c.GitHubOAuthEnabled()); err != nil {
+			return err
+		}
+		if err := validateOAuthConfig("connectors.jira.oauth", c.Connectors.Jira.OAuth, c.JiraOAuthEnabled()); err != nil {
+			return err
+		}
+		if err := validateOAuthConfig("connectors.gcal.oauth", c.Connectors.GCal.OAuth, c.GCalOAuthEnabled()); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -229,6 +299,18 @@ func (c Config) GitHubTokenEnvVar() string {
 	return strings.TrimSpace(c.Connectors.GitHub.TokenEnvVar)
 }
 
+func (c Config) GitHubTokenFile() string {
+	return c.resolveConnectorPath(c.Connectors.GitHub.TokenFile)
+}
+
+func (c Config) GitHubOAuthEnabled() bool {
+	return oauthConfigEnabled(c.Connectors.GitHub.OAuth)
+}
+
+func (c Config) GitHubOAuthConfig() ConnectorOAuthConfig {
+	return c.resolveOAuthConfig(c.Connectors.GitHub.OAuth)
+}
+
 func (c Config) JiraAPIBaseURL() string {
 	return strings.TrimSpace(c.Connectors.Jira.APIBaseURL)
 }
@@ -237,12 +319,36 @@ func (c Config) JiraTokenEnvVar() string {
 	return strings.TrimSpace(c.Connectors.Jira.TokenEnvVar)
 }
 
+func (c Config) JiraTokenFile() string {
+	return c.resolveConnectorPath(c.Connectors.Jira.TokenFile)
+}
+
+func (c Config) JiraOAuthEnabled() bool {
+	return oauthConfigEnabled(c.Connectors.Jira.OAuth)
+}
+
+func (c Config) JiraOAuthConfig() ConnectorOAuthConfig {
+	return c.resolveOAuthConfig(c.Connectors.Jira.OAuth)
+}
+
 func (c Config) GCalAPIBaseURL() string {
 	return strings.TrimSpace(c.Connectors.GCal.APIBaseURL)
 }
 
 func (c Config) GCalTokenEnvVar() string {
 	return strings.TrimSpace(c.Connectors.GCal.TokenEnvVar)
+}
+
+func (c Config) GCalTokenFile() string {
+	return c.resolveConnectorPath(c.Connectors.GCal.TokenFile)
+}
+
+func (c Config) GCalOAuthEnabled() bool {
+	return oauthConfigEnabled(c.Connectors.GCal.OAuth)
+}
+
+func (c Config) GCalOAuthConfig() ConnectorOAuthConfig {
+	return c.resolveOAuthConfig(c.Connectors.GCal.OAuth)
 }
 
 func (c Config) resolvePath(value string) string {
@@ -257,4 +363,92 @@ func (c Config) resolveConnectorPath(value string) string {
 		return ""
 	}
 	return c.resolvePath(value)
+}
+
+func (c *Config) applyOAuthDefaults(target *ConnectorOAuthConfig, connectorType, defaultAuthURL, defaultTokenURL, defaultSecretEnvVar string, defaultScopes []string, defaultAuthParams map[string]string) {
+	if strings.TrimSpace(target.AuthorizationURL) == "" {
+		target.AuthorizationURL = defaultAuthURL
+	}
+	if strings.TrimSpace(target.TokenURL) == "" {
+		target.TokenURL = defaultTokenURL
+	}
+	if strings.TrimSpace(target.CallbackURL) == "" {
+		target.CallbackURL = fmt.Sprintf("http://127.0.0.1:8787/oauth/%s/callback", connectorType)
+	}
+	if strings.TrimSpace(target.ClientSecretEnvVar) == "" {
+		target.ClientSecretEnvVar = defaultSecretEnvVar
+	}
+	if len(target.Scopes) == 0 {
+		target.Scopes = append([]string(nil), defaultScopes...)
+	}
+	if len(defaultAuthParams) > 0 {
+		if target.ExtraAuthParams == nil {
+			target.ExtraAuthParams = map[string]string{}
+		}
+		for key, value := range defaultAuthParams {
+			if strings.TrimSpace(target.ExtraAuthParams[key]) == "" {
+				target.ExtraAuthParams[key] = value
+			}
+		}
+	}
+}
+
+func (c Config) resolveOAuthConfig(cfg ConnectorOAuthConfig) ConnectorOAuthConfig {
+	cfg.ClientSecretFile = c.resolveConnectorPath(cfg.ClientSecretFile)
+	return cfg
+}
+
+func oauthConfigEnabled(cfg ConnectorOAuthConfig) bool {
+	return cfg.Enabled ||
+		strings.TrimSpace(cfg.ClientID) != "" ||
+		strings.TrimSpace(cfg.AuthorizationURL) != "" ||
+		strings.TrimSpace(cfg.TokenURL) != ""
+}
+
+func validateOAuthConfig(label string, cfg ConnectorOAuthConfig, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.ClientID) == "" {
+		return fmt.Errorf("%s.client_id is required when connector oauth is enabled", label)
+	}
+	if err := validateURLField(label+".authorization_url", cfg.AuthorizationURL, false); err != nil {
+		return err
+	}
+	if err := validateURLField(label+".token_url", cfg.TokenURL, false); err != nil {
+		return err
+	}
+	if err := validateURLField(label+".callback_url", cfg.CallbackURL, true); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateURLField(label, value string, requireLoopback bool) error {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", label, err)
+	}
+	if requireLoopback && parsed.Scheme != "http" {
+		return fmt.Errorf("%s must use http for local loopback callbacks", label)
+	}
+	if !requireLoopback && parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("%s must use http or https", label)
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return fmt.Errorf("%s host is required", label)
+	}
+	if requireLoopback && !isLoopbackHost(parsed.Hostname()) {
+		return fmt.Errorf("%s must target localhost or a loopback address", label)
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

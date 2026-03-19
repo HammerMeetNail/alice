@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -735,6 +736,445 @@ func TestRuntimeRunOncePersistsJiraCursorState(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunOnceLoadsGitHubTokenFromFile(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	pullUpdatedAt := time.Date(2026, 3, 19, 19, 15, 0, 0, time.UTC)
+	githubAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-from-file" {
+			t.Fatalf("unexpected github auth header: %q", got)
+		}
+		payload := []map[string]any{
+			{
+				"number":     128,
+				"state":      "open",
+				"draft":      false,
+				"title":      "Retry payments handler",
+				"updated_at": pullUpdatedAt.Format(time.RFC3339),
+				"user": map[string]any{
+					"login": "sam",
+				},
+				"requested_reviewers": []map[string]any{},
+				"assignees":           []map[string]any{},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode github payload: %v", err)
+		}
+	}))
+	defer githubAPI.Close()
+
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "github-token.txt"), []byte("token-from-file\n"), 0o600); err != nil {
+		t.Fatalf("write github token file: %v", err)
+	}
+
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				Enabled:    true,
+				APIBaseURL: githubAPI.URL,
+				TokenFile:  "github-token.txt",
+				ActorLogin: "sam",
+				Repositories: []GitHubRepositoryConfig{
+					{
+						Name:        "acme/payments-api",
+						ProjectRefs: []string{"payments-api"},
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load github token-file config: %v", err)
+	}
+
+	report, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with github token file: %v", err)
+	}
+	if len(report.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one github artifact with token file auth, got %d", len(report.PublishedArtifacts))
+	}
+}
+
+func TestRuntimeRunOncePublishesAggregateProjectArtifacts(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	tempDir := t.TempDir()
+	writeGitHubFixtureFile(t, filepath.Join(tempDir, "github-fixtures.json"))
+	writeJiraFixtureFile(t, filepath.Join(tempDir, "jira-fixtures.json"))
+	writeGCalFixtureFile(t, filepath.Join(tempDir, "gcal-fixtures.json"))
+
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				FixtureFile: "github-fixtures.json",
+			},
+			Jira: JiraConnectorConfig{
+				FixtureFile: "jira-fixtures.json",
+			},
+			GCal: GCalConnectorConfig{
+				FixtureFile: "gcal-fixtures.json",
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load aggregate fixture config: %v", err)
+	}
+
+	report, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with aggregate fixtures: %v", err)
+	}
+	if len(report.PublishedArtifacts) < 4 {
+		t.Fatalf("expected aggregate runtime to publish at least four artifacts, got %d", len(report.PublishedArtifacts))
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after aggregate publish: %v", err)
+	}
+	aliceToken := registerAgent(t, server.URL, "example-corp", "alice@example.com", "alice-agent")
+	grantPermission(t, server.URL, state.AccessToken, map[string]any{
+		"grantee_user_email":     "alice@example.com",
+		"scope_type":             "project",
+		"scope_ref":              "payments-api",
+		"allowed_artifact_types": []string{"status_delta", "blocker", "commitment"},
+		"max_sensitivity":        "medium",
+		"allowed_purposes":       []string{"status_check"},
+	})
+
+	queryID := queryPeerStatus(t, server.URL, aliceToken, map[string]any{
+		"to_user_email":   "sam@example.com",
+		"purpose":         "status_check",
+		"question":        "What changed on payments-api today?",
+		"requested_types": []string{"status_delta", "blocker", "commitment"},
+		"project_scope":   []string{"payments-api"},
+		"time_window": map[string]any{
+			"start": time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
+			"end":   time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	var result map[string]any
+	doJSON(t, server.URL, http.MethodGet, "/v1/queries/"+queryID, aliceToken, nil, &result)
+	response := result["response"].(map[string]any)
+	artifacts := response["artifacts"].([]any)
+	if len(artifacts) < 4 {
+		t.Fatalf("expected at least four derived project artifacts, got %d", len(artifacts))
+	}
+
+	foundTypes := map[string]bool{}
+	for _, artifact := range artifacts {
+		payload := artifact.(map[string]any)
+		foundTypes[payload["type"].(string)] = true
+	}
+	if !foundTypes["status_delta"] {
+		t.Fatalf("expected aggregate query result to include status_delta")
+	}
+	if !foundTypes["blocker"] {
+		t.Fatalf("expected aggregate query result to include blocker")
+	}
+	if !foundTypes["commitment"] {
+		t.Fatalf("expected aggregate query result to include commitment")
+	}
+}
+
+func TestRuntimeBootstrapGitHubConnectorPersistsCredentialAndUsesIt(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	pullUpdatedAt := time.Date(2026, 3, 19, 20, 30, 0, 0, time.UTC)
+	oauthProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/authorize":
+			if got := r.URL.Query().Get("client_id"); got != "github-client" {
+				t.Fatalf("unexpected oauth client_id: %q", got)
+			}
+			if got := r.URL.Query().Get("response_type"); got != "code" {
+				t.Fatalf("unexpected oauth response_type: %q", got)
+			}
+			if got := r.URL.Query().Get("code_challenge_method"); got != "S256" {
+				t.Fatalf("unexpected oauth code challenge method: %q", got)
+			}
+			if got := r.URL.Query().Get("scope"); got != "repo read:user" {
+				t.Fatalf("unexpected oauth scope: %q", got)
+			}
+			state := r.URL.Query().Get("state")
+			if state == "" {
+				t.Fatalf("expected oauth state")
+			}
+			redirectURL := r.URL.Query().Get("redirect_uri")
+			if !strings.Contains(redirectURL, "/oauth/github/callback") {
+				t.Fatalf("unexpected redirect uri: %q", redirectURL)
+			}
+			http.Redirect(w, r, redirectURL+"?code=test-oauth-code&state="+state, http.StatusFound)
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse oauth token form: %v", err)
+			}
+			if got := r.Form.Get("grant_type"); got != "authorization_code" {
+				t.Fatalf("unexpected oauth grant type: %q", got)
+			}
+			if got := r.Form.Get("code"); got != "test-oauth-code" {
+				t.Fatalf("unexpected oauth code: %q", got)
+			}
+			if got := r.Form.Get("client_id"); got != "github-client" {
+				t.Fatalf("unexpected oauth token client_id: %q", got)
+			}
+			if got := r.Form.Get("client_secret"); got != "github-secret" {
+				t.Fatalf("unexpected oauth client secret: %q", got)
+			}
+			if got := r.Form.Get("code_verifier"); got == "" {
+				t.Fatalf("expected oauth code_verifier")
+			}
+			payload := map[string]any{
+				"access_token": "bootstrapped-github-token",
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Fatalf("encode oauth token response: %v", err)
+			}
+		case "/repos/acme/payments-api/pulls":
+			if got := r.Header.Get("Authorization"); got != "Bearer bootstrapped-github-token" {
+				t.Fatalf("unexpected github auth header after bootstrap: %q", got)
+			}
+			payload := []map[string]any{
+				{
+					"number":     128,
+					"state":      "open",
+					"draft":      false,
+					"title":      "Retry payments handler",
+					"updated_at": pullUpdatedAt.Format(time.RFC3339),
+					"user": map[string]any{
+						"login": "sam",
+					},
+					"requested_reviewers": []map[string]any{},
+					"assignees":           []map[string]any{},
+				},
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Fatalf("encode github payload: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected oauth/github path: %s", r.URL.Path)
+		}
+	}))
+	defer oauthProvider.Close()
+
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "github-client-secret.txt"), []byte("github-secret\n"), 0o600); err != nil {
+		t.Fatalf("write github client secret file: %v", err)
+	}
+
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				Enabled:    true,
+				APIBaseURL: oauthProvider.URL,
+				ActorLogin: "sam",
+				Repositories: []GitHubRepositoryConfig{
+					{
+						Name:        "acme/payments-api",
+						ProjectRefs: []string{"payments-api"},
+					},
+				},
+				OAuth: ConnectorOAuthConfig{
+					Enabled:          true,
+					ClientID:         "github-client",
+					ClientSecretFile: "github-client-secret.txt",
+					AuthorizationURL: oauthProvider.URL + "/authorize",
+					TokenURL:         oauthProvider.URL + "/token",
+					CallbackURL:      "http://127.0.0.1:0/oauth/github/callback",
+					Scopes:           []string{"repo", "read:user"},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load bootstrap github config: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := NewRuntime(cfg).BootstrapConnector(ctx, "github", func(prompt ConnectorBootstrapPrompt) error {
+		go func() {
+			resp, err := http.Get(prompt.AuthorizationURL)
+			if err != nil {
+				t.Errorf("perform oauth authorization request: %v", err)
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Errorf("unexpected oauth callback status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+		}()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("bootstrap github connector: %v", err)
+	}
+	if !result.StoredInState {
+		t.Fatalf("expected bootstrap result to report persisted state storage")
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after bootstrap: %v", err)
+	}
+	credential := state.ConnectorCredential("github")
+	if credential.AccessToken != "bootstrapped-github-token" {
+		t.Fatalf("expected bootstrapped github access token to be stored, got %q", credential.AccessToken)
+	}
+	if _, ok := state.PendingConnectorAuths["github"]; ok {
+		t.Fatalf("expected pending github oauth state to be cleared")
+	}
+
+	report, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with bootstrapped github token: %v", err)
+	}
+	if len(report.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one artifact after bootstrapped github polling, got %d", len(report.PublishedArtifacts))
+	}
+}
+
+func TestRuntimeBootstrapConnectorRejectsStateMismatch(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: "http://127.0.0.1:8080",
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				OAuth: ConnectorOAuthConfig{
+					Enabled:          true,
+					ClientID:         "github-client",
+					AuthorizationURL: "https://example.com/authorize",
+					TokenURL:         "https://example.com/token",
+					CallbackURL:      "http://127.0.0.1:0/oauth/github/callback",
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load github oauth mismatch config: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = NewRuntime(cfg).BootstrapConnector(ctx, "github", func(prompt ConnectorBootstrapPrompt) error {
+		go func() {
+			resp, reqErr := http.Get(prompt.CallbackURL + "?code=test-code&state=wrong-state")
+			if reqErr != nil {
+				t.Errorf("perform mismatched oauth callback request: %v", reqErr)
+				return
+			}
+			defer resp.Body.Close()
+		}()
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "state mismatch") {
+		t.Fatalf("expected oauth state mismatch error, got %v", err)
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after mismatch bootstrap: %v", err)
+	}
+	if got := state.ConnectorCredential("github").AccessToken; got != "" {
+		t.Fatalf("expected no stored github credential after state mismatch, got %q", got)
+	}
+	if _, ok := state.PendingConnectorAuths["github"]; ok {
+		t.Fatalf("expected pending github oauth state to be cleared after mismatch")
+	}
+}
+
 type edgeConfigFile struct {
 	Agent      AgentConfig      `json:"agent"`
 	Server     ServerConfig     `json:"server"`
@@ -829,6 +1269,55 @@ func writeGitHubFixtureFile(t *testing.T, path string) {
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write github fixtures: %v", err)
+	}
+}
+
+func writeJiraFixtureFile(t *testing.T, path string) {
+	t.Helper()
+
+	payload := map[string]any{
+		"issues": []map[string]any{
+			{
+				"key":          "PAY-123",
+				"issue_type":   "Story",
+				"status":       "In Review",
+				"updated_at":   time.Now().UTC().Format(time.RFC3339),
+				"project_refs": []string{"payments-api"},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal jira fixtures: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write jira fixtures: %v", err)
+	}
+}
+
+func writeGCalFixtureFile(t *testing.T, path string) {
+	t.Helper()
+
+	startAt := time.Now().UTC().Add(30 * time.Minute)
+	endAt := startAt.Add(30 * time.Minute)
+	payload := map[string]any{
+		"events": []map[string]any{
+			{
+				"event_id":       "evt-1",
+				"category":       "focus",
+				"start_at":       startAt.Format(time.RFC3339),
+				"end_at":         endAt.Format(time.RFC3339),
+				"project_refs":   []string{"payments-api"},
+				"attendee_count": 2,
+			},
+		},
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal gcal fixtures: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write gcal fixtures: %v", err)
 	}
 }
 
