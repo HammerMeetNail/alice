@@ -227,6 +227,116 @@ func TestRuntimeRunOnceDerivesArtifactsFromConnectorFixtures(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunOnceSupersedesUpdatedGitHubArtifact(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	firstObservedAt := time.Date(2026, 3, 20, 9, 0, 0, 0, time.UTC)
+	secondObservedAt := firstObservedAt.Add(2 * time.Hour)
+
+	tempDir := t.TempDir()
+	fixturePath := filepath.Join(tempDir, "github-fixtures.json")
+	writeGitHubFixtureFileWithValues(t, fixturePath, "org/payments", 128, "open", "changes_requested", firstObservedAt, []string{"payments-api"})
+
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				FixtureFile: "github-fixtures.json",
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load github supersession config: %v", err)
+	}
+
+	firstRun, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("first runtime run with github fixture: %v", err)
+	}
+	if len(firstRun.PublishedArtifacts) != 1 {
+		t.Fatalf("expected first run to publish one github artifact, got %d", len(firstRun.PublishedArtifacts))
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after first github run: %v", err)
+	}
+	aliceToken := registerAgent(t, server.URL, "example-corp", "alice@example.com", "alice-agent")
+	grantPermission(t, server.URL, state.AccessToken, map[string]any{
+		"grantee_user_email":     "alice@example.com",
+		"scope_type":             "project",
+		"scope_ref":              "payments-api",
+		"allowed_artifact_types": []string{"summary"},
+		"max_sensitivity":        "medium",
+		"allowed_purposes":       []string{"status_check"},
+	})
+
+	writeGitHubFixtureFileWithValues(t, fixturePath, "org/payments", 128, "open", "review_requested", secondObservedAt, []string{"payments-api"})
+
+	secondRun, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second runtime run with updated github fixture: %v", err)
+	}
+	if len(secondRun.PublishedArtifacts) != 1 {
+		t.Fatalf("expected second run to publish one replacement github artifact, got %d", len(secondRun.PublishedArtifacts))
+	}
+
+	updatedState, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after second github run: %v", err)
+	}
+	if got := updatedState.LatestDerivedArtifacts[gitHubArtifactDerivationKey("org/payments", 128)]; got != secondRun.PublishedArtifacts[0].ArtifactID {
+		t.Fatalf("expected latest derived github artifact id %q, got %q", secondRun.PublishedArtifacts[0].ArtifactID, got)
+	}
+
+	queryID := queryPeerStatus(t, server.URL, aliceToken, map[string]any{
+		"to_user_email":   "sam@example.com",
+		"purpose":         "status_check",
+		"question":        "What has Sam been working on today?",
+		"requested_types": []string{"summary"},
+		"project_scope":   []string{"payments-api"},
+		"time_window": map[string]any{
+			"start": firstObservedAt.Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   secondObservedAt.Add(1 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	var result map[string]any
+	doJSON(t, server.URL, http.MethodGet, "/v1/queries/"+queryID, aliceToken, nil, &result)
+	response := result["response"].(map[string]any)
+	artifacts := response["artifacts"].([]any)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected only the latest github summary after supersession, got %d", len(artifacts))
+	}
+	artifact := artifacts[0].(map[string]any)
+	if content := artifact["content"].(string); !strings.Contains(content, "review status review_requested") {
+		t.Fatalf("expected superseding github artifact content, got %q", content)
+	}
+}
+
 func TestRuntimeRunOncePollsLiveGitHub(t *testing.T) {
 	handler, closeFn := newTestHandler(t)
 	if closeFn != nil {
@@ -1615,15 +1725,21 @@ func writeFixtureFile(t *testing.T, path string) {
 func writeGitHubFixtureFile(t *testing.T, path string) {
 	t.Helper()
 
+	writeGitHubFixtureFileWithValues(t, path, "org/payments", 128, "open", "changes_requested", time.Now().UTC(), []string{"payments-api"})
+}
+
+func writeGitHubFixtureFileWithValues(t *testing.T, path, repository string, number int, state, reviewStatus string, observedAt time.Time, projectRefs []string) {
+	t.Helper()
+
 	payload := map[string]any{
 		"pull_requests": []map[string]any{
 			{
-				"repository":    "org/payments",
-				"number":        128,
-				"state":         "open",
-				"review_status": "changes_requested",
-				"updated_at":    time.Now().UTC().Format(time.RFC3339),
-				"project_refs":  []string{"payments-api"},
+				"repository":    repository,
+				"number":        number,
+				"state":         state,
+				"review_status": reviewStatus,
+				"updated_at":    observedAt.Format(time.RFC3339),
+				"project_refs":  projectRefs,
 			},
 		},
 	}

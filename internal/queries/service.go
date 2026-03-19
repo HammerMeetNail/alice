@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"alice/internal/core"
@@ -55,10 +56,14 @@ func (s *Service) Evaluate(query core.Query) (core.QueryResponse, error) {
 	if err != nil {
 		return core.QueryResponse{}, fmt.Errorf("list artifacts by owner: %w", err)
 	}
+	supersededArtifacts := supersededArtifactIDs(allArtifacts)
 	filtered := make([]core.QueryArtifact, 0)
 	policyBasis := make([]string, 0)
 
 	for _, artifact := range allArtifacts {
+		if _, ok := supersededArtifacts[artifact.ArtifactID]; ok {
+			continue
+		}
 		activityTime := artifactActivityTime(artifact)
 		if !activityTime.IsZero() && (activityTime.Before(query.TimeWindow.Start) || activityTime.After(query.TimeWindow.End)) {
 			continue
@@ -224,4 +229,19 @@ func artifactActivityTime(artifact core.Artifact) time.Time {
 		return latestObservedAt
 	}
 	return artifact.CreatedAt
+}
+
+func supersededArtifactIDs(artifacts []core.Artifact) map[string]struct{} {
+	superseded := make(map[string]struct{})
+	for _, artifact := range artifacts {
+		if artifact.SupersedesArtifactID == nil {
+			continue
+		}
+		artifactID := strings.TrimSpace(*artifact.SupersedesArtifactID)
+		if artifactID == "" {
+			continue
+		}
+		superseded[artifactID] = struct{}{}
+	}
+	return superseded
 }

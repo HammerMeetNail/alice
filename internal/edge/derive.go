@@ -268,6 +268,7 @@ func deriveGitHubArtifact(event NormalizedEvent) core.Artifact {
 		Title:   fmt.Sprintf("GitHub update in %s", repository),
 		Content: content,
 		StructuredPayload: map[string]any{
+			"derivation_key":      gitHubArtifactDerivationKey(repository, pullRequestNumber),
 			"project_refs":        append([]string(nil), event.ProjectRefs...),
 			"source_system":       event.SourceSystem,
 			"repository":          repository,
@@ -298,11 +299,12 @@ func deriveJiraArtifact(event NormalizedEvent) core.Artifact {
 		Title:   fmt.Sprintf("Jira update for %s", issueKey),
 		Content: content,
 		StructuredPayload: map[string]any{
-			"project_refs":  append([]string(nil), event.ProjectRefs...),
-			"source_system": event.SourceSystem,
-			"issue_key":     issueKey,
-			"issue_type":    issueType,
-			"status":        status,
+			"derivation_key": jiraArtifactDerivationKey(issueKey),
+			"project_refs":   append([]string(nil), event.ProjectRefs...),
+			"source_system":  event.SourceSystem,
+			"issue_key":      issueKey,
+			"issue_type":     issueType,
+			"status":         status,
 		},
 		SourceRefs:     []core.SourceReference{sourceReferenceForEvent(event)},
 		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
@@ -328,6 +330,7 @@ func deriveGCalArtifact(event NormalizedEvent) core.Artifact {
 		Title:   fmt.Sprintf("Calendar %s block", category),
 		Content: content,
 		StructuredPayload: map[string]any{
+			"derivation_key": gcalArtifactDerivationKey(event.SourceID),
 			"project_refs":   append([]string(nil), event.ProjectRefs...),
 			"source_system":  event.SourceSystem,
 			"category":       category,
@@ -417,6 +420,7 @@ func deriveProjectStatusDelta(projectRef string, group projectEventGroup) core.A
 		Title:   fmt.Sprintf("Cross-system update for %s", projectRef),
 		Content: content,
 		StructuredPayload: map[string]any{
+			"derivation_key":         projectArtifactDerivationKey(projectRef, core.ArtifactTypeStatusDelta),
 			"project_refs":           []string{projectRef},
 			"source_systems":         []string{"github", "jira"},
 			"issue_key":              issueKey,
@@ -446,6 +450,7 @@ func deriveProjectBlocker(projectRef string, group projectEventGroup) core.Artif
 		Title:   fmt.Sprintf("Potential blocker on %s", projectRef),
 		Content: content,
 		StructuredPayload: map[string]any{
+			"derivation_key":      projectArtifactDerivationKey(projectRef, core.ArtifactTypeBlocker),
 			"project_refs":        []string{projectRef},
 			"source_systems":      []string{"github", "jira"},
 			"issue_key":           issueKey,
@@ -475,6 +480,7 @@ func deriveProjectCommitment(projectRef string, group projectEventGroup) core.Ar
 		Title:   fmt.Sprintf("Planned follow-up for %s", projectRef),
 		Content: content,
 		StructuredPayload: map[string]any{
+			"derivation_key":         projectArtifactDerivationKey(projectRef, core.ArtifactTypeCommitment),
 			"project_refs":           []string{projectRef},
 			"source_systems":         []string{"gcal", "github", "jira"},
 			"category":               category,
@@ -693,4 +699,35 @@ func normalizeLabel(value, fallback string) string {
 		return fallback
 	}
 	return strings.ToLower(trimmed)
+}
+
+func artifactDerivationKey(artifact core.Artifact) string {
+	if artifact.StructuredPayload == nil {
+		return ""
+	}
+	raw, ok := artifact.StructuredPayload["derivation_key"]
+	if !ok {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func gitHubArtifactDerivationKey(repository string, pullRequestNumber int) string {
+	return fmt.Sprintf("github:pr:%s:%d", strings.TrimSpace(repository), pullRequestNumber)
+}
+
+func jiraArtifactDerivationKey(issueKey string) string {
+	return "jira:issue:" + strings.TrimSpace(issueKey)
+}
+
+func gcalArtifactDerivationKey(eventID string) string {
+	return "gcal:event:" + strings.TrimSpace(eventID)
+}
+
+func projectArtifactDerivationKey(projectRef string, artifactType core.ArtifactType) string {
+	return fmt.Sprintf("project:%s:%s", strings.TrimSpace(projectRef), artifactType)
 }

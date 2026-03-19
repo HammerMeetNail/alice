@@ -9,17 +9,18 @@ import (
 )
 
 type State struct {
-	AgentID               string                          `json:"agent_id"`
-	OrgID                 string                          `json:"org_id"`
-	PublicKey             string                          `json:"public_key"`
-	PrivateKey            string                          `json:"private_key"`
-	AccessToken           string                          `json:"access_token"`
-	TokenExpiresAt        time.Time                       `json:"token_expires_at"`
-	PublishedArtifacts    map[string]string               `json:"published_artifacts,omitempty"`
-	PublishedFixtures     map[string]string               `json:"published_fixtures,omitempty"`
-	ConnectorCursors      map[string]string               `json:"connector_cursors,omitempty"`
-	ConnectorCredentials  map[string]ConnectorCredential  `json:"connector_credentials,omitempty"`
-	PendingConnectorAuths map[string]PendingConnectorAuth `json:"pending_connector_auths,omitempty"`
+	AgentID                string                          `json:"agent_id"`
+	OrgID                  string                          `json:"org_id"`
+	PublicKey              string                          `json:"public_key"`
+	PrivateKey             string                          `json:"private_key"`
+	AccessToken            string                          `json:"access_token"`
+	TokenExpiresAt         time.Time                       `json:"token_expires_at"`
+	PublishedArtifacts     map[string]string               `json:"published_artifacts,omitempty"`
+	LatestDerivedArtifacts map[string]string               `json:"latest_derived_artifacts,omitempty"`
+	PublishedFixtures      map[string]string               `json:"published_fixtures,omitempty"`
+	ConnectorCursors       map[string]string               `json:"connector_cursors,omitempty"`
+	ConnectorCredentials   map[string]ConnectorCredential  `json:"connector_credentials,omitempty"`
+	PendingConnectorAuths  map[string]PendingConnectorAuth `json:"pending_connector_auths,omitempty"`
 }
 
 type ConnectorCredential struct {
@@ -42,9 +43,11 @@ func LoadState(path string) (State, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return State{
+			state := State{
 				PublishedArtifacts: map[string]string{},
-			}, nil
+			}
+			state.normalizePublishedArtifacts()
+			return state, nil
 		}
 		return State{}, fmt.Errorf("read state: %w", err)
 	}
@@ -87,6 +90,9 @@ func (s *State) normalizePublishedArtifacts() {
 	}
 	if s.ConnectorCursors == nil {
 		s.ConnectorCursors = map[string]string{}
+	}
+	if s.LatestDerivedArtifacts == nil {
+		s.LatestDerivedArtifacts = map[string]string{}
 	}
 	if s.ConnectorCredentials == nil {
 		s.ConnectorCredentials = map[string]ConnectorCredential{}

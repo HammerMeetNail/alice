@@ -23,7 +23,7 @@ The repository is no longer design-only. The current implementation includes:
 - a signed registration challenge flow with short-lived bearer-token issuance for agents
 - an MCP wrapper layer that maps the current tool surface onto the existing HTTP route contracts
 - a normalized edge connector event layer shared by fixture and live connector ingestion
-- an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, bootstrap GitHub/Jira/Calendar connectors through a local OAuth loopback callback, persist bootstrapped connector credentials in a dedicated local credential store, optionally encrypt that store with a local key, refresh expired OAuth credentials when refresh tokens are available, poll live GitHub/Jira/Calendar metadata through env-backed token auth, token-file loading, or bootstrapped local credentials, persist local connector cursor state, derive project-level aggregate status/blocker/commitment artifacts, retrieve watched query results, and poll incoming requests
+- an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, bootstrap GitHub/Jira/Calendar connectors through a local OAuth loopback callback, persist bootstrapped connector credentials in a dedicated local credential store, optionally encrypt that store with a local key, refresh expired OAuth credentials when refresh tokens are available, poll live GitHub/Jira/Calendar metadata through env-backed token auth, token-file loading, or bootstrapped local credentials, persist local connector cursor state, persist the latest published artifact ID per logical derivation slot, derive project-level aggregate status/blocker/commitment artifacts, supersede older logical connector-derived artifacts through stable derivation keys, retrieve watched query results, and poll incoming requests
 - HTTP routes for:
   - `POST /v1/agents/register/challenge`
   - `POST /v1/agents/register`
@@ -42,7 +42,7 @@ The repository is no longer design-only. The current implementation includes:
 - a targeted handler test covering the permissioned query flow against memory and, when configured, PostgreSQL
 - a targeted handler test covering the request and approval flow against memory and, when configured, PostgreSQL
 - a targeted MCP test covering local registration, artifact publish, grant, peer listing, query/result retrieval, request response, and approval resolution
-- a targeted edge runtime test covering registration reuse, fixture publication, fixture-derived artifacts, live GitHub/Jira/Calendar polling, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store behavior, actionable re-auth errors, query-result retrieval, and incoming-request polling
+- a targeted edge runtime test covering registration reuse, fixture publication, fixture-derived artifacts, replacement-aware connector publication, live GitHub/Jira/Calendar polling, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store behavior, actionable re-auth errors, query-result retrieval, and incoming-request polling
 - a Podman-based local container workflow through `make local` and `make down` that runs both the server and PostgreSQL
 
 ---
@@ -62,6 +62,7 @@ These are implementation choices already present in the codebase and should be t
 - the edge runtime uses local JSON config plus artifact fixtures and a normalized event pipeline for GitHub/Jira/calendar inputs
 - live polling exists for GitHub, Jira, and calendar inputs through env-backed token auth, token files, bootstrapped local credentials, and source-specific config
 - live connector pollers persist local cursor state, and the edge runtime can now complete a local OAuth bootstrap with PKCE and callback-state validation, persist connector credentials in a dedicated local credential store with file-permission checks, optionally encrypt that store with a local key, refresh expired OAuth credentials when refresh tokens are available, and surface actionable re-auth guidance when refresh cannot proceed
+- edge-derived artifacts now carry stable derivation keys, the edge runtime persists the latest published artifact ID per derivation slot, updated logical artifacts supersede prior ones, and query evaluation skips superseded artifacts
 - richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
 
 ---
@@ -119,6 +120,8 @@ Not yet complete inside step 2:
   - optional AES-GCM encryption for the local connector credential store
   - automatic refresh-token exchange for expired stored OAuth credentials
   - actionable connector re-auth errors surfaced to the edge-agent CLI
+  - stable derivation keys, persisted latest-derived-artifact tracking, and replacement-aware publication for connector-derived artifacts
+  - query-time filtering of superseded artifacts
   - project-level aggregate status_delta, blocker, and commitment artifacts derived from cross-source events
 
 ---
@@ -219,11 +222,11 @@ Use fixture-driven data first. Do not start with live GitHub/Jira/Calendar auth.
 
 ## 6. suggested first task for the next session
 
-Build on the current encrypted credential-store path with richer derivation and incremental behavior.
+Build on the current replacement-aware edge runtime with stronger incremental behavior.
 
 Concrete first changes:
 
-1. deepen derivation beyond the current project-level heuristics with better correlation, supersession, and higher-signal blocker/commitment rules
-2. add better incremental sync behavior such as pagination, webhook intake, and connector-specific backoff/retry handling
+1. add better incremental sync behavior such as pagination, webhook intake, and connector-specific backoff/retry handling
+2. deepen derivation beyond the current project-level heuristics with richer blocker-resolution and commitment-completion signals
 3. harden local operator workflows further with rotation tooling and safer credential-key management
 4. keep raw source content local and continue publishing only derived artifacts through the existing runtime client

@@ -176,12 +176,23 @@ func (r *Runtime) publishArtifacts(ctx context.Context, state *State, credential
 	published := make([]PublishedArtifact, 0)
 	skipped := make([]string, 0)
 	for _, artifact := range artifacts {
-		digest, err := artifactDigest(artifact)
+		derivationKey := artifactDerivationKey(artifact)
+		if derivationKey != "" {
+			if previousArtifactID := state.LatestDerivedArtifacts[derivationKey]; strings.TrimSpace(previousArtifactID) != "" {
+				previousArtifactID := previousArtifactID
+				artifact.SupersedesArtifactID = &previousArtifactID
+			}
+		}
+
+		digest, err := artifactContentDigest(artifact)
 		if err != nil {
 			return nil, nil, err
 		}
 		if _, ok := state.PublishedArtifacts[digest]; ok {
 			skipped = append(skipped, digest)
+			if derivationKey != "" && strings.TrimSpace(state.LatestDerivedArtifacts[derivationKey]) == "" {
+				state.LatestDerivedArtifacts[derivationKey] = state.PublishedArtifacts[digest]
+			}
 			continue
 		}
 
@@ -196,6 +207,9 @@ func (r *Runtime) publishArtifacts(ctx context.Context, state *State, credential
 		}
 
 		state.PublishedArtifacts[digest] = response.ArtifactID
+		if derivationKey != "" {
+			state.LatestDerivedArtifacts[derivationKey] = response.ArtifactID
+		}
 		published = append(published, PublishedArtifact{
 			ArtifactID: response.ArtifactID,
 			Digest:     digest,
@@ -305,7 +319,8 @@ func loadFixtureFile(path string) (fixtureFile, error) {
 	return fixtures, nil
 }
 
-func artifactDigest(artifact core.Artifact) (string, error) {
+func artifactContentDigest(artifact core.Artifact) (string, error) {
+	artifact.SupersedesArtifactID = nil
 	data, err := json.Marshal(artifact)
 	if err != nil {
 		return "", fmt.Errorf("marshal artifact for digest: %w", err)
