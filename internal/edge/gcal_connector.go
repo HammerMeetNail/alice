@@ -2,7 +2,6 @@ package edge
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -22,7 +21,8 @@ type gcalLiveSource struct {
 }
 
 type gcalEventsResponse struct {
-	Items []gcalEventResponse `json:"items"`
+	Items         []gcalEventResponse `json:"items"`
+	NextPageToken string              `json:"nextPageToken"`
 }
 
 type gcalEventResponse struct {
@@ -83,44 +83,52 @@ func (s *gcalLiveSource) Poll(ctx context.Context, state State, credentials Cred
 }
 
 func (s *gcalLiveSource) listEvents(ctx context.Context, token string, calendar GCalCalendarConfig, cursor time.Time) ([]gcalEventResponse, error) {
+	const pageSize = 50
+
 	base, err := url.Parse(s.baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse gcal api base url: %w", err)
 	}
 	base.Path = path.Join("/", base.Path, "calendars", url.PathEscape(calendar.ID), "events")
 
-	query := base.Query()
-	query.Set("singleEvents", "true")
-	query.Set("orderBy", "updated")
-	query.Set("maxResults", "50")
-	query.Set("showDeleted", "false")
-	if !cursor.IsZero() {
-		query.Set("updatedMin", cursor.UTC().Format(time.RFC3339))
-	}
-	base.RawQuery = query.Encode()
+	events := make([]gcalEventResponse, 0)
+	pageToken := ""
+	for {
+		payload, _, err := doConnectorJSON[gcalEventsResponse](ctx, s.httpClient, "gcal", func() (*http.Request, error) {
+			requestURL := *base
+			query := requestURL.Query()
+			query.Set("singleEvents", "true")
+			query.Set("orderBy", "updated")
+			query.Set("maxResults", fmt.Sprintf("%d", pageSize))
+			query.Set("showDeleted", "false")
+			if !cursor.IsZero() {
+				query.Set("updatedMin", cursor.UTC().Format(time.RFC3339))
+			}
+			if strings.TrimSpace(pageToken) != "" {
+				query.Set("pageToken", pageToken)
+			}
+			requestURL.RawQuery = query.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("build gcal request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Accept", "application/json")
+			req.Header.Set("Authorization", "Bearer "+token)
+			return req, nil
+		})
+		if err != nil {
+			return nil, err
+		}
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("perform gcal request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, fmt.Errorf("gcal api returned status %d", resp.StatusCode)
+		events = append(events, payload.Items...)
+		pageToken = strings.TrimSpace(payload.NextPageToken)
+		if pageToken == "" {
+			break
+		}
 	}
 
-	var payload gcalEventsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decode gcal response: %w", err)
-	}
-	return payload.Items, nil
+	return events, nil
 }
 
 func normalizeLiveGCalEvent(calendar GCalCalendarConfig, event gcalEventResponse) NormalizedEvent {

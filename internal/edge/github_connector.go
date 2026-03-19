@@ -2,11 +2,11 @@ package edge
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,6 +77,8 @@ func (s *gitHubLiveSource) Poll(ctx context.Context, _ State, credentials Creden
 }
 
 func (s *gitHubLiveSource) listPullRequests(ctx context.Context, token, repository string) ([]gitHubPullResponse, error) {
+	const pageSize = 50
+
 	repositoryPath, err := gitHubRepositoryAPIPath(repository)
 	if err != nil {
 		return nil, err
@@ -88,35 +90,37 @@ func (s *gitHubLiveSource) listPullRequests(ctx context.Context, token, reposito
 	}
 	base.Path = path.Join("/", base.Path, repositoryPath)
 
-	query := base.Query()
-	query.Set("state", "open")
-	query.Set("sort", "updated")
-	query.Set("direction", "desc")
-	query.Set("per_page", "50")
-	base.RawQuery = query.Encode()
+	pullRequests := make([]gitHubPullResponse, 0)
+	for page := 1; ; page++ {
+		payload, header, err := doConnectorJSON[[]gitHubPullResponse](ctx, s.httpClient, "github", func() (*http.Request, error) {
+			requestURL := *base
+			query := requestURL.Query()
+			query.Set("state", "open")
+			query.Set("sort", "updated")
+			query.Set("direction", "desc")
+			query.Set("per_page", strconv.Itoa(pageSize))
+			query.Set("page", strconv.Itoa(page))
+			requestURL.RawQuery = query.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("build github request: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+token)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Accept", "application/vnd.github+json")
+			req.Header.Set("Authorization", "Bearer "+token)
+			return req, nil
+		})
+		if err != nil {
+			return nil, err
+		}
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("perform github request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, fmt.Errorf("github api returned status %d", resp.StatusCode)
+		pullRequests = append(pullRequests, payload...)
+		if !gitHubHasNextPage(header.Get("Link")) && len(payload) < pageSize {
+			break
+		}
 	}
 
-	var payload []gitHubPullResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decode github response: %w", err)
-	}
-	return payload, nil
+	return pullRequests, nil
 }
 
 func (s *gitHubLiveSource) isRelevantPullRequest(pullRequest gitHubPullResponse) bool {
@@ -223,4 +227,13 @@ func sameLogin(left, right string) bool {
 
 func gitHubCursorKey(repository string) string {
 	return "github:repo:" + strings.TrimSpace(repository)
+}
+
+func gitHubHasNextPage(linkHeader string) bool {
+	for _, part := range strings.Split(linkHeader, ",") {
+		if strings.Contains(part, `rel="next"`) {
+			return true
+		}
+	}
+	return false
 }

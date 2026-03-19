@@ -466,6 +466,132 @@ func TestRuntimeRunOncePollsLiveGitHub(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunOnceRetriesAndPaginatesLiveGitHub(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	firstUpdatedAt := time.Date(2026, 3, 19, 14, 30, 0, 0, time.UTC)
+	secondUpdatedAt := firstUpdatedAt.Add(30 * time.Minute)
+	t.Setenv("ALICE_GITHUB_TOKEN", "test-github-token")
+
+	requestCount := 0
+	githubAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if got := r.Header.Get("Authorization"); got != "Bearer test-github-token" {
+			t.Fatalf("unexpected github auth header: %q", got)
+		}
+		if r.URL.Path != "/repos/acme/payments-api/pulls" {
+			t.Fatalf("unexpected github path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("per_page"); got != "50" {
+			t.Fatalf("unexpected github per_page: %q", got)
+		}
+
+		if requestCount == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+
+		var payload []map[string]any
+		switch r.URL.Query().Get("page") {
+		case "1":
+			w.Header().Set("Link", `<https://api.github.test/repos/acme/payments-api/pulls?page=2>; rel="next"`)
+			payload = []map[string]any{
+				{
+					"number":     128,
+					"state":      "open",
+					"draft":      false,
+					"title":      "Retry payments handler",
+					"updated_at": firstUpdatedAt.Format(time.RFC3339),
+					"user": map[string]any{
+						"login": "sam",
+					},
+					"requested_reviewers": []map[string]any{},
+					"assignees":           []map[string]any{},
+				},
+			}
+		case "2":
+			payload = []map[string]any{
+				{
+					"number":     129,
+					"state":      "open",
+					"draft":      false,
+					"title":      "Finalize retry metrics",
+					"updated_at": secondUpdatedAt.Format(time.RFC3339),
+					"user": map[string]any{
+						"login": "sam",
+					},
+					"requested_reviewers": []map[string]any{},
+					"assignees":           []map[string]any{},
+				},
+			}
+		default:
+			t.Fatalf("unexpected github page: %q", r.URL.Query().Get("page"))
+		}
+
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode paginated github payload: %v", err)
+		}
+	}))
+	defer githubAPI.Close()
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				Enabled:     true,
+				APIBaseURL:  githubAPI.URL,
+				TokenEnvVar: "ALICE_GITHUB_TOKEN",
+				ActorLogin:  "sam",
+				Repositories: []GitHubRepositoryConfig{
+					{
+						Name:        "acme/payments-api",
+						ProjectRefs: []string{"payments-api"},
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load paginated github config: %v", err)
+	}
+
+	report, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with paginated github polling: %v", err)
+	}
+	if len(report.PublishedArtifacts) != 2 {
+		t.Fatalf("expected two live github artifacts after pagination, got %d", len(report.PublishedArtifacts))
+	}
+	if requestCount != 3 {
+		t.Fatalf("expected github retry plus two page fetches, got %d requests", requestCount)
+	}
+}
+
 func TestRuntimeRunOncePollsLiveJira(t *testing.T) {
 	handler, closeFn := newTestHandler(t)
 	if closeFn != nil {
@@ -592,6 +718,137 @@ func TestRuntimeRunOncePollsLiveJira(t *testing.T) {
 	artifacts := response["artifacts"].([]any)
 	if len(artifacts) != 1 {
 		t.Fatalf("expected one live jira artifact in query result, got %d", len(artifacts))
+	}
+}
+
+func TestRuntimeRunOncePaginatesLiveJira(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	firstUpdatedAt := time.Date(2026, 3, 19, 15, 45, 0, 0, time.UTC)
+	secondUpdatedAt := firstUpdatedAt.Add(30 * time.Minute)
+	t.Setenv("ALICE_JIRA_TOKEN", "test-jira-token")
+
+	requestCount := 0
+	jiraAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if got := r.Header.Get("Authorization"); got != "Bearer test-jira-token" {
+			t.Fatalf("unexpected jira auth header: %q", got)
+		}
+		if r.URL.Path != "/rest/api/3/search" {
+			t.Fatalf("unexpected jira path: %s", r.URL.Path)
+		}
+
+		var payload map[string]any
+		switch r.URL.Query().Get("startAt") {
+		case "0":
+			payload = map[string]any{
+				"startAt":    0,
+				"maxResults": 1,
+				"total":      2,
+				"issues": []map[string]any{
+					{
+						"key": "PAY-123",
+						"fields": map[string]any{
+							"issuetype": map[string]any{
+								"name": "Story",
+							},
+							"status": map[string]any{
+								"name": "In Review",
+							},
+							"updated": firstUpdatedAt.Format(time.RFC3339),
+							"assignee": map[string]any{
+								"emailAddress": "sam@example.com",
+							},
+						},
+					},
+				},
+			}
+		case "1":
+			payload = map[string]any{
+				"startAt":    1,
+				"maxResults": 1,
+				"total":      2,
+				"issues": []map[string]any{
+					{
+						"key": "PAY-124",
+						"fields": map[string]any{
+							"issuetype": map[string]any{
+								"name": "Bug",
+							},
+							"status": map[string]any{
+								"name": "Blocked",
+							},
+							"updated": secondUpdatedAt.Format(time.RFC3339),
+							"assignee": map[string]any{
+								"emailAddress": "sam@example.com",
+							},
+						},
+					},
+				},
+			}
+		default:
+			t.Fatalf("unexpected jira startAt: %q", r.URL.Query().Get("startAt"))
+		}
+
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode paginated jira payload: %v", err)
+		}
+	}))
+	defer jiraAPI.Close()
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			Jira: JiraConnectorConfig{
+				Enabled:     true,
+				APIBaseURL:  jiraAPI.URL,
+				TokenEnvVar: "ALICE_JIRA_TOKEN",
+				Projects: []JiraProjectConfig{
+					{
+						Key:         "PAY",
+						ProjectRefs: []string{"payments-api"},
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load paginated jira config: %v", err)
+	}
+
+	report, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with paginated jira polling: %v", err)
+	}
+	if len(report.PublishedArtifacts) != 2 {
+		t.Fatalf("expected two live jira artifacts after pagination, got %d", len(report.PublishedArtifacts))
+	}
+	if requestCount != 2 {
+		t.Fatalf("expected two jira page fetches, got %d requests", requestCount)
 	}
 }
 
@@ -725,6 +982,135 @@ func TestRuntimeRunOncePollsLiveGCal(t *testing.T) {
 	artifacts := response["artifacts"].([]any)
 	if len(artifacts) != 1 {
 		t.Fatalf("expected one live gcal artifact in query result, got %d", len(artifacts))
+	}
+}
+
+func TestRuntimeRunOncePaginatesLiveGCal(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	firstUpdatedAt := time.Date(2026, 3, 19, 16, 15, 0, 0, time.UTC)
+	secondUpdatedAt := firstUpdatedAt.Add(30 * time.Minute)
+	firstStartAt := time.Date(2026, 3, 19, 17, 0, 0, 0, time.UTC)
+	secondStartAt := firstStartAt.Add(1 * time.Hour)
+	t.Setenv("ALICE_GCAL_TOKEN", "test-gcal-token")
+
+	requestCount := 0
+	gcalAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if got := r.Header.Get("Authorization"); got != "Bearer test-gcal-token" {
+			t.Fatalf("unexpected gcal auth header: %q", got)
+		}
+		if r.URL.Path != "/calendar/v3/calendars/primary/events" {
+			t.Fatalf("unexpected gcal path: %s", r.URL.Path)
+		}
+
+		var payload map[string]any
+		switch r.URL.Query().Get("pageToken") {
+		case "":
+			payload = map[string]any{
+				"items": []map[string]any{
+					{
+						"id":        "evt-1",
+						"status":    "confirmed",
+						"updated":   firstUpdatedAt.Format(time.RFC3339),
+						"eventType": "focusTime",
+						"start": map[string]any{
+							"dateTime": firstStartAt.Format(time.RFC3339),
+						},
+						"end": map[string]any{
+							"dateTime": firstStartAt.Add(30 * time.Minute).Format(time.RFC3339),
+						},
+						"attendees": []map[string]any{
+							{"email": "sam@example.com"},
+						},
+					},
+				},
+				"nextPageToken": "page-2",
+			}
+		case "page-2":
+			payload = map[string]any{
+				"items": []map[string]any{
+					{
+						"id":        "evt-2",
+						"status":    "confirmed",
+						"updated":   secondUpdatedAt.Format(time.RFC3339),
+						"eventType": "focusTime",
+						"start": map[string]any{
+							"dateTime": secondStartAt.Format(time.RFC3339),
+						},
+						"end": map[string]any{
+							"dateTime": secondStartAt.Add(30 * time.Minute).Format(time.RFC3339),
+						},
+						"attendees": []map[string]any{
+							{"email": "sam@example.com"},
+						},
+					},
+				},
+			}
+		default:
+			t.Fatalf("unexpected gcal page token: %q", r.URL.Query().Get("pageToken"))
+		}
+
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode paginated gcal payload: %v", err)
+		}
+	}))
+	defer gcalAPI.Close()
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GCal: GCalConnectorConfig{
+				Enabled:     true,
+				APIBaseURL:  gcalAPI.URL + "/calendar/v3",
+				TokenEnvVar: "ALICE_GCAL_TOKEN",
+				Calendars: []GCalCalendarConfig{
+					{
+						ID:          "primary",
+						ProjectRefs: []string{"payments-api"},
+						Category:    "focus",
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load paginated gcal config: %v", err)
+	}
+
+	report, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with paginated gcal polling: %v", err)
+	}
+	if len(report.PublishedArtifacts) != 2 {
+		t.Fatalf("expected two live gcal artifacts after pagination, got %d", len(report.PublishedArtifacts))
+	}
+	if requestCount != 2 {
+		t.Fatalf("expected two gcal page fetches, got %d requests", requestCount)
 	}
 }
 

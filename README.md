@@ -227,12 +227,14 @@ Implemented now:
   - live GitHub polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus repository-to-project mapping
   - live Jira polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus project scoping and assignee filtering
   - live Google Calendar polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus calendar-scoped event ingestion
+  - live connector pagination across GitHub, Jira, and Google Calendar API pages
+  - transient connector retry/backoff for 429, 502, 503, and 504 responses
   - project-level aggregate status deltas, blockers, and commitments derived from cross-source signals
   - stable derivation keys plus persisted latest-artifact tracking for replacement-aware edge publication of connector-derived artifacts
   - watched query-result retrieval
   - incoming-request polling
 - end-to-end MCP test coverage for registration, artifact publish, grant creation, peer listing, query submission/result retrieval, request send/respond, and approval resolution
-- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, replacement-aware edge publication, live GitHub/Jira/Calendar polling, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
+- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, replacement-aware edge publication, live GitHub/Jira/Calendar polling, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
 - targeted HTTP test coverage for the permissioned query flow and request/approval flow in memory and, when configured, against PostgreSQL
 - Podman-based container workflow for local execution with both the server and PostgreSQL
 
@@ -245,7 +247,7 @@ Current implementation assumptions:
 - the first Gatekeeper request and approval flow exists, but approval policy is still explicit/manual rather than risk-engine driven
 - query time windows use source observation timestamps when artifacts carry source refs
 - the edge runtime uses JSON config plus local fixture files, with live polling now available for GitHub, Jira, and Google Calendar via env vars, token files, or locally bootstrapped OAuth credentials
-- live connector pollers persist local cursor state, and the edge runtime now stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
+- live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, and the edge runtime now stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
 - edge-derived artifacts now carry stable derivation keys, the edge runtime persists the latest published artifact ID per derivation slot, updated summaries, blockers, commitments, and status deltas supersede older logical artifacts, and superseded artifacts are hidden from query results
 - richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
 - local container runs use PostgreSQL; tests and ad hoc runs can still fall back to in-memory storage when no database URL is set
@@ -288,7 +290,7 @@ The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL insta
 
 The next recommended implementation steps are:
 
-1. add better incremental sync behavior such as pagination, webhook intake, and connector-specific backoff/retry handling
+1. add webhook intake and connector-native push paths so polling is no longer the only incremental input mechanism
 2. deepen derivation beyond the current project-level heuristics with richer blocker-resolution and commitment-completion signals
 3. harden local operator workflows further with rotation tooling and safer credential-key management
 

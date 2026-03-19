@@ -2,11 +2,11 @@ package edge
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +24,10 @@ type jiraLiveSource struct {
 }
 
 type jiraSearchResponse struct {
-	Issues []jiraIssueResponse `json:"issues"`
+	StartAt    int                 `json:"startAt"`
+	MaxResults int                 `json:"maxResults"`
+	Total      int                 `json:"total"`
+	Issues     []jiraIssueResponse `json:"issues"`
 }
 
 type jiraIssueResponse struct {
@@ -90,40 +93,57 @@ func (s *jiraLiveSource) Poll(ctx context.Context, state State, credentials Cred
 }
 
 func (s *jiraLiveSource) listIssues(ctx context.Context, token string, project JiraProjectConfig, cursor time.Time) ([]jiraIssueResponse, error) {
+	const pageSize = 50
+
 	base, err := url.Parse(s.baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse jira api base url: %w", err)
 	}
 	base.Path = path.Join("/", base.Path, "rest/api/3/search")
 
-	query := base.Query()
-	query.Set("fields", "issuetype,status,assignee,updated")
-	query.Set("maxResults", "50")
-	query.Set("jql", buildJiraJQL(project.Key, cursor))
-	base.RawQuery = query.Encode()
+	issues := make([]jiraIssueResponse, 0)
+	for startAt := 0; ; {
+		payload, _, err := doConnectorJSON[jiraSearchResponse](ctx, s.httpClient, "jira", func() (*http.Request, error) {
+			requestURL := *base
+			query := requestURL.Query()
+			query.Set("fields", "issuetype,status,assignee,updated")
+			query.Set("maxResults", strconv.Itoa(pageSize))
+			query.Set("startAt", strconv.Itoa(startAt))
+			query.Set("jql", buildJiraJQL(project.Key, cursor))
+			requestURL.RawQuery = query.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("build jira request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Accept", "application/json")
+			req.Header.Set("Authorization", "Bearer "+token)
+			return req, nil
+		})
+		if err != nil {
+			return nil, err
+		}
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("perform jira request: %w", err)
-	}
-	defer resp.Body.Close()
+		issues = append(issues, payload.Issues...)
+		if len(payload.Issues) == 0 {
+			break
+		}
 
-	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, fmt.Errorf("jira api returned status %d", resp.StatusCode)
+		resolvedPageSize := payload.MaxResults
+		if resolvedPageSize <= 0 {
+			resolvedPageSize = pageSize
+		}
+		nextStartAt := payload.StartAt + len(payload.Issues)
+		if payload.Total > 0 && nextStartAt >= payload.Total {
+			break
+		}
+		if len(payload.Issues) < resolvedPageSize {
+			break
+		}
+		startAt = nextStartAt
 	}
 
-	var payload jiraSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decode jira response: %w", err)
-	}
-	return payload.Issues, nil
+	return issues, nil
 }
 
 func (s *jiraLiveSource) isRelevantIssue(issue jiraIssueResponse) bool {
