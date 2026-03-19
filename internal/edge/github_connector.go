@@ -53,7 +53,7 @@ func (s *gitHubLiveSource) Name() string {
 	return "github_live"
 }
 
-func (s *gitHubLiveSource) Poll(ctx context.Context) ([]NormalizedEvent, error) {
+func (s *gitHubLiveSource) Poll(ctx context.Context, _ State) ([]NormalizedEvent, error) {
 	token := strings.TrimSpace(os.Getenv(s.tokenEnvVar))
 	if token == "" {
 		return nil, fmt.Errorf("github connector requires %s", s.tokenEnvVar)
@@ -146,6 +146,7 @@ func normalizeLiveGitHubPullRequest(repository GitHubRepositoryConfig, pullReque
 		SourceType:   "pull_request",
 		SourceID:     fmt.Sprintf("repo:%s:pr:%d", repository.Name, pullRequest.Number),
 		ObservedAt:   observedAt,
+		CursorKey:    gitHubCursorKey(repository.Name),
 		ProjectRefs:  projectRefsForRepository(repository),
 		TrustClass:   core.TrustClassStructuredSystem,
 		Sensitivity:  core.SensitivityMedium,
@@ -217,4 +218,8 @@ func containsGitHubUser(users []gitHubUserResponse, actorLogin string) bool {
 
 func sameLogin(left, right string) bool {
 	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+}
+
+func gitHubCursorKey(repository string) string {
+	return "github:repo:" + strings.TrimSpace(repository)
 }

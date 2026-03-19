@@ -51,28 +51,31 @@ type gcalEvent struct {
 
 type fixtureEventSource struct {
 	name string
-	load func(context.Context) ([]NormalizedEvent, error)
+	load func(context.Context, State) ([]NormalizedEvent, error)
 }
 
 func (s fixtureEventSource) Name() string {
 	return s.name
 }
 
-func (s fixtureEventSource) Poll(ctx context.Context) ([]NormalizedEvent, error) {
-	return s.load(ctx)
+func (s fixtureEventSource) Poll(ctx context.Context, state State) ([]NormalizedEvent, error) {
+	return s.load(ctx, state)
 }
 
-func loadConnectorArtifacts(ctx context.Context, cfg Config) ([]core.Artifact, error) {
+func loadConnectorArtifacts(ctx context.Context, cfg Config, state State) ([]core.Artifact, map[string]time.Time, error) {
 	sources := configuredEventSources(cfg)
 	artifacts := make([]core.Artifact, 0)
+	cursorUpdates := make(map[string]time.Time)
 	for _, source := range sources {
-		events, err := source.Poll(ctx)
+		events, err := source.Poll(ctx, state)
 		if err != nil {
-			return nil, fmt.Errorf("poll %s: %w", source.Name(), err)
+			return nil, nil, fmt.Errorf("poll %s: %w", source.Name(), err)
 		}
-		artifacts = append(artifacts, deriveArtifacts(events)...)
+		freshEvents, sourceUpdates := filterEventsSinceCursors(state, events)
+		mergeCursorUpdates(cursorUpdates, sourceUpdates)
+		artifacts = append(artifacts, deriveArtifacts(freshEvents)...)
 	}
-	return artifacts, nil
+	return artifacts, cursorUpdates, nil
 }
 
 func configuredEventSources(cfg Config) []EventSource {
@@ -81,7 +84,7 @@ func configuredEventSources(cfg Config) []EventSource {
 	if path := cfg.GitHubFixturePath(); path != "" {
 		sources = append(sources, fixtureEventSource{
 			name: "github_fixture",
-			load: func(context.Context) ([]NormalizedEvent, error) {
+			load: func(context.Context, State) ([]NormalizedEvent, error) {
 				return loadGitHubFixtureEvents(path)
 			},
 		})
@@ -92,18 +95,24 @@ func configuredEventSources(cfg Config) []EventSource {
 	if path := cfg.JiraFixturePath(); path != "" {
 		sources = append(sources, fixtureEventSource{
 			name: "jira_fixture",
-			load: func(context.Context) ([]NormalizedEvent, error) {
+			load: func(context.Context, State) ([]NormalizedEvent, error) {
 				return loadJiraFixtureEvents(path)
 			},
 		})
 	}
+	if cfg.JiraLiveEnabled() {
+		sources = append(sources, newJiraLiveSource(cfg))
+	}
 	if path := cfg.GCalFixturePath(); path != "" {
 		sources = append(sources, fixtureEventSource{
 			name: "gcal_fixture",
-			load: func(context.Context) ([]NormalizedEvent, error) {
+			load: func(context.Context, State) ([]NormalizedEvent, error) {
 				return loadGCalFixtureEvents(path)
 			},
 		})
+	}
+	if cfg.GCalLiveEnabled() {
+		sources = append(sources, newGCalLiveSource(cfg))
 	}
 	return sources
 }
@@ -333,6 +342,32 @@ func sourceReferenceForEvent(event NormalizedEvent) core.SourceReference {
 		ObservedAt:   event.ObservedAt,
 		TrustClass:   event.TrustClass,
 		Sensitivity:  event.Sensitivity,
+	}
+}
+
+func filterEventsSinceCursors(state State, events []NormalizedEvent) ([]NormalizedEvent, map[string]time.Time) {
+	filtered := make([]NormalizedEvent, 0, len(events))
+	cursorUpdates := make(map[string]time.Time)
+	for _, event := range events {
+		if strings.TrimSpace(event.CursorKey) != "" {
+			existing := state.CursorTime(event.CursorKey)
+			if !existing.IsZero() && !event.ObservedAt.After(existing) {
+				continue
+			}
+			if current := cursorUpdates[event.CursorKey]; event.ObservedAt.After(current) {
+				cursorUpdates[event.CursorKey] = event.ObservedAt
+			}
+		}
+		filtered = append(filtered, event)
+	}
+	return filtered, cursorUpdates
+}
+
+func mergeCursorUpdates(target map[string]time.Time, updates map[string]time.Time) {
+	for key, value := range updates {
+		if value.After(target[key]) {
+			target[key] = value
+		}
 	}
 }
 

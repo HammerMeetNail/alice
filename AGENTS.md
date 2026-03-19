@@ -9,8 +9,8 @@ The repository is in early implementation. The root now contains runnable server
 - `cmd/server/`: coordination server HTTP entrypoint
 - `cmd/mcp-server/`: stdio MCP entrypoint for local tool clients
 - `cmd/edge-agent/`: local edge runtime skeleton entrypoint
-- `internal/`: current server and edge-runtime packages including auth, HTTP API, MCP, Gatekeeper flows, normalized edge connector events, the first live GitHub poller, and memory/PostgreSQL implementations
-- `examples/`: runnable local example configs plus artifact fixtures, connector fixtures, and a live GitHub polling example
+- `internal/`: current server and edge-runtime packages including auth, HTTP API, MCP, Gatekeeper flows, normalized edge connector events, live GitHub/Jira/Calendar pollers, connector cursor state, and memory/PostgreSQL implementations
+- `examples/`: runnable local example configs plus artifact fixtures, connector fixtures, and live polling examples for GitHub, Jira, and Google Calendar
 - `api/jsonschema/`: current machine-readable schema files
 
 Keep the implementation plan, `README.md`, and this file aligned whenever the codebase meaningfully changes.

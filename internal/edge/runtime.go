@@ -160,11 +160,12 @@ func (r *Runtime) ensureSession(ctx context.Context, state *State) (bool, error)
 }
 
 func (r *Runtime) publishArtifacts(ctx context.Context, state *State, registrationPerformed *bool) ([]PublishedArtifact, []string, error) {
-	artifacts, err := r.configuredArtifacts(ctx)
+	artifacts, cursorUpdates, err := r.configuredArtifacts(ctx, *state)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(artifacts) == 0 {
+		applyCursorUpdates(state, cursorUpdates)
 		return nil, nil, nil
 	}
 
@@ -196,28 +197,29 @@ func (r *Runtime) publishArtifacts(ctx context.Context, state *State, registrati
 			Digest:     digest,
 		})
 	}
+	applyCursorUpdates(state, cursorUpdates)
 	return published, skipped, nil
 }
 
-func (r *Runtime) configuredArtifacts(ctx context.Context) ([]core.Artifact, error) {
+func (r *Runtime) configuredArtifacts(ctx context.Context, state State) ([]core.Artifact, map[string]time.Time, error) {
 	artifacts := make([]core.Artifact, 0)
 
 	fixturePath := r.cfg.ArtifactFixturePath()
 	if fixturePath != "" {
 		fixtures, err := loadFixtureFile(fixturePath)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		artifacts = append(artifacts, fixtures.Artifacts...)
 	}
 
-	derivedArtifacts, err := loadConnectorArtifacts(ctx, r.cfg)
+	derivedArtifacts, cursorUpdates, err := loadConnectorArtifacts(ctx, r.cfg, state)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	artifacts = append(artifacts, derivedArtifacts...)
 
-	return artifacts, nil
+	return artifacts, cursorUpdates, nil
 }
 
 func (r *Runtime) loadQueryResults(ctx context.Context, state *State, registrationPerformed *bool) ([]map[string]any, error) {
@@ -334,4 +336,10 @@ func decodeBase64(value string) ([]byte, error) {
 
 func errorsIsUnauthorized(err error) bool {
 	return err == ErrUnauthorized
+}
+
+func applyCursorUpdates(state *State, cursorUpdates map[string]time.Time) {
+	for key, value := range cursorUpdates {
+		state.SetCursorTime(key, value)
+	}
 }

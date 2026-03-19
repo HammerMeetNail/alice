@@ -17,6 +17,7 @@ type State struct {
 	TokenExpiresAt     time.Time         `json:"token_expires_at"`
 	PublishedArtifacts map[string]string `json:"published_artifacts,omitempty"`
 	PublishedFixtures  map[string]string `json:"published_fixtures,omitempty"`
+	ConnectorCursors   map[string]string `json:"connector_cursors,omitempty"`
 }
 
 func LoadState(path string) (State, error) {
@@ -65,4 +66,31 @@ func (s *State) normalizePublishedArtifacts() {
 		}
 		s.PublishedArtifacts[digest] = artifactID
 	}
+	if s.ConnectorCursors == nil {
+		s.ConnectorCursors = map[string]string{}
+	}
+}
+
+func (s State) CursorTime(key string) time.Time {
+	value, ok := s.ConnectorCursors[key]
+	if !ok {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err == nil {
+		return parsed
+	}
+	parsed, err = time.Parse(time.RFC3339, value)
+	if err == nil {
+		return parsed
+	}
+	return time.Time{}
+}
+
+func (s *State) SetCursorTime(key string, value time.Time) {
+	s.normalizePublishedArtifacts()
+	if key == "" || value.IsZero() {
+		return
+	}
+	s.ConnectorCursors[key] = value.UTC().Format(time.RFC3339Nano)
 }

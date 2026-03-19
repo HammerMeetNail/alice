@@ -37,9 +37,9 @@ type RuntimeConfig struct {
 }
 
 type ConnectorsConfig struct {
-	GitHub GitHubConnectorConfig  `json:"github"`
-	Jira   ConnectorFixtureConfig `json:"jira"`
-	GCal   ConnectorFixtureConfig `json:"gcal"`
+	GitHub GitHubConnectorConfig `json:"github"`
+	Jira   JiraConnectorConfig   `json:"jira"`
+	GCal   GCalConnectorConfig   `json:"gcal"`
 }
 
 type GitHubConnectorConfig struct {
@@ -56,8 +56,33 @@ type GitHubRepositoryConfig struct {
 	ProjectRefs []string `json:"project_refs"`
 }
 
-type ConnectorFixtureConfig struct {
-	FixtureFile string `json:"fixture_file"`
+type JiraConnectorConfig struct {
+	Enabled        bool                `json:"enabled"`
+	FixtureFile    string              `json:"fixture_file"`
+	APIBaseURL     string              `json:"api_base_url"`
+	TokenEnvVar    string              `json:"token_env_var"`
+	ActorAccountID string              `json:"actor_account_id"`
+	ActorEmail     string              `json:"actor_email"`
+	Projects       []JiraProjectConfig `json:"projects"`
+}
+
+type JiraProjectConfig struct {
+	Key         string   `json:"key"`
+	ProjectRefs []string `json:"project_refs"`
+}
+
+type GCalConnectorConfig struct {
+	Enabled     bool                 `json:"enabled"`
+	FixtureFile string               `json:"fixture_file"`
+	APIBaseURL  string               `json:"api_base_url"`
+	TokenEnvVar string               `json:"token_env_var"`
+	Calendars   []GCalCalendarConfig `json:"calendars"`
+}
+
+type GCalCalendarConfig struct {
+	ID          string   `json:"id"`
+	ProjectRefs []string `json:"project_refs"`
+	Category    string   `json:"category"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -97,6 +122,22 @@ func (c *Config) applyDefaults() {
 			c.Connectors.GitHub.TokenEnvVar = "ALICE_GITHUB_TOKEN"
 		}
 	}
+	if c.JiraLiveEnabled() {
+		if strings.TrimSpace(c.Connectors.Jira.TokenEnvVar) == "" {
+			c.Connectors.Jira.TokenEnvVar = "ALICE_JIRA_TOKEN"
+		}
+		if strings.TrimSpace(c.Connectors.Jira.ActorEmail) == "" {
+			c.Connectors.Jira.ActorEmail = c.Agent.OwnerEmail
+		}
+	}
+	if c.GCalLiveEnabled() {
+		if strings.TrimSpace(c.Connectors.GCal.APIBaseURL) == "" {
+			c.Connectors.GCal.APIBaseURL = "https://www.googleapis.com/calendar/v3"
+		}
+		if strings.TrimSpace(c.Connectors.GCal.TokenEnvVar) == "" {
+			c.Connectors.GCal.TokenEnvVar = "ALICE_GCAL_TOKEN"
+		}
+	}
 }
 
 func (c Config) Validate() error {
@@ -119,6 +160,27 @@ func (c Config) Validate() error {
 		}
 		if c.GitHubLiveEnabled() && len(c.Connectors.GitHub.Repositories) == 0 {
 			return fmt.Errorf("connectors.github.repositories is required when github live polling is enabled")
+		}
+		for i, project := range c.Connectors.Jira.Projects {
+			if strings.TrimSpace(project.Key) == "" {
+				return fmt.Errorf("connectors.jira.projects[%d].key is required", i)
+			}
+		}
+		if c.JiraLiveEnabled() {
+			if strings.TrimSpace(c.Connectors.Jira.APIBaseURL) == "" {
+				return fmt.Errorf("connectors.jira.api_base_url is required when jira live polling is enabled")
+			}
+			if len(c.Connectors.Jira.Projects) == 0 {
+				return fmt.Errorf("connectors.jira.projects is required when jira live polling is enabled")
+			}
+		}
+		for i, calendar := range c.Connectors.GCal.Calendars {
+			if strings.TrimSpace(calendar.ID) == "" {
+				return fmt.Errorf("connectors.gcal.calendars[%d].id is required", i)
+			}
+		}
+		if c.GCalLiveEnabled() && len(c.Connectors.GCal.Calendars) == 0 {
+			return fmt.Errorf("connectors.gcal.calendars is required when gcal live polling is enabled")
 		}
 		return nil
 	}
@@ -151,12 +213,36 @@ func (c Config) GitHubLiveEnabled() bool {
 	return c.Connectors.GitHub.Enabled || len(c.Connectors.GitHub.Repositories) > 0
 }
 
+func (c Config) JiraLiveEnabled() bool {
+	return c.Connectors.Jira.Enabled || len(c.Connectors.Jira.Projects) > 0
+}
+
+func (c Config) GCalLiveEnabled() bool {
+	return c.Connectors.GCal.Enabled || len(c.Connectors.GCal.Calendars) > 0
+}
+
 func (c Config) GitHubAPIBaseURL() string {
 	return strings.TrimSpace(c.Connectors.GitHub.APIBaseURL)
 }
 
 func (c Config) GitHubTokenEnvVar() string {
 	return strings.TrimSpace(c.Connectors.GitHub.TokenEnvVar)
+}
+
+func (c Config) JiraAPIBaseURL() string {
+	return strings.TrimSpace(c.Connectors.Jira.APIBaseURL)
+}
+
+func (c Config) JiraTokenEnvVar() string {
+	return strings.TrimSpace(c.Connectors.Jira.TokenEnvVar)
+}
+
+func (c Config) GCalAPIBaseURL() string {
+	return strings.TrimSpace(c.Connectors.GCal.APIBaseURL)
+}
+
+func (c Config) GCalTokenEnvVar() string {
+	return strings.TrimSpace(c.Connectors.GCal.TokenEnvVar)
 }
 
 func (c Config) resolvePath(value string) string {

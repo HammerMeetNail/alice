@@ -23,7 +23,7 @@ The repository is no longer design-only. The current implementation includes:
 - a signed registration challenge flow with short-lived bearer-token issuance for agents
 - an MCP wrapper layer that maps the current tool surface onto the existing HTTP route contracts
 - a normalized edge connector event layer shared by fixture and live connector ingestion
-- an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, poll live GitHub PR metadata through env-backed token auth plus repository mapping, retrieve watched query results, and poll incoming requests
+- an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, poll live GitHub/Jira/Calendar metadata through env-backed token auth, persist local connector cursor state, retrieve watched query results, and poll incoming requests
 - HTTP routes for:
   - `POST /v1/agents/register/challenge`
   - `POST /v1/agents/register`
@@ -42,7 +42,7 @@ The repository is no longer design-only. The current implementation includes:
 - a targeted handler test covering the permissioned query flow against memory and, when configured, PostgreSQL
 - a targeted handler test covering the request and approval flow against memory and, when configured, PostgreSQL
 - a targeted MCP test covering local registration, artifact publish, grant, peer listing, query/result retrieval, request response, and approval resolution
-- a targeted edge runtime test covering registration reuse, fixture publication, fixture-derived artifacts, live GitHub polling, query-result retrieval, and incoming-request polling
+- a targeted edge runtime test covering registration reuse, fixture publication, fixture-derived artifacts, live GitHub/Jira/Calendar polling, connector cursor persistence, query-result retrieval, and incoming-request polling
 - a Podman-based local container workflow through `make local` and `make down` that runs both the server and PostgreSQL
 
 ---
@@ -60,8 +60,8 @@ These are implementation choices already present in the codebase and should be t
 - request approvals are explicit and API-driven; no user-facing approval UI or automatic risk policy exists yet
 - query time windows prefer source observation timestamps when an artifact carries source refs
 - the edge runtime uses local JSON config plus artifact fixtures and a normalized event pipeline for GitHub/Jira/calendar inputs
-- the first live connector path is GitHub polling with env-backed token auth and repository-to-project mapping
-- Jira and calendar ingestion remain fixture-driven
+- live polling exists for GitHub, Jira, and calendar inputs through env-backed token auth and source-specific config
+- live connector pollers persist local cursor state, but connector bootstrap/auth is still env-token-based rather than OAuth-driven
 
 ---
 
@@ -108,6 +108,9 @@ Not yet complete inside step 2:
   - deterministic local artifact derivation from connector fixtures
   - a normalized event layer shared by fixture and live connector ingestion
   - live GitHub polling via env-backed token auth and repository mapping
+  - live Jira polling via env-backed token auth and project scoping
+  - live calendar polling via env-backed token auth and calendar scoping
+  - persisted connector cursor state for incremental live polling
 
 ---
 
@@ -207,11 +210,11 @@ Use fixture-driven data first. Do not start with live GitHub/Jira/Calendar auth.
 
 ## 6. suggested first task for the next session
 
-Extend live connector coverage beyond GitHub while making connector polling more stateful.
+Deepen the runtime beyond basic live polling and single-event derivation.
 
 Concrete first changes:
 
-1. add live Jira and calendar polling/auth paths that feed the existing normalized event layer without removing the fixture paths
-2. persist connector cursor or last-seen state locally so polling can avoid re-fetching full result sets every run
-3. deepen local derivation so multiple normalized events can combine into richer summaries, blockers, and commitments
+1. replace env-token connector bootstrap with safer connector auth and secret-loading flows
+2. deepen local derivation so multiple normalized events can combine into richer summaries, blockers, commitments, and status deltas
+3. add better incremental sync behavior such as pagination, webhook intake, and connector-specific backoff/retry handling
 4. keep raw source content local and continue publishing only derived artifacts through the existing runtime client

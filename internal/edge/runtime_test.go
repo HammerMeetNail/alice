@@ -353,6 +353,388 @@ func TestRuntimeRunOncePollsLiveGitHub(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunOncePollsLiveJira(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	issueUpdatedAt := time.Date(2026, 3, 19, 15, 45, 0, 0, time.UTC)
+	t.Setenv("ALICE_JIRA_TOKEN", "test-jira-token")
+
+	jiraAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-jira-token" {
+			t.Fatalf("unexpected jira auth header: %q", got)
+		}
+		if r.URL.Path != "/rest/api/3/search" {
+			t.Fatalf("unexpected jira path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("jql"); !strings.Contains(got, `project = "PAY"`) {
+			t.Fatalf("unexpected jira jql: %q", got)
+		}
+
+		payload := map[string]any{
+			"issues": []map[string]any{
+				{
+					"key": "PAY-123",
+					"fields": map[string]any{
+						"issuetype": map[string]any{
+							"name": "Story",
+						},
+						"status": map[string]any{
+							"name": "In Review",
+						},
+						"updated": issueUpdatedAt.Format(time.RFC3339),
+						"assignee": map[string]any{
+							"emailAddress": "sam@example.com",
+						},
+					},
+				},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode jira payload: %v", err)
+		}
+	}))
+	defer jiraAPI.Close()
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			Jira: JiraConnectorConfig{
+				Enabled:     true,
+				APIBaseURL:  jiraAPI.URL,
+				TokenEnvVar: "ALICE_JIRA_TOKEN",
+				Projects: []JiraProjectConfig{
+					{
+						Key:         "PAY",
+						ProjectRefs: []string{"payments-api"},
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load live jira config: %v", err)
+	}
+
+	report, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with live jira polling: %v", err)
+	}
+	if len(report.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one live jira artifact to be published, got %d", len(report.PublishedArtifacts))
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after live jira publish: %v", err)
+	}
+	aliceToken := registerAgent(t, server.URL, "example-corp", "alice@example.com", "alice-agent")
+	grantPermission(t, server.URL, state.AccessToken, map[string]any{
+		"grantee_user_email":     "alice@example.com",
+		"scope_type":             "project",
+		"scope_ref":              "payments-api",
+		"allowed_artifact_types": []string{"summary"},
+		"max_sensitivity":        "medium",
+		"allowed_purposes":       []string{"status_check"},
+	})
+
+	queryID := queryPeerStatus(t, server.URL, aliceToken, map[string]any{
+		"to_user_email":   "sam@example.com",
+		"purpose":         "status_check",
+		"question":        "What has Sam been working on today?",
+		"requested_types": []string{"summary"},
+		"project_scope":   []string{"payments-api"},
+		"time_window": map[string]any{
+			"start": issueUpdatedAt.Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   issueUpdatedAt.Add(1 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	var result map[string]any
+	doJSON(t, server.URL, http.MethodGet, "/v1/queries/"+queryID, aliceToken, nil, &result)
+	response := result["response"].(map[string]any)
+	artifacts := response["artifacts"].([]any)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected one live jira artifact in query result, got %d", len(artifacts))
+	}
+}
+
+func TestRuntimeRunOncePollsLiveGCal(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	eventUpdatedAt := time.Date(2026, 3, 19, 16, 15, 0, 0, time.UTC)
+	eventStartAt := time.Date(2026, 3, 19, 17, 0, 0, 0, time.UTC)
+	eventEndAt := time.Date(2026, 3, 19, 17, 30, 0, 0, time.UTC)
+	t.Setenv("ALICE_GCAL_TOKEN", "test-gcal-token")
+
+	gcalAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-gcal-token" {
+			t.Fatalf("unexpected gcal auth header: %q", got)
+		}
+		if r.URL.Path != "/calendar/v3/calendars/primary/events" {
+			t.Fatalf("unexpected gcal path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("singleEvents"); got != "true" {
+			t.Fatalf("unexpected gcal singleEvents value: %q", got)
+		}
+
+		payload := map[string]any{
+			"items": []map[string]any{
+				{
+					"id":        "evt-1",
+					"status":    "confirmed",
+					"updated":   eventUpdatedAt.Format(time.RFC3339),
+					"eventType": "focusTime",
+					"start": map[string]any{
+						"dateTime": eventStartAt.Format(time.RFC3339),
+					},
+					"end": map[string]any{
+						"dateTime": eventEndAt.Format(time.RFC3339),
+					},
+					"attendees": []map[string]any{
+						{"email": "sam@example.com"},
+						{"email": "alice@example.com"},
+					},
+				},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode gcal payload: %v", err)
+		}
+	}))
+	defer gcalAPI.Close()
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GCal: GCalConnectorConfig{
+				Enabled:     true,
+				APIBaseURL:  gcalAPI.URL + "/calendar/v3",
+				TokenEnvVar: "ALICE_GCAL_TOKEN",
+				Calendars: []GCalCalendarConfig{
+					{
+						ID:          "primary",
+						ProjectRefs: []string{"payments-api"},
+						Category:    "focus",
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load live gcal config: %v", err)
+	}
+
+	report, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with live gcal polling: %v", err)
+	}
+	if len(report.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one live gcal artifact to be published, got %d", len(report.PublishedArtifacts))
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after live gcal publish: %v", err)
+	}
+	aliceToken := registerAgent(t, server.URL, "example-corp", "alice@example.com", "alice-agent")
+	grantPermission(t, server.URL, state.AccessToken, map[string]any{
+		"grantee_user_email":     "alice@example.com",
+		"scope_type":             "project",
+		"scope_ref":              "payments-api",
+		"allowed_artifact_types": []string{"status_delta"},
+		"max_sensitivity":        "medium",
+		"allowed_purposes":       []string{"status_check"},
+	})
+
+	queryID := queryPeerStatus(t, server.URL, aliceToken, map[string]any{
+		"to_user_email":   "sam@example.com",
+		"purpose":         "status_check",
+		"question":        "Is Sam available this afternoon?",
+		"requested_types": []string{"status_delta"},
+		"project_scope":   []string{"payments-api"},
+		"time_window": map[string]any{
+			"start": eventUpdatedAt.Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   eventUpdatedAt.Add(2 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	var result map[string]any
+	doJSON(t, server.URL, http.MethodGet, "/v1/queries/"+queryID, aliceToken, nil, &result)
+	response := result["response"].(map[string]any)
+	artifacts := response["artifacts"].([]any)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected one live gcal artifact in query result, got %d", len(artifacts))
+	}
+}
+
+func TestRuntimeRunOncePersistsJiraCursorState(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	issueUpdatedAt := time.Date(2026, 3, 19, 18, 0, 0, 0, time.UTC)
+	t.Setenv("ALICE_JIRA_TOKEN", "test-jira-token")
+
+	requestCount := 0
+	jiraAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		jql := r.URL.Query().Get("jql")
+		switch requestCount {
+		case 1:
+			if strings.Contains(jql, "updated >") {
+				t.Fatalf("did not expect cursor filter on first jira poll: %q", jql)
+			}
+		case 2:
+			if !strings.Contains(jql, `updated > "2026-03-19 18:00"`) {
+				t.Fatalf("expected cursor filter on second jira poll, got %q", jql)
+			}
+		}
+
+		payload := map[string]any{
+			"issues": []map[string]any{
+				{
+					"key": "PAY-123",
+					"fields": map[string]any{
+						"issuetype": map[string]any{
+							"name": "Story",
+						},
+						"status": map[string]any{
+							"name": "In Review",
+						},
+						"updated": issueUpdatedAt.Format(time.RFC3339),
+						"assignee": map[string]any{
+							"emailAddress": "sam@example.com",
+						},
+					},
+				},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode jira payload: %v", err)
+		}
+	}))
+	defer jiraAPI.Close()
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			Jira: JiraConnectorConfig{
+				Enabled:     true,
+				APIBaseURL:  jiraAPI.URL,
+				TokenEnvVar: "ALICE_JIRA_TOKEN",
+				Projects: []JiraProjectConfig{
+					{
+						Key:         "PAY",
+						ProjectRefs: []string{"payments-api"},
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load jira cursor config: %v", err)
+	}
+
+	firstRun, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("first runtime run: %v", err)
+	}
+	if len(firstRun.PublishedArtifacts) != 1 {
+		t.Fatalf("expected first jira cursor run to publish one artifact, got %d", len(firstRun.PublishedArtifacts))
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after first jira cursor run: %v", err)
+	}
+	if got := state.CursorTime(jiraCursorKey("PAY")); !got.Equal(issueUpdatedAt) {
+		t.Fatalf("expected jira cursor %s, got %s", issueUpdatedAt.Format(time.RFC3339), got.Format(time.RFC3339))
+	}
+
+	state.PublishedArtifacts = map[string]string{}
+	if err := SaveState(cfg.StatePath(), state); err != nil {
+		t.Fatalf("save state with cleared artifacts: %v", err)
+	}
+
+	secondRun, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second jira cursor runtime run: %v", err)
+	}
+	if len(secondRun.PublishedArtifacts) != 0 {
+		t.Fatalf("expected second jira cursor run to publish zero artifacts, got %d", len(secondRun.PublishedArtifacts))
+	}
+}
+
 type edgeConfigFile struct {
 	Agent      AgentConfig      `json:"agent"`
 	Server     ServerConfig     `json:"server"`
