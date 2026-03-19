@@ -2,12 +2,12 @@ FROM docker.io/library/golang:1.23-alpine AS build
 
 WORKDIR /src
 
-COPY go.mod ./
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /out/alice-server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/alice-server ./cmd/server
 
 FROM docker.io/library/alpine:3.20
 

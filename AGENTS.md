@@ -20,9 +20,10 @@ Run these commands from the repository root:
 - `make status`: show container status
 - `make logs`: tail server container logs
 - `make test`: run the Go test suite
+- `make test-postgres`: run the query-flow test path against the local PostgreSQL service
 - `git diff -- README.md AGENTS.md docs/`: inspect documentation changes before committing
 
-Podman is the expected local container runtime for this repository.
+Podman is the expected local container runtime for this repository, and the default local stack includes PostgreSQL.
 
 ## Coding Style & Naming Conventions
 Use Markdown with clear ATX headings (`#`, `##`, `###`) and short, direct paragraphs. Match the existing style:

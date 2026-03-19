@@ -205,17 +205,19 @@ Implemented now:
 - Go coordination server entrypoint and HTTP health endpoint
 - domain models for agents, artifacts, grants, queries, and audit events
 - JSON schemas for artifact, query, and policy-grant payloads
-- in-memory storage
+- repository interfaces plus PostgreSQL-backed storage with embedded startup migrations
+- in-memory storage fallback when `ALICE_DATABASE_URL` is not set
 - HTTP routes for registration, artifact publish, permission grants, peer listing, query submit/result, and audit summary
-- targeted test coverage for the permissioned query flow
-- Podman-based container workflow for local execution
+- targeted test coverage for the permissioned query flow in memory and, when configured, against PostgreSQL
+- Podman-based container workflow for local execution with both the server and PostgreSQL
 
 Current implementation assumptions:
 
 - auth is temporary `X-Agent-ID` header auth
 - access control is explicit-grant-only
 - queries are answered from centrally stored derived artifacts
-- there is no PostgreSQL, MCP surface, edge runtime, connector ingestion, or Gatekeeper request flow yet
+- there is no MCP surface, edge runtime, connector ingestion, or Gatekeeper request flow yet
+- local container runs use PostgreSQL; tests and ad hoc runs can still fall back to in-memory storage when no database URL is set
 
 The current implementation handoff plan lives in `docs/implementation-plan.md`.
 
@@ -224,23 +226,25 @@ The current implementation handoff plan lives in `docs/implementation-plan.md`.
 Run these commands from the repository root:
 
 - prerequisites: `podman` and `podman-compose`
-- `make local`: build and start the local stack with Podman Compose
+- `make local`: build and start the local stack with Podman Compose, including PostgreSQL
 - `make down`: stop the local stack
 - `make status`: show container status
 - `make logs`: tail server logs
 - `make test`: run the Go test suite
+- `make test-postgres`: run the query-flow test path against the local PostgreSQL service
 
-The server is exposed on `http://127.0.0.1:8080`.
+The server reads `ALICE_DATABASE_URL` to decide whether to use PostgreSQL or the in-memory fallback.
+
+The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL instance is exposed on `127.0.0.1:5432`.
 
 ## Next steps
 
 The next recommended implementation steps are:
 
-1. replace the in-memory store with PostgreSQL-backed repositories
-2. add real auth for agent registration and requests
-3. expose the MCP tool surface
-4. add Gatekeeper request and approval flows
-5. add the first edge runtime skeleton before live connectors
+1. add real auth for agent registration and requests
+2. expose the MCP tool surface
+3. add Gatekeeper request and approval flows
+4. add the first edge runtime skeleton before live connectors
 
 Use `docs/implementation-plan.md` as the source of truth for the current step-by-step handoff.
 

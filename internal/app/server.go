@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -13,27 +15,30 @@ import (
 	"alice/internal/httpapi"
 	"alice/internal/policy"
 	"alice/internal/queries"
+	"alice/internal/storage"
 	"alice/internal/storage/memory"
+	"alice/internal/storage/postgres"
 )
 
 type Server struct {
 	httpServer *http.Server
+	closeFn    func() error
 }
 
-func NewServer(cfg config.Config) *Server {
-	store := memory.New()
-	agentService := agents.NewService(store, cfg)
-	artifactService := artifacts.NewService(store)
-	policyService := policy.NewService(store)
-	queryService := queries.NewService(store, artifactService, policyService)
-	auditService := audit.NewService(store)
+type repositories interface {
+	storage.OrganizationRepository
+	storage.UserRepository
+	storage.AgentRepository
+	storage.ArtifactRepository
+	storage.PolicyGrantRepository
+	storage.QueryRepository
+	storage.AuditRepository
+}
 
-	container := services.Container{
-		Agents:    agentService,
-		Artifacts: artifactService,
-		Policy:    policyService,
-		Queries:   queryService,
-		Audit:     auditService,
+func NewServer(cfg config.Config) (*Server, error) {
+	container, closeFn, err := newContainer(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Server{
@@ -42,7 +47,8 @@ func NewServer(cfg config.Config) *Server {
 			Handler:           httpapi.NewRouter(container),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
-	}
+		closeFn: closeFn,
+	}, nil
 }
 
 func (s *Server) Start() error {
@@ -50,5 +56,42 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
+	shutdownErr := s.httpServer.Shutdown(ctx)
+	if s.closeFn == nil {
+		return shutdownErr
+	}
+	return errors.Join(shutdownErr, s.closeFn())
+}
+
+func newContainer(cfg config.Config) (services.Container, func() error, error) {
+	if cfg.DatabaseURL != "" {
+		store, err := postgres.Open(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			return services.Container{}, nil, fmt.Errorf("open postgres store: %w", err)
+		}
+		if err := store.Migrate(context.Background()); err != nil {
+			_ = store.Close()
+			return services.Container{}, nil, fmt.Errorf("migrate postgres store: %w", err)
+		}
+		return buildContainer(store, cfg), store.Close, nil
+	}
+
+	store := memory.New()
+	return buildContainer(store, cfg), nil, nil
+}
+
+func buildContainer(repos repositories, cfg config.Config) services.Container {
+	agentService := agents.NewService(repos, repos, repos, cfg)
+	artifactService := artifacts.NewService(repos)
+	policyService := policy.NewService(repos)
+	queryService := queries.NewService(repos, artifactService, policyService)
+	auditService := audit.NewService(repos)
+
+	return services.Container{
+		Agents:    agentService,
+		Artifacts: artifactService,
+		Policy:    policyService,
+		Queries:   queryService,
+		Audit:     auditService,
+	}
 }

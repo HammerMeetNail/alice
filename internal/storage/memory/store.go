@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"alice/internal/core"
+	"alice/internal/storage"
 )
 
 type Store struct {
@@ -25,6 +26,16 @@ type Store struct {
 	responses       map[string]core.QueryResponse
 	auditEvents     []core.AuditEvent
 }
+
+var (
+	_ storage.OrganizationRepository = (*Store)(nil)
+	_ storage.UserRepository         = (*Store)(nil)
+	_ storage.AgentRepository        = (*Store)(nil)
+	_ storage.ArtifactRepository     = (*Store)(nil)
+	_ storage.PolicyGrantRepository  = (*Store)(nil)
+	_ storage.QueryRepository        = (*Store)(nil)
+	_ storage.AuditRepository        = (*Store)(nil)
+)
 
 func New() *Store {
 	return &Store{
@@ -50,95 +61,95 @@ func normalizeSlug(slug string) string {
 	return strings.ToLower(strings.TrimSpace(slug))
 }
 
-func (s *Store) UpsertOrganization(org core.Organization) core.Organization {
+func (s *Store) UpsertOrganization(org core.Organization) (core.Organization, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.organizations[org.OrgID] = org
 	s.orgsBySlug[normalizeSlug(org.Slug)] = org.OrgID
-	return org
+	return org, nil
 }
 
-func (s *Store) FindOrganizationBySlug(slug string) (core.Organization, bool) {
+func (s *Store) FindOrganizationBySlug(slug string) (core.Organization, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	orgID, ok := s.orgsBySlug[normalizeSlug(slug)]
 	if !ok {
-		return core.Organization{}, false
+		return core.Organization{}, false, nil
 	}
 	org, ok := s.organizations[orgID]
-	return org, ok
+	return org, ok, nil
 }
 
-func (s *Store) UpsertUser(user core.User) core.User {
+func (s *Store) UpsertUser(user core.User) (core.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.users[user.UserID] = user
 	s.usersByEmail[normalizeEmail(user.Email)] = user.UserID
-	return user
+	return user, nil
 }
 
-func (s *Store) FindUserByEmail(email string) (core.User, bool) {
+func (s *Store) FindUserByEmail(email string) (core.User, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	userID, ok := s.usersByEmail[normalizeEmail(email)]
 	if !ok {
-		return core.User{}, false
+		return core.User{}, false, nil
 	}
 	user, ok := s.users[userID]
-	return user, ok
+	return user, ok, nil
 }
 
-func (s *Store) FindUserByID(userID string) (core.User, bool) {
+func (s *Store) FindUserByID(userID string) (core.User, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	user, ok := s.users[userID]
-	return user, ok
+	return user, ok, nil
 }
 
-func (s *Store) UpsertAgent(agent core.Agent) core.Agent {
+func (s *Store) UpsertAgent(agent core.Agent) (core.Agent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.agents[agent.AgentID] = agent
 	s.agentsByUser[agent.OwnerUserID] = agent.AgentID
-	return agent
+	return agent, nil
 }
 
-func (s *Store) FindAgentByID(agentID string) (core.Agent, bool) {
+func (s *Store) FindAgentByID(agentID string) (core.Agent, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	agent, ok := s.agents[agentID]
-	return agent, ok
+	return agent, ok, nil
 }
 
-func (s *Store) FindAgentByUserID(userID string) (core.Agent, bool) {
+func (s *Store) FindAgentByUserID(userID string) (core.Agent, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	agentID, ok := s.agentsByUser[userID]
 	if !ok {
-		return core.Agent{}, false
+		return core.Agent{}, false, nil
 	}
 	agent, ok := s.agents[agentID]
-	return agent, ok
+	return agent, ok, nil
 }
 
-func (s *Store) SaveArtifact(artifact core.Artifact) core.Artifact {
+func (s *Store) SaveArtifact(artifact core.Artifact) (core.Artifact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.artifacts[artifact.ArtifactID] = artifact
 	s.artifactsByUser[artifact.OwnerUserID] = append(s.artifactsByUser[artifact.OwnerUserID], artifact.ArtifactID)
-	return artifact
+	return artifact, nil
 }
 
-func (s *Store) ListArtifactsByOwner(userID string) []core.Artifact {
+func (s *Store) ListArtifactsByOwner(userID string) ([]core.Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -156,18 +167,18 @@ func (s *Store) ListArtifactsByOwner(userID string) []core.Artifact {
 		return artifacts[i].CreatedAt.Before(artifacts[j].CreatedAt)
 	})
 
-	return artifacts
+	return artifacts, nil
 }
 
-func (s *Store) SaveGrant(grant core.PolicyGrant) core.PolicyGrant {
+func (s *Store) SaveGrant(grant core.PolicyGrant) (core.PolicyGrant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.grants[grant.PolicyGrantID] = grant
-	return grant
+	return grant, nil
 }
 
-func (s *Store) ListGrantsForPair(grantorUserID, granteeUserID string) []core.PolicyGrant {
+func (s *Store) ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -182,10 +193,10 @@ func (s *Store) ListGrantsForPair(grantorUserID, granteeUserID string) []core.Po
 		return grants[i].CreatedAt.Before(grants[j].CreatedAt)
 	})
 
-	return grants
+	return grants, nil
 }
 
-func (s *Store) ListIncomingGrantsForUser(granteeUserID string) []core.PolicyGrant {
+func (s *Store) ListIncomingGrantsForUser(granteeUserID string) ([]core.PolicyGrant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -200,63 +211,63 @@ func (s *Store) ListIncomingGrantsForUser(granteeUserID string) []core.PolicyGra
 		return grants[i].CreatedAt.Before(grants[j].CreatedAt)
 	})
 
-	return grants
+	return grants, nil
 }
 
-func (s *Store) SaveQuery(query core.Query) core.Query {
+func (s *Store) SaveQuery(query core.Query) (core.Query, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.queries[query.QueryID] = query
-	return query
+	return query, nil
 }
 
-func (s *Store) SaveQueryResponse(response core.QueryResponse) core.QueryResponse {
+func (s *Store) SaveQueryResponse(response core.QueryResponse) (core.QueryResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.responses[response.QueryID] = response
-	return response
+	return response, nil
 }
 
-func (s *Store) UpdateQueryState(queryID string, state core.QueryState) (core.Query, bool) {
+func (s *Store) UpdateQueryState(queryID string, state core.QueryState) (core.Query, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	query, ok := s.queries[queryID]
 	if !ok {
-		return core.Query{}, false
+		return core.Query{}, false, nil
 	}
 	query.State = state
 	s.queries[queryID] = query
-	return query, true
+	return query, true, nil
 }
 
-func (s *Store) FindQuery(queryID string) (core.Query, bool) {
+func (s *Store) FindQuery(queryID string) (core.Query, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	query, ok := s.queries[queryID]
-	return query, ok
+	return query, ok, nil
 }
 
-func (s *Store) FindQueryResponse(queryID string) (core.QueryResponse, bool) {
+func (s *Store) FindQueryResponse(queryID string) (core.QueryResponse, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	response, ok := s.responses[queryID]
-	return response, ok
+	return response, ok, nil
 }
 
-func (s *Store) AppendAuditEvent(event core.AuditEvent) core.AuditEvent {
+func (s *Store) AppendAuditEvent(event core.AuditEvent) (core.AuditEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.auditEvents = append(s.auditEvents, event)
-	return event
+	return event, nil
 }
 
-func (s *Store) ListAuditEvents(agentID string, since time.Time) []core.AuditEvent {
+func (s *Store) ListAuditEvents(agentID string, since time.Time) ([]core.AuditEvent, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -274,5 +285,5 @@ func (s *Store) ListAuditEvents(agentID string, since time.Time) []core.AuditEve
 		return events[i].CreatedAt.Before(events[j].CreatedAt)
 	})
 
-	return events
+	return events, nil
 }

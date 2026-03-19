@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -61,13 +62,15 @@ func (r *router) handleRegisterAgent(w http.ResponseWriter, req *http.Request) {
 
 	org, user, agent, err := r.services.Agents.RegisterAgent(input.OrgSlug, input.OwnerEmail, input.AgentName, input.ClientType, input.PublicKey, input.Capabilities)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeServiceError(w, err, "agent registration failed")
 		return
 	}
 
-	r.services.Audit.Record("agent.registered", "agent", agent.AgentID, org.OrgID, agent.AgentID, "", "allow", "", nil, map[string]any{
+	if _, err := r.services.Audit.Record("agent.registered", "agent", agent.AgentID, org.OrgID, agent.AgentID, "", "allow", "", nil, map[string]any{
 		"owner_email": user.Email,
-	})
+	}); err != nil {
+		log.Printf("audit record failed for agent registration: %v", err)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agent_id": agent.AgentID,
@@ -94,13 +97,15 @@ func (r *router) handlePublishArtifact(w http.ResponseWriter, req *http.Request)
 
 	artifact, err := r.services.Artifacts.PublishArtifact(agent, user, input.Artifact)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeServiceError(w, err, "artifact publish failed")
 		return
 	}
 
-	r.services.Audit.Record("artifact.published", "artifact", artifact.ArtifactID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
+	if _, err := r.services.Audit.Record("artifact.published", "artifact", artifact.ArtifactID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
 		"artifact_type": artifact.Type,
-	})
+	}); err != nil {
+		log.Printf("audit record failed for artifact publish: %v", err)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"artifact_id": artifact.ArtifactID,
@@ -129,7 +134,11 @@ func (r *router) handleGrantPermission(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	granteeUser, exists := r.services.Agents.FindUserByEmail(input.GranteeUserEmail)
+	granteeUser, exists, err := r.services.Agents.FindUserByEmail(input.GranteeUserEmail)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve grantee user")
+		return
+	}
 	if !exists {
 		writeError(w, http.StatusNotFound, "grantee user not found")
 		return
@@ -137,14 +146,16 @@ func (r *router) handleGrantPermission(w http.ResponseWriter, req *http.Request)
 
 	grant, err := r.services.Policy.Grant(agent.OrgID, user, granteeUser, input.ScopeType, input.ScopeRef, input.AllowedArtifactTypes, input.MaxSensitivity, input.AllowedPurposes)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeServiceError(w, err, "grant creation failed")
 		return
 	}
 
-	r.services.Audit.Record("policy.grant.created", "policy_grant", grant.PolicyGrantID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, []string{"grant:" + grant.PolicyGrantID}, map[string]any{
+	if _, err := r.services.Audit.Record("policy.grant.created", "policy_grant", grant.PolicyGrantID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, []string{"grant:" + grant.PolicyGrantID}, map[string]any{
 		"grantee_email": granteeUser.Email,
 		"scope_ref":     grant.ScopeRef,
-	})
+	}); err != nil {
+		log.Printf("audit record failed for grant creation: %v", err)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"policy_grant_id": grant.PolicyGrantID,
@@ -157,10 +168,18 @@ func (r *router) handleListAllowedPeers(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	grants := r.services.Policy.ListAllowedPeers(user.UserID)
+	grants, err := r.services.Policy.ListAllowedPeers(user.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list allowed peers")
+		return
+	}
 	peers := make([]map[string]any, 0, len(grants))
 	for _, grant := range grants {
-		owner, exists := r.services.Agents.FindUserByID(grant.GrantorUserID)
+		owner, exists, err := r.services.Agents.FindUserByID(grant.GrantorUserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to resolve grant owner")
+			return
+		}
 		if !exists {
 			continue
 		}
@@ -172,7 +191,9 @@ func (r *router) handleListAllowedPeers(w http.ResponseWriter, req *http.Request
 		})
 	}
 
-	r.services.Audit.Record("policy.allowed_peers.listed", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL0, nil, nil)
+	if _, err := r.services.Audit.Record("policy.allowed_peers.listed", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL0, nil, nil); err != nil {
+		log.Printf("audit record failed for allowed peers listing: %v", err)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
 }
 
@@ -202,12 +223,20 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	targetUser, exists := r.services.Agents.FindUserByEmail(input.ToUserEmail)
+	targetUser, exists, err := r.services.Agents.FindUserByEmail(input.ToUserEmail)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve target user")
+		return
+	}
 	if !exists {
 		writeError(w, http.StatusNotFound, "target user not found")
 		return
 	}
-	targetAgent, exists := r.services.Agents.FindAgentByUserID(targetUser.UserID)
+	targetAgent, exists, err := r.services.Agents.FindAgentByUserID(targetUser.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve target agent")
+		return
+	}
 	if !exists {
 		writeError(w, http.StatusNotFound, "target agent not found")
 		return
@@ -234,19 +263,23 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 	response, err := r.services.Queries.Evaluate(query)
 	if err != nil {
 		if errors.Is(err, queries.ErrPermissionDenied) {
-			r.services.Audit.Record("query.denied", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "deny", core.RiskLevelL1, nil, map[string]any{
+			if _, auditErr := r.services.Audit.Record("query.denied", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "deny", core.RiskLevelL1, nil, map[string]any{
 				"to_user_email": targetUser.Email,
-			})
+			}); auditErr != nil {
+				log.Printf("audit record failed for denied query: %v", auditErr)
+			}
 			writeError(w, http.StatusForbidden, "query is not allowed")
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeServiceError(w, err, "query evaluation failed")
 		return
 	}
 
-	r.services.Audit.Record("query.completed", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", core.RiskLevelL1, response.PolicyBasis, map[string]any{
+	if _, err := r.services.Audit.Record("query.completed", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", core.RiskLevelL1, response.PolicyBasis, map[string]any{
 		"artifact_count": len(response.Artifacts),
-	})
+	}); err != nil {
+		log.Printf("audit record failed for completed query: %v", err)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"query_id": query.QueryID,
@@ -261,7 +294,11 @@ func (r *router) handleGetQueryResult(w http.ResponseWriter, req *http.Request) 
 	}
 
 	queryID := strings.TrimPrefix(req.URL.Path, "/v1/queries/")
-	query, response, found := r.services.Queries.FindResult(queryID)
+	query, response, found, err := r.services.Queries.FindResult(queryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load query result")
+		return
+	}
 	if !found {
 		writeError(w, http.StatusNotFound, "query not found")
 		return
@@ -294,7 +331,11 @@ func (r *router) handleAuditSummary(w http.ResponseWriter, req *http.Request) {
 		since = parsed
 	}
 
-	events := r.services.Audit.Summary(agent.AgentID, since)
+	events, err := r.services.Audit.Summary(agent.AgentID, since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load audit summary")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
@@ -328,4 +369,12 @@ func writeError(w http.ResponseWriter, statusCode int, message string) {
 	writeJSON(w, statusCode, map[string]any{
 		"error": message,
 	})
+}
+
+func writeServiceError(w http.ResponseWriter, err error, fallback string) {
+	if core.IsValidationError(err) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeError(w, http.StatusInternalServerError, fallback)
 }

@@ -2,31 +2,32 @@ package queries
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
 	"alice/internal/core"
 	"alice/internal/id"
-	"alice/internal/storage/memory"
+	"alice/internal/storage"
 )
 
 var ErrPermissionDenied = errors.New("permission denied")
 
 type ArtifactSource interface {
-	ListArtifactsByOwner(userID string) []core.Artifact
+	ListArtifactsByOwner(userID string) ([]core.Artifact, error)
 }
 
 type PolicySource interface {
-	ListGrantsForPair(grantorUserID, granteeUserID string) []core.PolicyGrant
+	ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.PolicyGrant, error)
 }
 
 type Service struct {
-	store     *memory.Store
+	store     storage.QueryRepository
 	artifacts ArtifactSource
 	policies  PolicySource
 }
 
-func NewService(store *memory.Store, artifacts ArtifactSource, policies PolicySource) *Service {
+func NewService(store storage.QueryRepository, artifacts ArtifactSource, policies PolicySource) *Service {
 	return &Service{
 		store:     store,
 		artifacts: artifacts,
@@ -35,15 +36,25 @@ func NewService(store *memory.Store, artifacts ArtifactSource, policies PolicySo
 }
 
 func (s *Service) Evaluate(query core.Query) (core.QueryResponse, error) {
-	s.store.SaveQuery(query)
+	if _, err := s.store.SaveQuery(query); err != nil {
+		return core.QueryResponse{}, fmt.Errorf("save query: %w", err)
+	}
 
-	grants := s.policies.ListGrantsForPair(query.ToUserID, query.FromUserID)
+	grants, err := s.policies.ListGrantsForPair(query.ToUserID, query.FromUserID)
+	if err != nil {
+		return core.QueryResponse{}, fmt.Errorf("list grants for pair: %w", err)
+	}
 	if len(grants) == 0 {
-		s.store.UpdateQueryState(query.QueryID, core.QueryStateDenied)
+		if _, _, err := s.store.UpdateQueryState(query.QueryID, core.QueryStateDenied); err != nil {
+			return core.QueryResponse{}, fmt.Errorf("update query state to denied: %w", err)
+		}
 		return core.QueryResponse{}, ErrPermissionDenied
 	}
 
-	allArtifacts := s.artifacts.ListArtifactsByOwner(query.ToUserID)
+	allArtifacts, err := s.artifacts.ListArtifactsByOwner(query.ToUserID)
+	if err != nil {
+		return core.QueryResponse{}, fmt.Errorf("list artifacts by owner: %w", err)
+	}
 	filtered := make([]core.QueryArtifact, 0)
 	policyBasis := make([]string, 0)
 
@@ -90,21 +101,31 @@ func (s *Service) Evaluate(query core.Query) (core.QueryResponse, error) {
 		CreatedAt:     time.Now().UTC(),
 	}
 
-	s.store.SaveQueryResponse(response)
-	s.store.UpdateQueryState(query.QueryID, core.QueryStateCompleted)
+	if _, err := s.store.SaveQueryResponse(response); err != nil {
+		return core.QueryResponse{}, fmt.Errorf("save query response: %w", err)
+	}
+	if _, _, err := s.store.UpdateQueryState(query.QueryID, core.QueryStateCompleted); err != nil {
+		return core.QueryResponse{}, fmt.Errorf("update query state to completed: %w", err)
+	}
 	return response, nil
 }
 
-func (s *Service) FindResult(queryID string) (core.Query, core.QueryResponse, bool) {
-	query, ok := s.store.FindQuery(queryID)
-	if !ok {
-		return core.Query{}, core.QueryResponse{}, false
+func (s *Service) FindResult(queryID string) (core.Query, core.QueryResponse, bool, error) {
+	query, ok, err := s.store.FindQuery(queryID)
+	if err != nil {
+		return core.Query{}, core.QueryResponse{}, false, fmt.Errorf("find query: %w", err)
 	}
-	response, ok := s.store.FindQueryResponse(queryID)
 	if !ok {
-		return query, core.QueryResponse{}, false
+		return core.Query{}, core.QueryResponse{}, false, nil
 	}
-	return query, response, true
+	response, ok, err := s.store.FindQueryResponse(queryID)
+	if err != nil {
+		return core.Query{}, core.QueryResponse{}, false, fmt.Errorf("find query response: %w", err)
+	}
+	if !ok {
+		return query, core.QueryResponse{}, false, nil
+	}
+	return query, response, true, nil
 }
 
 func matchingGrant(grants []core.PolicyGrant, query core.Query, artifact core.Artifact) *core.PolicyGrant {

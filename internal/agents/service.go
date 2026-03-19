@@ -1,24 +1,29 @@
 package agents
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"alice/internal/config"
 	"alice/internal/core"
 	"alice/internal/id"
-	"alice/internal/storage/memory"
+	"alice/internal/storage"
 )
 
 type Service struct {
-	store *memory.Store
-	cfg   config.Config
+	orgs   storage.OrganizationRepository
+	users  storage.UserRepository
+	agents storage.AgentRepository
+	cfg    config.Config
 }
 
-func NewService(store *memory.Store, cfg config.Config) *Service {
+func NewService(orgs storage.OrganizationRepository, users storage.UserRepository, agents storage.AgentRepository, cfg config.Config) *Service {
 	return &Service{
-		store: store,
-		cfg:   cfg,
+		orgs:   orgs,
+		users:  users,
+		agents: agents,
+		cfg:    cfg,
 	}
 }
 
@@ -28,7 +33,10 @@ func (s *Service) RegisterAgent(orgSlug, ownerEmail, agentName, clientType, publ
 	}
 
 	now := time.Now().UTC()
-	org, ok := s.store.FindOrganizationBySlug(orgSlug)
+	org, ok, err := s.orgs.FindOrganizationBySlug(orgSlug)
+	if err != nil {
+		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find organization by slug: %w", err)
+	}
 	if !ok {
 		org = core.Organization{
 			OrgID:     id.New("org"),
@@ -37,10 +45,16 @@ func (s *Service) RegisterAgent(orgSlug, ownerEmail, agentName, clientType, publ
 			CreatedAt: now,
 			Status:    "active",
 		}
-		s.store.UpsertOrganization(org)
+		org, err = s.orgs.UpsertOrganization(org)
+		if err != nil {
+			return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("upsert organization: %w", err)
+		}
 	}
 
-	user, ok := s.store.FindUserByEmail(ownerEmail)
+	user, ok, err := s.users.FindUserByEmail(ownerEmail)
+	if err != nil {
+		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find user by email: %w", err)
+	}
 	if !ok {
 		user = core.User{
 			UserID:      id.New("user"),
@@ -50,10 +64,16 @@ func (s *Service) RegisterAgent(orgSlug, ownerEmail, agentName, clientType, publ
 			CreatedAt:   now,
 			Status:      "active",
 		}
-		s.store.UpsertUser(user)
+		user, err = s.users.UpsertUser(user)
+		if err != nil {
+			return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("upsert user: %w", err)
+		}
 	}
 
-	agent, ok := s.store.FindAgentByUserID(user.UserID)
+	agent, ok, err := s.agents.FindAgentByUserID(user.UserID)
+	if err != nil {
+		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find agent by user id: %w", err)
+	}
 	if ok {
 		agent.AgentName = agentName
 		agent.ClientType = clientType
@@ -75,30 +95,39 @@ func (s *Service) RegisterAgent(orgSlug, ownerEmail, agentName, clientType, publ
 		}
 	}
 
-	s.store.UpsertAgent(agent)
+	agent, err = s.agents.UpsertAgent(agent)
+	if err != nil {
+		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("upsert agent: %w", err)
+	}
 	return org, user, agent, nil
 }
 
 func (s *Service) RequireAgent(agentID string) (core.Agent, core.User, error) {
-	agent, ok := s.store.FindAgentByID(agentID)
+	agent, ok, err := s.agents.FindAgentByID(agentID)
+	if err != nil {
+		return core.Agent{}, core.User{}, fmt.Errorf("find agent by id: %w", err)
+	}
 	if !ok {
 		return core.Agent{}, core.User{}, ErrUnknownAgent
 	}
-	user, ok := s.store.FindUserByID(agent.OwnerUserID)
+	user, ok, err := s.users.FindUserByID(agent.OwnerUserID)
+	if err != nil {
+		return core.Agent{}, core.User{}, fmt.Errorf("find user by id: %w", err)
+	}
 	if !ok {
 		return core.Agent{}, core.User{}, ErrUnknownAgentOwner
 	}
 	return agent, user, nil
 }
 
-func (s *Service) FindUserByEmail(email string) (core.User, bool) {
-	return s.store.FindUserByEmail(email)
+func (s *Service) FindUserByEmail(email string) (core.User, bool, error) {
+	return s.users.FindUserByEmail(email)
 }
 
-func (s *Service) FindUserByID(userID string) (core.User, bool) {
-	return s.store.FindUserByID(userID)
+func (s *Service) FindUserByID(userID string) (core.User, bool, error) {
+	return s.users.FindUserByID(userID)
 }
 
-func (s *Service) FindAgentByUserID(userID string) (core.Agent, bool) {
-	return s.store.FindAgentByUserID(userID)
+func (s *Service) FindAgentByUserID(userID string) (core.Agent, bool, error) {
+	return s.agents.FindAgentByUserID(userID)
 }

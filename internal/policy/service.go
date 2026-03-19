@@ -1,20 +1,21 @@
 package policy
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"alice/internal/core"
 	"alice/internal/id"
-	"alice/internal/storage/memory"
+	"alice/internal/storage"
 )
 
 type Service struct {
-	store *memory.Store
+	repo storage.PolicyGrantRepository
 }
 
-func NewService(store *memory.Store) *Service {
-	return &Service{store: store}
+func NewService(repo storage.PolicyGrantRepository) *Service {
+	return &Service{repo: repo}
 }
 
 func (s *Service) Grant(orgID string, grantorUser core.User, granteeUser core.User, scopeType, scopeRef string, artifactTypes []core.ArtifactType, maxSensitivity core.Sensitivity, purposes []core.QueryPurpose) (core.PolicyGrant, error) {
@@ -37,13 +38,17 @@ func (s *Service) Grant(orgID string, grantorUser core.User, granteeUser core.Us
 		CreatedAt:                 time.Now().UTC(),
 	}
 
-	return s.store.SaveGrant(grant), nil
+	saved, err := s.repo.SaveGrant(grant)
+	if err != nil {
+		return core.PolicyGrant{}, fmt.Errorf("save grant: %w", err)
+	}
+	return saved, nil
 }
 
-func (s *Service) ListGrantsForPair(grantorUserID, granteeUserID string) []core.PolicyGrant {
-	return s.store.ListGrantsForPair(grantorUserID, granteeUserID)
+func (s *Service) ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
+	return s.repo.ListGrantsForPair(grantorUserID, granteeUserID)
 }
 
-func (s *Service) ListAllowedPeers(granteeUserID string) []core.PolicyGrant {
-	return s.store.ListIncomingGrantsForUser(granteeUserID)
+func (s *Service) ListAllowedPeers(granteeUserID string) ([]core.PolicyGrant, error) {
+	return s.repo.ListIncomingGrantsForUser(granteeUserID)
 }

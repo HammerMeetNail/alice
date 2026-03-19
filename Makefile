@@ -2,7 +2,9 @@ SHELL := /bin/sh
 
 PODMAN_COMPOSE := podman compose
 
-.PHONY: local down status logs test
+TEST_POSTGRES_URL ?= postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable
+
+.PHONY: local down status logs test test-postgres
 
 local:
 	@$(PODMAN_COMPOSE) up --build -d
@@ -19,3 +21,6 @@ logs:
 
 test:
 	@go test ./...
+
+test-postgres:
+	@ALICE_TEST_DATABASE_URL=$(TEST_POSTGRES_URL) go test ./...

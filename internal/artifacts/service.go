@@ -1,19 +1,20 @@
 package artifacts
 
 import (
+	"fmt"
 	"time"
 
 	"alice/internal/core"
 	"alice/internal/id"
-	"alice/internal/storage/memory"
+	"alice/internal/storage"
 )
 
 type Service struct {
-	store *memory.Store
+	repo storage.ArtifactRepository
 }
 
-func NewService(store *memory.Store) *Service {
-	return &Service{store: store}
+func NewService(repo storage.ArtifactRepository) *Service {
+	return &Service{repo: repo}
 }
 
 func (s *Service) PublishArtifact(agent core.Agent, user core.User, artifact core.Artifact) (core.Artifact, error) {
@@ -33,9 +34,13 @@ func (s *Service) PublishArtifact(agent core.Agent, user core.User, artifact cor
 	artifact.OwnerUserID = user.UserID
 	artifact.CreatedAt = time.Now().UTC()
 
-	return s.store.SaveArtifact(artifact), nil
+	saved, err := s.repo.SaveArtifact(artifact)
+	if err != nil {
+		return core.Artifact{}, fmt.Errorf("save artifact: %w", err)
+	}
+	return saved, nil
 }
 
-func (s *Service) ListArtifactsByOwner(userID string) []core.Artifact {
-	return s.store.ListArtifactsByOwner(userID)
+func (s *Service) ListArtifactsByOwner(userID string) ([]core.Artifact, error) {
+	return s.repo.ListArtifactsByOwner(userID)
 }

@@ -15,7 +15,9 @@ The repository is no longer design-only. The current implementation includes:
 - a Go module and runnable coordination server entrypoint
 - canonical Go domain models for agents, artifacts, grants, queries, and audit events
 - JSON schema files for artifact, query, and policy-grant payloads
-- an in-memory storage layer
+- repository interfaces for the currently implemented entities
+- a PostgreSQL storage layer with embedded startup migrations
+- an in-memory storage layer that remains available as a fallback when `ALICE_DATABASE_URL` is not set
 - HTTP routes for:
   - `POST /v1/agents/register`
   - `POST /v1/artifacts`
@@ -25,8 +27,8 @@ The repository is no longer design-only. The current implementation includes:
   - `GET /v1/queries/:id`
   - `GET /v1/audit/summary`
   - `GET /healthz`
-- a targeted handler test covering the permissioned query flow
-- a Podman-based local container workflow through `make local` and `make down`
+- a targeted handler test covering the permissioned query flow against memory and, when configured, PostgreSQL
+- a Podman-based local container workflow through `make local` and `make down` that runs both the server and PostgreSQL
 
 ---
 
@@ -38,7 +40,7 @@ These are implementation choices already present in the codebase and should be t
 - the server answers queries from centrally stored derived artifacts
 - access control is explicit-grant-only for now
 - manager-specific visibility defaults are not implemented
-- storage is in-memory only; no PostgreSQL persistence exists yet
+- the server uses PostgreSQL when `ALICE_DATABASE_URL` is set and otherwise falls back to in-memory storage
 - the public surface is HTTP only; MCP has not been implemented yet
 - no edge runtime, connector ingestion, approvals, or Gatekeeper request flows exist yet
 
@@ -58,11 +60,11 @@ From the technical specification’s recommended order:
   - queries
   - audit
   - minimal server wiring
+  - durable PostgreSQL-backed storage for the implemented entities
 
 Not yet complete inside step 2:
 
 - real auth and token issuance
-- durable storage
 - org graph and richer authorization rules
 
 ---
@@ -72,6 +74,8 @@ Not yet complete inside step 2:
 The next session should work through these in order.
 
 ### step a: replace in-memory storage with PostgreSQL
+
+Status: complete for the currently implemented HTTP surface
 
 Implement:
 
@@ -153,11 +157,11 @@ Use fixture-driven data first. Do not start with live GitHub/Jira/Calendar auth.
 
 ## 6. suggested first task for the next session
 
-Start with PostgreSQL persistence and keep the current HTTP behavior stable.
+Start with real auth and keep the current HTTP and PostgreSQL behavior stable.
 
 Concrete first changes:
 
-1. add a database service to `compose.yml`
-2. add migrations for the currently implemented entities
-3. define repository interfaces for the existing services
-4. swap the in-memory store behind those interfaces without changing the route contracts
+1. replace temporary `X-Agent-ID` request auth with a registration challenge and token issuance flow
+2. add authentication middleware for the existing HTTP routes
+3. keep the current route contracts stable where possible so the Postgres-backed tests continue to pass
+4. update this file, `README.md`, and `AGENTS.md` once the auth assumptions change

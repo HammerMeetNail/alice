@@ -13,7 +13,10 @@ import (
 
 func main() {
 	cfg := config.FromEnv()
-	server := app.NewServer(cfg)
+	server, err := app.NewServer(cfg)
+	if err != nil {
+		log.Fatalf("server bootstrap failed: %v", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

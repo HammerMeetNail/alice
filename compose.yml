@@ -1,11 +1,32 @@
 services:
+  db:
+    image: docker.io/library/postgres:16-alpine
+    container_name: alice-db
+    environment:
+      POSTGRES_DB: alice
+      POSTGRES_USER: alice
+      POSTGRES_PASSWORD: alice
+    ports:
+      - "5432:5432"
+    volumes:
+      - alice-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alice -d alice"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   server:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: alice-server
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       ALICE_LISTEN_ADDR: ":8080"
+      ALICE_DATABASE_URL: "postgres://alice:alice@db:5432/alice?sslmode=disable"
     ports:
       - "8080:8080"
     healthcheck:
@@ -13,3 +34,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+volumes:
+  alice-postgres:

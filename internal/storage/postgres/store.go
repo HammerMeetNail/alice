@@ -1,0 +1,116 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"alice/internal/core"
+	"alice/internal/storage"
+
+	_ "github.com/lib/pq"
+)
+
+type Store struct {
+	db *sql.DB
+}
+
+var (
+	_ storage.OrganizationRepository = (*Store)(nil)
+	_ storage.UserRepository         = (*Store)(nil)
+	_ storage.AgentRepository        = (*Store)(nil)
+	_ storage.ArtifactRepository     = (*Store)(nil)
+	_ storage.PolicyGrantRepository  = (*Store)(nil)
+	_ storage.QueryRepository        = (*Store)(nil)
+	_ storage.AuditRepository        = (*Store)(nil)
+)
+
+func Open(ctx context.Context, dsn string) (*Store, error) {
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres connection: %w", err)
+	}
+
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetMaxIdleConns(4)
+	db.SetMaxOpenConns(10)
+
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+
+	return &Store{db: db}, nil
+}
+
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func normalizeSlug(slug string) string {
+	return strings.ToLower(strings.TrimSpace(slug))
+}
+
+func marshalJSON(value any) ([]byte, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func marshalJSONObject(value map[string]any) ([]byte, error) {
+	if value == nil {
+		value = map[string]any{}
+	}
+	return marshalJSON(value)
+}
+
+func marshalStringSlice(value []string) ([]byte, error) {
+	if value == nil {
+		value = []string{}
+	}
+	return marshalJSON(value)
+}
+
+func marshalArtifactTypes(value []core.ArtifactType) ([]byte, error) {
+	if value == nil {
+		value = []core.ArtifactType{}
+	}
+	return marshalJSON(value)
+}
+
+func marshalQueryPurposes(value []core.QueryPurpose) ([]byte, error) {
+	if value == nil {
+		value = []core.QueryPurpose{}
+	}
+	return marshalJSON(value)
+}
+
+func marshalSourceRefs(value []core.SourceReference) ([]byte, error) {
+	if value == nil {
+		value = []core.SourceReference{}
+	}
+	return marshalJSON(value)
+}
+
+func marshalQueryArtifacts(value []core.QueryArtifact) ([]byte, error) {
+	if value == nil {
+		value = []core.QueryArtifact{}
+	}
+	return marshalJSON(value)
+}
+
+func unmarshalJSON(data []byte, target any) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	return json.Unmarshal(data, target)
+}

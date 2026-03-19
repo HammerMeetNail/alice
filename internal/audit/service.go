@@ -1,22 +1,23 @@
 package audit
 
 import (
+	"fmt"
 	"time"
 
 	"alice/internal/core"
 	"alice/internal/id"
-	"alice/internal/storage/memory"
+	"alice/internal/storage"
 )
 
 type Service struct {
-	store *memory.Store
+	repo storage.AuditRepository
 }
 
-func NewService(store *memory.Store) *Service {
-	return &Service{store: store}
+func NewService(repo storage.AuditRepository) *Service {
+	return &Service{repo: repo}
 }
 
-func (s *Service) Record(eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision string, riskLevel core.RiskLevel, policyBasis []string, metadata map[string]any) core.AuditEvent {
+func (s *Service) Record(eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision string, riskLevel core.RiskLevel, policyBasis []string, metadata map[string]any) (core.AuditEvent, error) {
 	event := core.AuditEvent{
 		AuditEventID:  id.New("audit"),
 		OrgID:         orgID,
@@ -31,9 +32,13 @@ func (s *Service) Record(eventKind, subjectType, subjectID, orgID, actorAgentID,
 		CreatedAt:     time.Now().UTC(),
 		Metadata:      metadata,
 	}
-	return s.store.AppendAuditEvent(event)
+	saved, err := s.repo.AppendAuditEvent(event)
+	if err != nil {
+		return core.AuditEvent{}, fmt.Errorf("append audit event: %w", err)
+	}
+	return saved, nil
 }
 
-func (s *Service) Summary(agentID string, since time.Time) []core.AuditEvent {
-	return s.store.ListAuditEvents(agentID, since)
+func (s *Service) Summary(agentID string, since time.Time) ([]core.AuditEvent, error) {
+	return s.repo.ListAuditEvents(agentID, since)
 }
