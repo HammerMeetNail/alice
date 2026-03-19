@@ -187,7 +187,7 @@ Not allowed:
 
 ## Repository status
 
-This repository is currently at the design/specification stage.
+This repository is in early implementation. The current codebase includes an initial Go coordination server scaffold alongside the design documents and a containerized local development workflow.
 
 The initial implementation target is:
 - a modular monolith
@@ -197,6 +197,52 @@ The initial implementation target is:
 - PostgreSQL storage
 - GitHub/Jira/Google Calendar connectors
 - Reporter and Gatekeeper flows
+
+## Current implementation
+
+Implemented now:
+
+- Go coordination server entrypoint and HTTP health endpoint
+- domain models for agents, artifacts, grants, queries, and audit events
+- JSON schemas for artifact, query, and policy-grant payloads
+- in-memory storage
+- HTTP routes for registration, artifact publish, permission grants, peer listing, query submit/result, and audit summary
+- targeted test coverage for the permissioned query flow
+- Podman-based container workflow for local execution
+
+Current implementation assumptions:
+
+- auth is temporary `X-Agent-ID` header auth
+- access control is explicit-grant-only
+- queries are answered from centrally stored derived artifacts
+- there is no PostgreSQL, MCP surface, edge runtime, connector ingestion, or Gatekeeper request flow yet
+
+The current implementation handoff plan lives in `docs/implementation-plan.md`.
+
+## Local development
+
+Run these commands from the repository root:
+
+- prerequisites: `podman` and `podman-compose`
+- `make local`: build and start the local stack with Podman Compose
+- `make down`: stop the local stack
+- `make status`: show container status
+- `make logs`: tail server logs
+- `make test`: run the Go test suite
+
+The server is exposed on `http://127.0.0.1:8080`.
+
+## Next steps
+
+The next recommended implementation steps are:
+
+1. replace the in-memory store with PostgreSQL-backed repositories
+2. add real auth for agent registration and requests
+3. expose the MCP tool surface
+4. add Gatekeeper request and approval flows
+5. add the first edge runtime skeleton before live connectors
+
+Use `docs/implementation-plan.md` as the source of truth for the current step-by-step handoff.
 
 ## Planned repository layout
 

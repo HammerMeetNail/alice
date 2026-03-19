@@ -1,23 +1,28 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The repository is currently design-first. The root contains `README.md`, which defines the product direction and planned runtime layout, and `docs/`, which holds the active specifications:
+The repository is in early implementation. The root now contains runnable server code plus the product and implementation documents:
 
 - `docs/technical-spec.md`: system architecture, scope, and MVP boundaries
 - `docs/threat-model.md`: security goals, trust boundaries, and threat analysis
+- `docs/implementation-plan.md`: current implementation status, encoded assumptions, and the next recommended steps
+- `cmd/server/`: coordination server entrypoint
+- `internal/`: current server packages and in-memory implementation
+- `api/jsonschema/`: current machine-readable schema files
 
-The `README.md` also sketches future implementation directories such as `cmd/`, `internal/`, `api/`, `deploy/`, `scripts/`, and `test/`. Until those exist, keep design work in `docs/` and update the root `README.md` when the planned structure changes.
+Keep the implementation plan, `README.md`, and this file aligned whenever the codebase meaningfully changes.
 
 ## Build, Test, and Development Commands
-There is no build pipeline or automated test suite checked in yet. Current work is Markdown authoring and review.
+Run these commands from the repository root:
 
-Run these examples from the repository root:
+- `make local`: build and start the current server stack with Podman Compose
+- `make down`: stop the Podman Compose stack
+- `make status`: show container status
+- `make logs`: tail server container logs
+- `make test`: run the Go test suite
+- `git diff -- README.md AGENTS.md docs/`: inspect documentation changes before committing
 
-- `git diff -- README.md docs/`: inspect documentation changes before committing
-- `rg -n "TODO|FIXME" README.md docs/`: find unfinished notes
-- `sed -n '1,120p' docs/technical-spec.md`: review a section with line-stable output
-
-If you introduce tooling later, document the exact command here and in `README.md`.
+Podman is the expected local container runtime for this repository.
 
 ## Coding Style & Naming Conventions
 Use Markdown with clear ATX headings (`#`, `##`, `###`) and short, direct paragraphs. Match the existing style:
@@ -29,7 +34,7 @@ Use Markdown with clear ATX headings (`#`, `##`, `###`) and short, direct paragr
 Prefer explicit security and architecture terminology over shorthand. When changing scope, update both the spec and threat model if the decision affects trust boundaries or data handling.
 
 ## Testing Guidelines
-Review changes manually for consistency, broken cross-references, and contradictions between documents. Treat the pair of docs as a single source of truth: security assumptions in `threat-model.md` should align with flows described in `technical-spec.md`.
+Run `make test` for code changes. For documentation changes, review for consistency, broken cross-references, and contradictions between `docs/technical-spec.md`, `docs/threat-model.md`, and `docs/implementation-plan.md`.
 
 ## Commit & Pull Request Guidelines
 Existing history uses short, imperative commit subjects such as `Initial commit` and `Add readme, tech-spec, threat model`. Follow that pattern: one-line, imperative, capitalized, no trailing period.
