@@ -11,9 +11,11 @@ import (
 
 	"alice/internal/agents"
 	"alice/internal/app/services"
+	"alice/internal/approvals"
 	"alice/internal/core"
 	"alice/internal/id"
 	"alice/internal/queries"
+	"alice/internal/requests"
 )
 
 type router struct {
@@ -42,6 +44,11 @@ func (r *router) routes() {
 	r.mux.Handle("GET /v1/peers", r.requireAuth(http.HandlerFunc(r.handleListAllowedPeers)))
 	r.mux.Handle("POST /v1/queries", r.requireAuth(http.HandlerFunc(r.handleQueryPeerStatus)))
 	r.mux.Handle("GET /v1/queries/", r.requireAuth(http.HandlerFunc(r.handleGetQueryResult)))
+	r.mux.Handle("POST /v1/requests", r.requireAuth(http.HandlerFunc(r.handleSendRequestToPeer)))
+	r.mux.Handle("GET /v1/requests/incoming", r.requireAuth(http.HandlerFunc(r.handleListIncomingRequests)))
+	r.mux.Handle("POST /v1/requests/", r.requireAuth(http.HandlerFunc(r.handleRespondToRequest)))
+	r.mux.Handle("GET /v1/approvals", r.requireAuth(http.HandlerFunc(r.handleListPendingApprovals)))
+	r.mux.Handle("POST /v1/approvals/", r.requireAuth(http.HandlerFunc(r.handleResolveApproval)))
 	r.mux.Handle("GET /v1/audit/summary", r.requireAuth(http.HandlerFunc(r.handleAuditSummary)))
 }
 
@@ -392,6 +399,273 @@ func (r *router) handleAuditSummary(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
+type sendRequestToPeerRequest struct {
+	ToUserEmail       string         `json:"to_user_email"`
+	RequestType       string         `json:"request_type"`
+	Title             string         `json:"title"`
+	Content           string         `json:"content"`
+	StructuredPayload map[string]any `json:"structured_payload"`
+}
+
+func (r *router) handleSendRequestToPeer(w http.ResponseWriter, req *http.Request) {
+	agent, user, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	var input sendRequestToPeerRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := core.ValidateRequestInput(input.ToUserEmail, input.RequestType, input.Title, input.Content); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	targetUser, exists, err := r.services.Agents.FindUserByEmail(input.ToUserEmail)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve target user")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "target user not found")
+		return
+	}
+	targetAgent, exists, err := r.services.Agents.FindAgentByUserID(targetUser.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve target agent")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "target agent not found")
+		return
+	}
+
+	requestRecord, err := r.services.Requests.Send(core.Request{
+		OrgID:             agent.OrgID,
+		FromAgentID:       agent.AgentID,
+		FromUserID:        user.UserID,
+		ToAgentID:         targetAgent.AgentID,
+		ToUserID:          targetUser.UserID,
+		RequestType:       input.RequestType,
+		Title:             input.Title,
+		Content:           input.Content,
+		StructuredPayload: input.StructuredPayload,
+		RiskLevel:         core.RiskLevelL1,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "request creation failed")
+		return
+	}
+
+	if _, err := r.services.Audit.Record("request.created", "request", requestRecord.RequestID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", requestRecord.RiskLevel, nil, map[string]any{
+		"request_type":  input.RequestType,
+		"to_user_email": targetUser.Email,
+	}); err != nil {
+		log.Printf("audit record failed for request creation: %v", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"request_id": requestRecord.RequestID,
+		"state":      requestRecord.State,
+	})
+}
+
+func (r *router) handleListIncomingRequests(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	requestsList, err := r.services.Requests.ListIncoming(agent.AgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load incoming requests")
+		return
+	}
+
+	items := make([]map[string]any, 0, len(requestsList))
+	for _, requestRecord := range requestsList {
+		sender, exists, err := r.services.Agents.FindUserByID(requestRecord.FromUserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to resolve request sender")
+			return
+		}
+		if !exists {
+			continue
+		}
+
+		items = append(items, map[string]any{
+			"request_id":      requestRecord.RequestID,
+			"from_user_email": sender.Email,
+			"request_type":    requestRecord.RequestType,
+			"title":           requestRecord.Title,
+			"state":           requestRecord.State,
+			"approval_state":  requestRecord.ApprovalState,
+			"created_at":      requestRecord.CreatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"requests": items})
+}
+
+type respondToRequestRequest struct {
+	Response core.RequestResponseAction `json:"response"`
+	Message  string                     `json:"message"`
+}
+
+func (r *router) handleRespondToRequest(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	requestID, ok := trimActionPath(req.URL.Path, "/v1/requests/", "/respond")
+	if !ok {
+		writeError(w, http.StatusNotFound, "request not found")
+		return
+	}
+
+	var input respondToRequestRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := core.ValidateRequestResponseInput(requestID, input.Response); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	requestRecord, approval, err := r.services.Requests.Respond(agent, requestID, input.Response, input.Message)
+	if err != nil {
+		switch {
+		case errors.Is(err, requests.ErrUnknownRequest):
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		case errors.Is(err, requests.ErrRequestNotVisible):
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		case errors.Is(err, requests.ErrRequestAlreadyClosed):
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		default:
+			writeError(w, http.StatusInternalServerError, "request response failed")
+			return
+		}
+	}
+
+	eventKind := "request.responded"
+	metadata := map[string]any{
+		"state": requestRecord.State,
+	}
+	if approval != nil {
+		eventKind = "request.approval_requested"
+		metadata["approval_id"] = approval.ApprovalID
+	}
+	if _, err := r.services.Audit.Record(eventKind, "request", requestRecord.RequestID, requestRecord.OrgID, agent.AgentID, requestRecord.FromAgentID, "allow", requestRecord.RiskLevel, nil, metadata); err != nil {
+		log.Printf("audit record failed for request response: %v", err)
+	}
+
+	payload := map[string]any{
+		"request_id":     requestRecord.RequestID,
+		"state":          requestRecord.State,
+		"approval_state": requestRecord.ApprovalState,
+	}
+	if approval != nil {
+		payload["approval_id"] = approval.ApprovalID
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (r *router) handleListPendingApprovals(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	approvalsList, err := r.services.Approvals.ListPending(agent.AgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load pending approvals")
+		return
+	}
+	items := make([]map[string]any, 0, len(approvalsList))
+	for _, approval := range approvalsList {
+		items = append(items, map[string]any{
+			"approval_id":  approval.ApprovalID,
+			"subject_type": approval.SubjectType,
+			"subject_id":   approval.SubjectID,
+			"reason":       approval.Reason,
+			"created_at":   approval.CreatedAt,
+			"expires_at":   approval.ExpiresAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approvals": items})
+}
+
+type resolveApprovalRequest struct {
+	Decision core.ApprovalState `json:"decision"`
+}
+
+func (r *router) handleResolveApproval(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	approvalID, ok := trimActionPath(req.URL.Path, "/v1/approvals/", "/resolve")
+	if !ok {
+		writeError(w, http.StatusNotFound, "approval not found")
+		return
+	}
+
+	var input resolveApprovalRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := core.ValidateApprovalResolutionInput(approvalID, input.Decision); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	approval, requestRecord, err := r.services.Approvals.Resolve(agent, approvalID, input.Decision)
+	if err != nil {
+		switch {
+		case errors.Is(err, approvals.ErrUnknownApproval):
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		case errors.Is(err, approvals.ErrApprovalNotVisible):
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		case errors.Is(err, approvals.ErrApprovalResolved):
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		default:
+			writeError(w, http.StatusInternalServerError, "approval resolution failed")
+			return
+		}
+	}
+
+	if _, err := r.services.Audit.Record("approval.resolved", "approval", approval.ApprovalID, approval.OrgID, agent.AgentID, requestRecord.FromAgentID, "allow", requestRecord.RiskLevel, nil, map[string]any{
+		"decision":      approval.State,
+		"request_id":    requestRecord.RequestID,
+		"request_state": requestRecord.State,
+	}); err != nil {
+		log.Printf("audit record failed for approval resolution: %v", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"approval_id": approval.ApprovalID,
+		"state":       approval.State,
+		"request_id":  requestRecord.RequestID,
+	})
+}
+
 func (r *router) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		accessToken, ok := accessTokenFromRequest(req)
@@ -464,6 +738,16 @@ func writeError(w http.ResponseWriter, statusCode int, message string) {
 func writeAuthError(w http.ResponseWriter, message string) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="alice"`)
 	writeError(w, http.StatusUnauthorized, message)
+}
+
+func trimActionPath(path, prefix, suffix string) (string, bool) {
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+	value := strings.TrimPrefix(path, prefix)
+	value = strings.TrimSuffix(value, suffix)
+	value = strings.Trim(value, "/")
+	return value, value != ""
 }
 
 func writeServiceError(w http.ResponseWriter, err error, fallback string) {

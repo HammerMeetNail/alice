@@ -1220,6 +1220,7 @@ Responds to an incoming request.
 - `deferred`
 - `denied`
 - `completed`
+- `require_approval`
 
 ---
 

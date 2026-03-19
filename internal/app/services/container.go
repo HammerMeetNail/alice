@@ -31,6 +31,17 @@ type QueryService interface {
 	FindResult(queryID string) (core.Query, core.QueryResponse, bool, error)
 }
 
+type RequestService interface {
+	Send(request core.Request) (core.Request, error)
+	ListIncoming(agentID string) ([]core.Request, error)
+	Respond(agent core.Agent, requestID string, action core.RequestResponseAction, message string) (core.Request, *core.Approval, error)
+}
+
+type ApprovalService interface {
+	ListPending(agentID string) ([]core.Approval, error)
+	Resolve(agent core.Agent, approvalID string, decision core.ApprovalState) (core.Approval, core.Request, error)
+}
+
 type AuditService interface {
 	Record(eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision string, riskLevel core.RiskLevel, policyBasis []string, metadata map[string]any) (core.AuditEvent, error)
 	Summary(agentID string, since time.Time) ([]core.AuditEvent, error)
@@ -41,5 +52,7 @@ type Container struct {
 	Artifacts ArtifactService
 	Policy    PolicyService
 	Queries   QueryService
+	Requests  RequestService
+	Approvals ApprovalService
 	Audit     AuditService
 }

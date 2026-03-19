@@ -55,6 +55,13 @@ var (
 		VisibilityModeTeamScope,
 		VisibilityModeManagerScope,
 	}
+	allowedRequestResponseActions = []RequestResponseAction{
+		RequestResponseAccept,
+		RequestResponseDefer,
+		RequestResponseDeny,
+		RequestResponseComplete,
+		RequestResponseRequireApproval,
+	}
 )
 
 func ValidateAgentRegistration(orgSlug, ownerEmail, agentName, clientType, publicKey string) error {
@@ -170,6 +177,43 @@ func ValidateQueryInput(toUserEmail string, purpose QueryPurpose, requestedTypes
 	}
 
 	return nil
+}
+
+func ValidateRequestInput(toUserEmail, requestType, title, content string) error {
+	switch {
+	case strings.TrimSpace(toUserEmail) == "":
+		return invalid("to_user_email is required")
+	case strings.TrimSpace(requestType) == "":
+		return invalid("request_type is required")
+	case strings.TrimSpace(title) == "":
+		return invalid("title is required")
+	case strings.TrimSpace(content) == "":
+		return invalid("content is required")
+	default:
+		return nil
+	}
+}
+
+func ValidateRequestResponseInput(requestID string, action RequestResponseAction) error {
+	switch {
+	case strings.TrimSpace(requestID) == "":
+		return invalid("request_id is required")
+	case !slices.Contains(allowedRequestResponseActions, action):
+		return invalidf("invalid response %q", action)
+	default:
+		return nil
+	}
+}
+
+func ValidateApprovalResolutionInput(approvalID string, decision ApprovalState) error {
+	switch {
+	case strings.TrimSpace(approvalID) == "":
+		return invalid("approval_id is required")
+	case decision != ApprovalStateApproved && decision != ApprovalStateDenied:
+		return invalidf("invalid decision %q", decision)
+	default:
+		return nil
+	}
 }
 
 var sensitivityOrder = map[Sensitivity]int{

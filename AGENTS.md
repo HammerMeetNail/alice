@@ -6,8 +6,9 @@ The repository is in early implementation. The root now contains runnable server
 - `docs/technical-spec.md`: system architecture, scope, and MVP boundaries
 - `docs/threat-model.md`: security goals, trust boundaries, and threat analysis
 - `docs/implementation-plan.md`: current implementation status, encoded assumptions, and the next recommended steps
-- `cmd/server/`: coordination server entrypoint
-- `internal/`: current server packages including auth, HTTP API, and memory/PostgreSQL implementations
+- `cmd/server/`: coordination server HTTP entrypoint
+- `cmd/mcp-server/`: stdio MCP entrypoint for local tool clients
+- `internal/`: current server packages including auth, HTTP API, MCP, Gatekeeper flows, and memory/PostgreSQL implementations
 - `api/jsonschema/`: current machine-readable schema files
 
 Keep the implementation plan, `README.md`, and this file aligned whenever the codebase meaningfully changes.

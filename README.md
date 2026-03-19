@@ -203,13 +203,16 @@ The initial implementation target is:
 Implemented now:
 
 - Go coordination server entrypoint and HTTP health endpoint
-- domain models for agents, artifacts, grants, queries, and audit events
+- MCP stdio server entrypoint in `cmd/mcp-server` for local CLI-native tool access
+- domain models for agents, artifacts, grants, queries, requests, approvals, and audit events
 - registration challenge and short-lived bearer-token auth for agent registration and authenticated requests
 - JSON schemas for artifact, query, and policy-grant payloads
-- repository interfaces plus PostgreSQL-backed storage with embedded startup migrations, including auth challenge and token tables
+- repository interfaces plus PostgreSQL-backed storage with embedded startup migrations, including auth, request, and approval tables
 - in-memory storage fallback when `ALICE_DATABASE_URL` is not set
-- HTTP routes for registration challenge, registration completion, artifact publish, permission grants, peer listing, query submit/result, and audit summary
-- targeted test coverage for the permissioned query flow in memory and, when configured, against PostgreSQL
+- HTTP routes for registration challenge, registration completion, artifact publish, permission grants, peer listing, query submit/result, request submit/inbox/respond, approval list/resolve, and audit summary
+- MCP tools for Reporter and the first Gatekeeper slice, including request send/respond and approval list/resolve
+- end-to-end MCP test coverage for registration, artifact publish, grant creation, peer listing, query submission/result retrieval, request send/respond, and approval resolution
+- targeted HTTP test coverage for the permissioned query flow and request/approval flow in memory and, when configured, against PostgreSQL
 - Podman-based container workflow for local execution with both the server and PostgreSQL
 
 Current implementation assumptions:
@@ -217,7 +220,9 @@ Current implementation assumptions:
 - agent registration is a signed Ed25519 challenge flow that returns a short-lived bearer token
 - access control is explicit-grant-only
 - queries are answered from centrally stored derived artifacts
-- there is no MCP surface, edge runtime, connector ingestion, or Gatekeeper request flow yet
+- the MCP surface is currently a local stdio wrapper around the existing HTTP routes and auth flow
+- the first Gatekeeper request and approval flow exists, but approval policy is still explicit/manual rather than risk-engine driven
+- there is no edge runtime or connector ingestion yet
 - local container runs use PostgreSQL; tests and ad hoc runs can still fall back to in-memory storage when no database URL is set
 
 The current implementation handoff plan lives in `docs/implementation-plan.md`.
@@ -236,15 +241,17 @@ Run these commands from the repository root:
 
 The server reads `ALICE_DATABASE_URL` to decide whether to use PostgreSQL or the in-memory fallback.
 
+For local MCP use, run `go run ./cmd/mcp-server`. The server speaks MCP over stdio, can bootstrap registration through the `register_agent` tool, and also accepts `ALICE_MCP_ACCESS_TOKEN` to start with an existing authenticated session.
+
 The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL instance is exposed on `127.0.0.1:5432`.
 
 ## Next steps
 
 The next recommended implementation steps are:
 
-1. expose the MCP tool surface on top of the existing HTTP/service layer
-2. add Gatekeeper request and approval flows
-3. add the first edge runtime skeleton before live connectors
+1. add the first edge runtime skeleton before live connectors
+2. connect the edge runtime to registration, artifact publication, query retrieval, and request inbox polling
+3. start fixture-driven connector ingestion only after the edge runtime skeleton is in place
 
 Use `docs/implementation-plan.md` as the source of truth for the current step-by-step handoff.
 

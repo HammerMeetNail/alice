@@ -121,6 +121,39 @@ CREATE TABLE IF NOT EXISTS query_responses (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS requests (
+    request_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations(org_id),
+    from_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    from_user_id TEXT NOT NULL REFERENCES users(user_id),
+    to_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    to_user_id TEXT NOT NULL REFERENCES users(user_id),
+    request_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    structured_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    risk_level TEXT NOT NULL,
+    state TEXT NOT NULL,
+    approval_state TEXT NOT NULL,
+    response_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approvals (
+    approval_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations(org_id),
+    agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    owner_user_id TEXT NOT NULL REFERENCES users(user_id),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    resolved_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS audit_events (
     audit_event_id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES organizations(org_id),
@@ -153,6 +186,12 @@ CREATE INDEX IF NOT EXISTS idx_agent_tokens_agent_expires_at
 
 CREATE INDEX IF NOT EXISTS idx_queries_to_user_created_at
     ON queries (to_user_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_requests_to_agent_created_at
+    ON requests (to_agent_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_agent_state_created_at
+    ON approvals (agent_id, state, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_actor_created_at
     ON audit_events (actor_agent_id, created_at);

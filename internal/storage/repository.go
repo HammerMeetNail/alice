@@ -52,6 +52,20 @@ type QueryRepository interface {
 	FindQueryResponse(queryID string) (core.QueryResponse, bool, error)
 }
 
+type RequestRepository interface {
+	SaveRequest(request core.Request) (core.Request, error)
+	FindRequest(requestID string) (core.Request, bool, error)
+	ListIncomingRequests(toAgentID string) ([]core.Request, error)
+	UpdateRequestState(requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error)
+}
+
+type ApprovalRepository interface {
+	SaveApproval(approval core.Approval) (core.Approval, error)
+	FindApproval(approvalID string) (core.Approval, bool, error)
+	ListPendingApprovals(agentID string) ([]core.Approval, error)
+	ResolveApproval(approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error)
+}
+
 type AuditRepository interface {
 	AppendAuditEvent(event core.AuditEvent) (core.AuditEvent, error)
 	ListAuditEvents(agentID string, since time.Time) ([]core.AuditEvent, error)

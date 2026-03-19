@@ -27,6 +27,8 @@ var (
 	_ storage.ArtifactRepository                   = (*Store)(nil)
 	_ storage.PolicyGrantRepository                = (*Store)(nil)
 	_ storage.QueryRepository                      = (*Store)(nil)
+	_ storage.RequestRepository                    = (*Store)(nil)
+	_ storage.ApprovalRepository                   = (*Store)(nil)
 	_ storage.AuditRepository                      = (*Store)(nil)
 )
 

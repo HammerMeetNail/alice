@@ -80,6 +80,16 @@ const (
 	RequestStateExpired   RequestState = "expired"
 )
 
+type RequestResponseAction string
+
+const (
+	RequestResponseAccept          RequestResponseAction = "accepted"
+	RequestResponseDefer           RequestResponseAction = "deferred"
+	RequestResponseDeny            RequestResponseAction = "denied"
+	RequestResponseComplete        RequestResponseAction = "completed"
+	RequestResponseRequireApproval RequestResponseAction = "require_approval"
+)
+
 type VisibilityMode string
 
 const (
@@ -225,6 +235,39 @@ type QueryResponse struct {
 	ApprovalState ApprovalState   `json:"approval_state"`
 	Confidence    float64         `json:"confidence"`
 	CreatedAt     time.Time       `json:"created_at"`
+}
+
+type Request struct {
+	RequestID         string         `json:"request_id"`
+	OrgID             string         `json:"org_id"`
+	FromAgentID       string         `json:"from_agent_id"`
+	FromUserID        string         `json:"from_user_id"`
+	ToAgentID         string         `json:"to_agent_id"`
+	ToUserID          string         `json:"to_user_id"`
+	RequestType       string         `json:"request_type"`
+	Title             string         `json:"title"`
+	Content           string         `json:"content"`
+	StructuredPayload map[string]any `json:"structured_payload,omitempty"`
+	RiskLevel         RiskLevel      `json:"risk_level"`
+	State             RequestState   `json:"state"`
+	ApprovalState     ApprovalState  `json:"approval_state"`
+	ResponseMessage   string         `json:"response_message,omitempty"`
+	CreatedAt         time.Time      `json:"created_at"`
+	ExpiresAt         time.Time      `json:"expires_at"`
+}
+
+type Approval struct {
+	ApprovalID  string        `json:"approval_id"`
+	OrgID       string        `json:"org_id"`
+	AgentID     string        `json:"agent_id"`
+	OwnerUserID string        `json:"owner_user_id"`
+	SubjectType string        `json:"subject_type"`
+	SubjectID   string        `json:"subject_id"`
+	Reason      string        `json:"reason"`
+	State       ApprovalState `json:"state"`
+	CreatedAt   time.Time     `json:"created_at"`
+	ExpiresAt   time.Time     `json:"expires_at"`
+	ResolvedAt  *time.Time    `json:"resolved_at,omitempty"`
 }
 
 type PolicyGrant struct {

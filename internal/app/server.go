@@ -9,12 +9,14 @@ import (
 
 	"alice/internal/agents"
 	"alice/internal/app/services"
+	"alice/internal/approvals"
 	"alice/internal/artifacts"
 	"alice/internal/audit"
 	"alice/internal/config"
 	"alice/internal/httpapi"
 	"alice/internal/policy"
 	"alice/internal/queries"
+	"alice/internal/requests"
 	"alice/internal/storage"
 	"alice/internal/storage/memory"
 	"alice/internal/storage/postgres"
@@ -34,11 +36,13 @@ type repositories interface {
 	storage.ArtifactRepository
 	storage.PolicyGrantRepository
 	storage.QueryRepository
+	storage.RequestRepository
+	storage.ApprovalRepository
 	storage.AuditRepository
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
-	container, closeFn, err := newContainer(cfg)
+	container, closeFn, err := NewContainer(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +69,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return errors.Join(shutdownErr, s.closeFn())
 }
 
-func newContainer(cfg config.Config) (services.Container, func() error, error) {
+func NewContainer(cfg config.Config) (services.Container, func() error, error) {
 	if cfg.DatabaseURL != "" {
 		store, err := postgres.Open(context.Background(), cfg.DatabaseURL)
 		if err != nil {
@@ -87,6 +91,8 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService)
+	requestService := requests.NewService(repos, repos)
+	approvalService := approvals.NewService(repos, repos)
 	auditService := audit.NewService(repos)
 
 	return services.Container{
@@ -94,6 +100,8 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 		Artifacts: artifactService,
 		Policy:    policyService,
 		Queries:   queryService,
+		Requests:  requestService,
+		Approvals: approvalService,
 		Audit:     auditService,
 	}
 }
