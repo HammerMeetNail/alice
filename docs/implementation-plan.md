@@ -23,7 +23,7 @@ The repository is no longer design-only. The current implementation includes:
 - a signed registration challenge flow with short-lived bearer-token issuance for agents
 - an MCP wrapper layer that maps the current tool surface onto the existing HTTP route contracts
 - a normalized edge connector event layer shared by fixture and live connector ingestion
-- an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, bootstrap GitHub/Jira/Calendar connectors through a local OAuth loopback callback, persist bootstrapped connector credentials in a dedicated local credential store, optionally encrypt that store with a local key, refresh expired OAuth credentials when refresh tokens are available, poll live GitHub/Jira/Calendar metadata through env-backed token auth, token-file loading, or bootstrapped local credentials, page through multi-response connector APIs, retry transient 429/5xx connector failures with short backoff, accept signed local GitHub `pull_request` webhooks, accept shared-secret Jira issue webhooks, accept shared-secret Google Calendar change notifications that trigger incremental event fetches, persist webhook delivery receipts and Google Calendar channel message numbers to suppress duplicate or replayed webhook deliveries, persist local connector cursor state, persist the latest published artifact ID per logical derivation slot, derive project-level aggregate status/blocker/commitment artifacts, supersede older logical connector-derived artifacts through stable derivation keys, retrieve watched query results, and poll incoming requests
+- an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, bootstrap GitHub/Jira/Calendar connectors through a local OAuth loopback callback, persist bootstrapped connector credentials in a dedicated local credential store, optionally encrypt that store with a local key, refresh expired OAuth credentials when refresh tokens are available, poll live GitHub/Jira/Calendar metadata through env-backed token auth, token-file loading, or bootstrapped local credentials, page through multi-response connector APIs, retry transient 429/5xx connector failures with short backoff, accept signed local GitHub `pull_request` webhooks, accept shared-secret Jira issue webhooks, accept shared-secret Google Calendar change notifications that trigger incremental event fetches, persist webhook delivery receipts and Google Calendar channel message numbers to suppress duplicate or replayed webhook deliveries, persist local connector cursor state, persist the latest published artifact ID per logical derivation slot, persist project signal state so blocker-resolution and commitment-completion transitions can supersede stale blocker and commitment artifacts, derive project-level aggregate status/blocker/commitment artifacts plus transition-aware status deltas, retrieve watched query results, and poll incoming requests
 - HTTP routes for:
   - `POST /v1/agents/register/challenge`
   - `POST /v1/agents/register`
@@ -61,7 +61,7 @@ These are implementation choices already present in the codebase and should be t
 - query time windows prefer source observation timestamps when an artifact carries source refs
 - the edge runtime uses local JSON config plus artifact fixtures and a normalized event pipeline for GitHub/Jira/calendar inputs
 - live polling exists for GitHub, Jira, and calendar inputs through env-backed token auth, token files, bootstrapped local credentials, and source-specific config
-- the edge runtime now supports both polling and initial push paths through signed local GitHub webhooks, shared-secret Jira webhooks, and shared-secret Google Calendar change notifications, persists webhook delivery receipts plus Google Calendar channel message numbers to suppress duplicate or replayed deliveries, live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, and the edge runtime can now complete a local OAuth bootstrap with PKCE and callback-state validation, persist connector credentials in a dedicated local credential store with file-permission checks, optionally encrypt that store with a local key, refresh expired OAuth credentials when refresh tokens are available, and surface actionable re-auth guidance when refresh cannot proceed
+- the edge runtime now supports both polling and initial push paths through signed local GitHub webhooks, shared-secret Jira webhooks, and shared-secret Google Calendar change notifications, persists webhook delivery receipts plus Google Calendar channel message numbers to suppress duplicate or replayed deliveries, live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, persists per-project signal state so blocker-resolution and commitment-completion transitions can supersede stale aggregate artifacts, and can now complete a local OAuth bootstrap with PKCE and callback-state validation, persist connector credentials in a dedicated local credential store with file-permission checks, optionally encrypt that store with a local key, refresh expired OAuth credentials when refresh tokens are available, and surface actionable re-auth guidance when refresh cannot proceed
 - edge-derived artifacts now carry stable derivation keys, the edge runtime persists the latest published artifact ID per derivation slot, updated logical artifacts supersede prior ones, and query evaluation skips superseded artifacts
 - richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
 
@@ -127,6 +127,7 @@ Not yet complete inside step 2:
   - automatic refresh-token exchange for expired stored OAuth credentials
   - actionable connector re-auth errors surfaced to the edge-agent CLI
   - stable derivation keys, persisted latest-derived-artifact tracking, and replacement-aware publication for connector-derived artifacts
+  - persisted per-project signal state and transition-aware blocker-resolution / commitment-completion status deltas that supersede stale blocker and commitment artifacts
   - query-time filtering of superseded artifacts
   - project-level aggregate status_delta, blocker, and commitment artifacts derived from cross-source events
 
@@ -228,11 +229,11 @@ Use fixture-driven data first. Do not start with live GitHub/Jira/Calendar auth.
 
 ## 6. suggested first task for the next session
 
-Build on the current paginated, replacement-aware edge runtime with richer derivation and operator hardening.
+Build on the current paginated, replacement-aware edge runtime with operator hardening and deeper connector lifecycle management.
 
 Concrete first changes:
 
-1. deepen derivation beyond the current project-level heuristics with richer blocker-resolution and commitment-completion signals
-2. harden local operator workflows further with rotation tooling and safer credential-key management
-3. add connector lifecycle tooling around webhook/watch registration and local rotation workflows
+1. harden local operator workflows further with rotation tooling and safer credential-key management
+2. add connector lifecycle tooling around webhook/watch registration and local rotation workflows
+3. deepen derivation further with connector-native or model-assisted signals beyond the current rule-based transitions
 4. keep raw source content local and continue publishing only derived artifacts through the existing runtime client

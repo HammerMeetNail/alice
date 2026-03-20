@@ -2338,6 +2338,149 @@ func TestRuntimeRunOncePublishesAggregateProjectArtifacts(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunOnceSupersedesResolvedBlockerAndCompletedCommitmentArtifacts(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	tempDir := t.TempDir()
+	githubFixturePath := filepath.Join(tempDir, "github-fixtures.json")
+	jiraFixturePath := filepath.Join(tempDir, "jira-fixtures.json")
+	gcalFixturePath := filepath.Join(tempDir, "gcal-fixtures.json")
+
+	firstObservedAt := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	secondObservedAt := firstObservedAt.Add(30 * time.Minute)
+
+	writeGitHubFixtureFileWithValues(t, githubFixturePath, "org/payments", 128, "open", "changes_requested", firstObservedAt, []string{"payments-api"})
+	writeJiraFixtureFileWithValues(t, jiraFixturePath, "PAY-123", "Story", "Blocked", firstObservedAt, []string{"payments-api"})
+	writeGCalFixtureFileWithValues(t, gcalFixturePath, []gcalEvent{
+		{
+			EventID:       "evt-1",
+			Category:      "focus",
+			StartAt:       firstObservedAt.Add(20 * time.Minute),
+			EndAt:         firstObservedAt.Add(50 * time.Minute),
+			ProjectRefs:   []string{"payments-api"},
+			AttendeeCount: 2,
+		},
+	})
+
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				FixtureFile: "github-fixtures.json",
+			},
+			Jira: JiraConnectorConfig{
+				FixtureFile: "jira-fixtures.json",
+			},
+			GCal: GCalConnectorConfig{
+				FixtureFile: "gcal-fixtures.json",
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load transition fixture config: %v", err)
+	}
+
+	firstRun, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with blocking fixtures: %v", err)
+	}
+	if len(firstRun.PublishedArtifacts) < 4 {
+		t.Fatalf("expected initial run to publish aggregate blocker/commitment artifacts, got %d", len(firstRun.PublishedArtifacts))
+	}
+
+	writeGitHubFixtureFileWithValues(t, githubFixturePath, "org/payments", 128, "merged", "approved", secondObservedAt, []string{"payments-api"})
+	writeJiraFixtureFileWithValues(t, jiraFixturePath, "PAY-123", "Story", "Done", secondObservedAt, []string{"payments-api"})
+	writeGCalFixtureFileWithValues(t, gcalFixturePath, nil)
+
+	secondRun, err := NewRuntime(cfg).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run edge runtime with completed fixtures: %v", err)
+	}
+	if len(secondRun.PublishedArtifacts) < 3 {
+		t.Fatalf("expected second run to publish resolved/completed status signals, got %d", len(secondRun.PublishedArtifacts))
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after transition publish: %v", err)
+	}
+	if got := state.ProjectSignalState(projectSignalDerivationKey("payments-api", "blocker")); got != "inactive" {
+		t.Fatalf("expected blocker signal state to be inactive, got %q", got)
+	}
+	if got := state.ProjectSignalState(projectSignalDerivationKey("payments-api", "commitment")); got != "inactive" {
+		t.Fatalf("expected commitment signal state to be inactive, got %q", got)
+	}
+
+	aliceToken := registerAgent(t, server.URL, "example-corp", "alice@example.com", "alice-agent")
+	grantPermission(t, server.URL, state.AccessToken, map[string]any{
+		"grantee_user_email":     "alice@example.com",
+		"scope_type":             "project",
+		"scope_ref":              "payments-api",
+		"allowed_artifact_types": []string{"status_delta", "blocker", "commitment"},
+		"max_sensitivity":        "medium",
+		"allowed_purposes":       []string{"status_check"},
+	})
+
+	queryID := queryPeerStatus(t, server.URL, aliceToken, map[string]any{
+		"to_user_email":   "sam@example.com",
+		"purpose":         "status_check",
+		"question":        "What changed on payments-api?",
+		"requested_types": []string{"status_delta", "blocker", "commitment"},
+		"project_scope":   []string{"payments-api"},
+		"time_window": map[string]any{
+			"start": firstObservedAt.Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   secondObservedAt.Add(2 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	var result map[string]any
+	doJSON(t, server.URL, http.MethodGet, "/v1/queries/"+queryID, aliceToken, nil, &result)
+	response := result["response"].(map[string]any)
+	artifacts := response["artifacts"].([]any)
+	if len(artifacts) < 3 {
+		t.Fatalf("expected resolved/completed project artifacts in query result, got %d", len(artifacts))
+	}
+
+	statusDeltaCount := 0
+	for _, artifact := range artifacts {
+		payload := artifact.(map[string]any)
+		switch payload["type"].(string) {
+		case "blocker":
+			t.Fatalf("expected superseded blocker artifact to be hidden after resolution")
+		case "commitment":
+			t.Fatalf("expected superseded commitment artifact to be hidden after completion")
+		case "status_delta":
+			statusDeltaCount++
+		}
+	}
+	if statusDeltaCount < 3 {
+		t.Fatalf("expected at least three status_delta artifacts after resolution/completion, got %d", statusDeltaCount)
+	}
+}
+
 func TestRuntimeBootstrapGitHubConnectorPersistsCredentialAndUsesIt(t *testing.T) {
 	handler, closeFn := newTestHandler(t)
 	if closeFn != nil {
@@ -3052,14 +3195,20 @@ func writeGitHubFixtureFileWithValues(t *testing.T, path, repository string, num
 func writeJiraFixtureFile(t *testing.T, path string) {
 	t.Helper()
 
+	writeJiraFixtureFileWithValues(t, path, "PAY-123", "Story", "In Review", time.Now().UTC(), []string{"payments-api"})
+}
+
+func writeJiraFixtureFileWithValues(t *testing.T, path, key, issueType, status string, observedAt time.Time, projectRefs []string) {
+	t.Helper()
+
 	payload := map[string]any{
 		"issues": []map[string]any{
 			{
-				"key":          "PAY-123",
-				"issue_type":   "Story",
-				"status":       "In Review",
-				"updated_at":   time.Now().UTC().Format(time.RFC3339),
-				"project_refs": []string{"payments-api"},
+				"key":          key,
+				"issue_type":   issueType,
+				"status":       status,
+				"updated_at":   observedAt.Format(time.RFC3339),
+				"project_refs": projectRefs,
 			},
 		},
 	}
@@ -3077,17 +3226,34 @@ func writeGCalFixtureFile(t *testing.T, path string) {
 
 	startAt := time.Now().UTC().Add(30 * time.Minute)
 	endAt := startAt.Add(30 * time.Minute)
-	payload := map[string]any{
-		"events": []map[string]any{
-			{
-				"event_id":       "evt-1",
-				"category":       "focus",
-				"start_at":       startAt.Format(time.RFC3339),
-				"end_at":         endAt.Format(time.RFC3339),
-				"project_refs":   []string{"payments-api"},
-				"attendee_count": 2,
-			},
+	writeGCalFixtureFileWithValues(t, path, []gcalEvent{
+		{
+			EventID:       "evt-1",
+			Category:      "focus",
+			StartAt:       startAt,
+			EndAt:         endAt,
+			ProjectRefs:   []string{"payments-api"},
+			AttendeeCount: 2,
 		},
+	})
+}
+
+func writeGCalFixtureFileWithValues(t *testing.T, path string, events []gcalEvent) {
+	t.Helper()
+
+	payloadEvents := make([]map[string]any, 0, len(events))
+	for _, event := range events {
+		payloadEvents = append(payloadEvents, map[string]any{
+			"event_id":       event.EventID,
+			"category":       event.Category,
+			"start_at":       event.StartAt.Format(time.RFC3339),
+			"end_at":         event.EndAt.Format(time.RFC3339),
+			"project_refs":   event.ProjectRefs,
+			"attendee_count": event.AttendeeCount,
+		})
+	}
+	payload := map[string]any{
+		"events": payloadEvents,
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

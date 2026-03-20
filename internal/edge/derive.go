@@ -63,20 +63,20 @@ func (s fixtureEventSource) Poll(ctx context.Context, state State, _ CredentialS
 	return s.load(ctx, state)
 }
 
-func loadConnectorArtifacts(ctx context.Context, cfg Config, state State, credentials CredentialStore) ([]core.Artifact, map[string]time.Time, error) {
+func loadConnectorArtifacts(ctx context.Context, cfg Config, state *State, credentials CredentialStore) ([]core.Artifact, map[string]time.Time, error) {
 	sources := configuredEventSources(cfg)
 	events := make([]NormalizedEvent, 0)
 	cursorUpdates := make(map[string]time.Time)
 	for _, source := range sources {
-		sourceEvents, err := source.Poll(ctx, state, credentials)
+		sourceEvents, err := source.Poll(ctx, *state, credentials)
 		if err != nil {
 			return nil, nil, fmt.Errorf("poll %s: %w", source.Name(), err)
 		}
-		freshEvents, sourceUpdates := filterEventsSinceCursors(state, sourceEvents)
+		freshEvents, sourceUpdates := filterEventsSinceCursors(*state, sourceEvents)
 		mergeCursorUpdates(cursorUpdates, sourceUpdates)
 		events = append(events, freshEvents...)
 	}
-	return deriveArtifacts(events), cursorUpdates, nil
+	return deriveArtifacts(events, state), cursorUpdates, nil
 }
 
 func configuredEventSources(cfg Config) []EventSource {
@@ -228,7 +228,7 @@ func normalizeFixtureGCalEvent(event gcalEvent) NormalizedEvent {
 	}
 }
 
-func deriveArtifacts(events []NormalizedEvent) []core.Artifact {
+func deriveArtifacts(events []NormalizedEvent, state *State) []core.Artifact {
 	artifacts := make([]core.Artifact, 0, len(events))
 	for _, event := range events {
 		switch {
@@ -240,7 +240,7 @@ func deriveArtifacts(events []NormalizedEvent) []core.Artifact {
 			artifacts = append(artifacts, deriveGCalArtifact(event))
 		}
 	}
-	artifacts = append(artifacts, deriveAggregateArtifacts(events)...)
+	artifacts = append(artifacts, deriveAggregateArtifacts(events, state)...)
 	return artifacts
 }
 
@@ -345,7 +345,7 @@ func deriveGCalArtifact(event NormalizedEvent) core.Artifact {
 	}
 }
 
-func deriveAggregateArtifacts(events []NormalizedEvent) []core.Artifact {
+func deriveAggregateArtifacts(events []NormalizedEvent, state *State) []core.Artifact {
 	groups := groupEventsByProject(events)
 	if len(groups) == 0 {
 		return nil
@@ -363,11 +363,25 @@ func deriveAggregateArtifacts(events []NormalizedEvent) []core.Artifact {
 		if len(group.GitHub) > 0 && len(group.Jira) > 0 {
 			artifacts = append(artifacts, deriveProjectStatusDelta(projectRef, group))
 		}
+		blockerSlot := projectSignalDerivationKey(projectRef, "blocker")
 		if hasProjectBlocker(group) {
-			artifacts = append(artifacts, deriveProjectBlocker(projectRef, group))
+			artifacts = append(artifacts, deriveProjectBlocker(projectRef, group, blockerSlot))
+			if state != nil {
+				state.SetProjectSignalState(blockerSlot, "active")
+			}
+		} else if state != nil && state.ProjectSignalState(blockerSlot) == "active" && hasProjectBlockerResolutionSignal(group) {
+			artifacts = append(artifacts, deriveProjectBlockerResolved(projectRef, group, blockerSlot))
+			state.SetProjectSignalState(blockerSlot, "inactive")
 		}
-		if len(group.GCal) > 0 && (len(group.GitHub) > 0 || len(group.Jira) > 0) {
-			artifacts = append(artifacts, deriveProjectCommitment(projectRef, group))
+		commitmentSlot := projectSignalDerivationKey(projectRef, "commitment")
+		if hasProjectCommitment(group) {
+			artifacts = append(artifacts, deriveProjectCommitment(projectRef, group, commitmentSlot))
+			if state != nil {
+				state.SetProjectSignalState(commitmentSlot, "active")
+			}
+		} else if state != nil && state.ProjectSignalState(commitmentSlot) == "active" && hasProjectCommitmentCompletionSignal(group) {
+			artifacts = append(artifacts, deriveProjectCommitmentCompleted(projectRef, group, commitmentSlot))
+			state.SetProjectSignalState(commitmentSlot, "inactive")
 		}
 	}
 	return artifacts
@@ -427,6 +441,7 @@ func deriveProjectStatusDelta(projectRef string, group projectEventGroup) core.A
 			"repository":             repository,
 			"pull_request_number":    pullRequestNumber,
 			"review_status":          reviewStatus,
+			"signal_kind":            "cross_system_update",
 			"aggregated_event_count": len(group.GitHub) + len(group.Jira),
 		},
 		SourceRefs:     sourceReferencesForEvents(append(append([]NormalizedEvent{}, group.GitHub...), group.Jira...)),
@@ -436,7 +451,7 @@ func deriveProjectStatusDelta(projectRef string, group projectEventGroup) core.A
 	}
 }
 
-func deriveProjectBlocker(projectRef string, group projectEventGroup) core.Artifact {
+func deriveProjectBlocker(projectRef string, group projectEventGroup, derivationKey string) core.Artifact {
 	repository := eventStringAttribute(latestEvent(group.GitHub), "repository", "unknown")
 	pullRequestNumber := eventIntAttribute(latestEvent(group.GitHub), "number", 0)
 	issueKey := eventStringAttribute(latestEvent(group.Jira), "issue_key", "")
@@ -450,12 +465,13 @@ func deriveProjectBlocker(projectRef string, group projectEventGroup) core.Artif
 		Title:   fmt.Sprintf("Potential blocker on %s", projectRef),
 		Content: content,
 		StructuredPayload: map[string]any{
-			"derivation_key":      projectArtifactDerivationKey(projectRef, core.ArtifactTypeBlocker),
+			"derivation_key":      derivationKey,
 			"project_refs":        []string{projectRef},
 			"source_systems":      []string{"github", "jira"},
 			"issue_key":           issueKey,
 			"repository":          repository,
 			"pull_request_number": pullRequestNumber,
+			"signal_kind":         "blocker_active",
 		},
 		SourceRefs:     sourceReferencesForEvents(append(append([]NormalizedEvent{}, group.GitHub...), group.Jira...)),
 		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
@@ -464,7 +480,53 @@ func deriveProjectBlocker(projectRef string, group projectEventGroup) core.Artif
 	}
 }
 
-func deriveProjectCommitment(projectRef string, group projectEventGroup) core.Artifact {
+func deriveProjectBlockerResolved(projectRef string, group projectEventGroup, derivationKey string) core.Artifact {
+	issueKey := eventStringAttribute(latestEvent(group.Jira), "issue_key", "")
+	issueStatus := normalizeLabel(eventStringAttribute(latestEvent(group.Jira), "status", ""), "")
+	repository := eventStringAttribute(latestEvent(group.GitHub), "repository", "unknown")
+	pullRequestNumber := eventIntAttribute(latestEvent(group.GitHub), "number", 0)
+	reviewStatus := normalizeLabel(eventStringAttribute(latestEvent(group.GitHub), "review_status", ""), "")
+
+	evidence := make([]string, 0, 2)
+	if issueKey != "" && issueStatus != "" {
+		evidence = append(evidence, fmt.Sprintf("%s is now in %s", issueKey, issueStatus))
+	}
+	if repository != "unknown" && pullRequestNumber > 0 {
+		if reviewStatus != "" {
+			evidence = append(evidence, fmt.Sprintf("%s PR #%d now shows review status %s", repository, pullRequestNumber, reviewStatus))
+		} else {
+			evidence = append(evidence, fmt.Sprintf("%s PR #%d no longer shows blocked review signals", repository, pullRequestNumber))
+		}
+	}
+
+	content := fmt.Sprintf(
+		"Cross-system activity indicates the earlier blocker on %s may be resolved%s.",
+		projectRef,
+		formatEvidenceSuffix(evidence),
+	)
+
+	return core.Artifact{
+		Type:    core.ArtifactTypeStatusDelta,
+		Title:   fmt.Sprintf("Blocker cleared on %s", projectRef),
+		Content: content,
+		StructuredPayload: map[string]any{
+			"derivation_key":      derivationKey,
+			"project_refs":        []string{projectRef},
+			"source_systems":      []string{"github", "jira"},
+			"issue_key":           issueKey,
+			"repository":          repository,
+			"pull_request_number": pullRequestNumber,
+			"review_status":       reviewStatus,
+			"signal_kind":         "blocker_resolved",
+		},
+		SourceRefs:     sourceReferencesForEvents(append(append([]NormalizedEvent{}, group.GitHub...), group.Jira...)),
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Sensitivity:    maxSensitivityForEvents(group.GitHub, group.Jira),
+		Confidence:     0.76,
+	}
+}
+
+func deriveProjectCommitment(projectRef string, group projectEventGroup, derivationKey string) core.Artifact {
 	calendarEvent := latestEvent(group.GCal)
 	category := normalizeLabel(eventStringAttribute(calendarEvent, "category", "work"), "work")
 	startAt := eventTimeAttribute(calendarEvent, "start_at", calendarEvent.ObservedAt)
@@ -480,17 +542,60 @@ func deriveProjectCommitment(projectRef string, group projectEventGroup) core.Ar
 		Title:   fmt.Sprintf("Planned follow-up for %s", projectRef),
 		Content: content,
 		StructuredPayload: map[string]any{
-			"derivation_key":         projectArtifactDerivationKey(projectRef, core.ArtifactTypeCommitment),
+			"derivation_key":         derivationKey,
 			"project_refs":           []string{projectRef},
 			"source_systems":         []string{"gcal", "github", "jira"},
 			"category":               category,
 			"start_at":               startAt,
+			"signal_kind":            "commitment_active",
 			"aggregated_event_count": len(group.GCal) + len(group.GitHub) + len(group.Jira),
 		},
 		SourceRefs:     sourceReferencesForEvents(append(append(append([]NormalizedEvent{}, group.GCal...), group.GitHub...), group.Jira...)),
 		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
 		Sensitivity:    maxSensitivityForEvents(group.GCal, group.GitHub, group.Jira),
 		Confidence:     0.68,
+	}
+}
+
+func deriveProjectCommitmentCompleted(projectRef string, group projectEventGroup, derivationKey string) core.Artifact {
+	issueKey := eventStringAttribute(latestEvent(group.Jira), "issue_key", "")
+	issueStatus := normalizeLabel(eventStringAttribute(latestEvent(group.Jira), "status", ""), "")
+	repository := eventStringAttribute(latestEvent(group.GitHub), "repository", "unknown")
+	pullRequestNumber := eventIntAttribute(latestEvent(group.GitHub), "number", 0)
+	gitHubState := normalizeLabel(eventStringAttribute(latestEvent(group.GitHub), "state", ""), "")
+
+	evidence := make([]string, 0, 2)
+	if issueKey != "" && issueStatus != "" {
+		evidence = append(evidence, fmt.Sprintf("%s is now in %s", issueKey, issueStatus))
+	}
+	if repository != "unknown" && pullRequestNumber > 0 && gitHubState != "" {
+		evidence = append(evidence, fmt.Sprintf("%s PR #%d is now %s", repository, pullRequestNumber, gitHubState))
+	}
+
+	content := fmt.Sprintf(
+		"Cross-system activity indicates the planned follow-up on %s was completed%s.",
+		projectRef,
+		formatEvidenceSuffix(evidence),
+	)
+
+	return core.Artifact{
+		Type:    core.ArtifactTypeStatusDelta,
+		Title:   fmt.Sprintf("Completed follow-up on %s", projectRef),
+		Content: content,
+		StructuredPayload: map[string]any{
+			"derivation_key":      derivationKey,
+			"project_refs":        []string{projectRef},
+			"source_systems":      []string{"github", "jira"},
+			"issue_key":           issueKey,
+			"repository":          repository,
+			"pull_request_number": pullRequestNumber,
+			"state":               gitHubState,
+			"signal_kind":         "commitment_completed",
+		},
+		SourceRefs:     sourceReferencesForEvents(append(append([]NormalizedEvent{}, group.GitHub...), group.Jira...)),
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Sensitivity:    maxSensitivityForEvents(group.GitHub, group.Jira),
+		Confidence:     0.78,
 	}
 }
 
@@ -511,6 +616,42 @@ func hasProjectBlocker(group projectEventGroup) bool {
 		}
 	}
 	return false
+}
+
+func hasProjectBlockerResolutionSignal(group projectEventGroup) bool {
+	return (len(group.GitHub) > 0 || len(group.Jira) > 0) && !hasProjectBlocker(group)
+}
+
+func hasProjectCommitment(group projectEventGroup) bool {
+	return len(group.GCal) > 0 && (len(group.GitHub) > 0 || len(group.Jira) > 0)
+}
+
+func hasProjectCommitmentCompletionSignal(group projectEventGroup) bool {
+	if len(group.GitHub) == 0 && len(group.Jira) == 0 {
+		return false
+	}
+	if isCompletedJiraStatus(normalizeLabel(eventStringAttribute(latestEvent(group.Jira), "status", ""), "")) {
+		return true
+	}
+	return isCompletedGitHubState(normalizeLabel(eventStringAttribute(latestEvent(group.GitHub), "state", ""), ""))
+}
+
+func isCompletedJiraStatus(status string) bool {
+	switch normalizeLabel(status, "") {
+	case "done", "completed", "complete", "closed", "resolved", "shipped":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCompletedGitHubState(state string) bool {
+	switch normalizeLabel(state, "") {
+	case "closed", "merged":
+		return true
+	default:
+		return false
+	}
 }
 
 func latestEvent(events []NormalizedEvent) NormalizedEvent {
@@ -701,6 +842,14 @@ func normalizeLabel(value, fallback string) string {
 	return strings.ToLower(trimmed)
 }
 
+func formatEvidenceSuffix(evidence []string) string {
+	parts := dedupeStrings(evidence)
+	if len(parts) == 0 {
+		return ""
+	}
+	return ": " + strings.Join(parts, "; ")
+}
+
 func artifactDerivationKey(artifact core.Artifact) string {
 	if artifact.StructuredPayload == nil {
 		return ""
@@ -730,4 +879,8 @@ func gcalArtifactDerivationKey(eventID string) string {
 
 func projectArtifactDerivationKey(projectRef string, artifactType core.ArtifactType) string {
 	return fmt.Sprintf("project:%s:%s", strings.TrimSpace(projectRef), artifactType)
+}
+
+func projectSignalDerivationKey(projectRef, signalName string) string {
+	return fmt.Sprintf("project:%s:signal:%s", strings.TrimSpace(projectRef), strings.TrimSpace(signalName))
 }

@@ -17,6 +17,7 @@ type State struct {
 	TokenExpiresAt         time.Time                       `json:"token_expires_at"`
 	PublishedArtifacts     map[string]string               `json:"published_artifacts,omitempty"`
 	LatestDerivedArtifacts map[string]string               `json:"latest_derived_artifacts,omitempty"`
+	ProjectSignalStates    map[string]string               `json:"project_signal_states,omitempty"`
 	PublishedFixtures      map[string]string               `json:"published_fixtures,omitempty"`
 	ConnectorCursors       map[string]string               `json:"connector_cursors,omitempty"`
 	ProcessedWebhookKeys   map[string]string               `json:"processed_webhook_keys,omitempty"`
@@ -102,6 +103,9 @@ func (s *State) normalizePublishedArtifacts() {
 	if s.LatestDerivedArtifacts == nil {
 		s.LatestDerivedArtifacts = map[string]string{}
 	}
+	if s.ProjectSignalStates == nil {
+		s.ProjectSignalStates = map[string]string{}
+	}
 	if s.ConnectorCredentials == nil {
 		s.ConnectorCredentials = map[string]ConnectorCredential{}
 	}
@@ -184,4 +188,20 @@ func (s *State) SetWebhookSequenceNumber(key string, value int64) {
 		return
 	}
 	s.WebhookSequenceNumbers[key] = value
+}
+
+func (s State) ProjectSignalState(key string) string {
+	return s.ProjectSignalStates[key]
+}
+
+func (s *State) SetProjectSignalState(key, value string) {
+	s.normalizePublishedArtifacts()
+	if key == "" {
+		return
+	}
+	if value == "" {
+		delete(s.ProjectSignalStates, key)
+		return
+	}
+	s.ProjectSignalStates[key] = value
 }

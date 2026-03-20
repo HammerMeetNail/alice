@@ -164,7 +164,7 @@ func (r *Runtime) ensureSession(ctx context.Context, state *State) (bool, error)
 }
 
 func (r *Runtime) publishArtifacts(ctx context.Context, state *State, credentials CredentialStore, registrationPerformed *bool) ([]PublishedArtifact, []string, error) {
-	artifacts, cursorUpdates, err := r.configuredArtifacts(ctx, *state, credentials)
+	artifacts, cursorUpdates, err := r.configuredArtifacts(ctx, state, credentials)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -223,7 +223,7 @@ func (r *Runtime) publishArtifactBatch(ctx context.Context, state *State, artifa
 	return published, skipped, nil
 }
 
-func (r *Runtime) configuredArtifacts(ctx context.Context, state State, credentials CredentialStore) ([]core.Artifact, map[string]time.Time, error) {
+func (r *Runtime) configuredArtifacts(ctx context.Context, state *State, credentials CredentialStore) ([]core.Artifact, map[string]time.Time, error) {
 	artifacts := make([]core.Artifact, 0)
 
 	fixturePath := r.cfg.ArtifactFixturePath()

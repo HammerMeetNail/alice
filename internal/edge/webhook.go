@@ -450,7 +450,7 @@ func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gi
 	}
 
 	registrationPerformed := false
-	published, skipped, err := r.publishArtifactBatch(ctx, &state, deriveArtifacts(freshEvents), cursorUpdates, &registrationPerformed)
+	published, skipped, err := r.publishArtifactBatch(ctx, &state, deriveArtifacts(freshEvents, &state), cursorUpdates, &registrationPerformed)
 	if err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -561,7 +561,7 @@ func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSo
 	}
 
 	registrationPerformed := false
-	published, skipped, err := r.publishArtifactBatch(ctx, &state, deriveArtifacts(freshEvents), cursorUpdates, &registrationPerformed)
+	published, skipped, err := r.publishArtifactBatch(ctx, &state, deriveArtifacts(freshEvents, &state), cursorUpdates, &registrationPerformed)
 	if err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -680,7 +680,7 @@ func (r *Runtime) handleGCalExistsWebhook(ctx context.Context, source *gcalLiveS
 	}
 
 	registrationPerformed := false
-	published, skipped, err := r.publishArtifactBatch(ctx, &state, deriveArtifacts(freshEvents), cursorUpdates, &registrationPerformed)
+	published, skipped, err := r.publishArtifactBatch(ctx, &state, deriveArtifacts(freshEvents, &state), cursorUpdates, &registrationPerformed)
 	if err != nil {
 		result.Message = err.Error()
 		return result, err
