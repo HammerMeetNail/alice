@@ -60,6 +60,14 @@ type ConnectorOAuthConfig struct {
 	ExtraTokenParams   map[string]string `json:"extra_token_params"`
 }
 
+type GitHubWebhookConfig struct {
+	Enabled      bool                     `json:"enabled"`
+	ListenAddr   string                   `json:"listen_addr"`
+	SecretEnvVar string                   `json:"secret_env_var"`
+	SecretFile   string                   `json:"secret_file"`
+	Repositories []GitHubRepositoryConfig `json:"repositories"`
+}
+
 type GitHubConnectorConfig struct {
 	Enabled      bool                     `json:"enabled"`
 	FixtureFile  string                   `json:"fixture_file"`
@@ -67,6 +75,7 @@ type GitHubConnectorConfig struct {
 	TokenEnvVar  string                   `json:"token_env_var"`
 	TokenFile    string                   `json:"token_file"`
 	OAuth        ConnectorOAuthConfig     `json:"oauth"`
+	Webhook      GitHubWebhookConfig      `json:"webhook"`
 	ActorLogin   string                   `json:"actor_login"`
 	Repositories []GitHubRepositoryConfig `json:"repositories"`
 }
@@ -149,6 +158,14 @@ func (c *Config) applyDefaults() {
 			c.Connectors.GitHub.TokenEnvVar = "ALICE_GITHUB_TOKEN"
 		}
 	}
+	if c.GitHubWebhookEnabled() {
+		if strings.TrimSpace(c.Connectors.GitHub.Webhook.ListenAddr) == "" {
+			c.Connectors.GitHub.Webhook.ListenAddr = "127.0.0.1:8788"
+		}
+		if strings.TrimSpace(c.Connectors.GitHub.Webhook.SecretEnvVar) == "" {
+			c.Connectors.GitHub.Webhook.SecretEnvVar = "ALICE_GITHUB_WEBHOOK_SECRET"
+		}
+	}
 	if c.GitHubOAuthEnabled() {
 		c.applyOAuthDefaults(
 			&c.Connectors.GitHub.OAuth,
@@ -225,8 +242,21 @@ func (c Config) Validate() error {
 				return fmt.Errorf("connectors.github.repositories[%d].name is required", i)
 			}
 		}
+		for i, repo := range c.Connectors.GitHub.Webhook.Repositories {
+			if strings.TrimSpace(repo.Name) == "" {
+				return fmt.Errorf("connectors.github.webhook.repositories[%d].name is required", i)
+			}
+		}
 		if c.GitHubLiveEnabled() && len(c.Connectors.GitHub.Repositories) == 0 {
 			return fmt.Errorf("connectors.github.repositories is required when github live polling is enabled")
+		}
+		if c.GitHubWebhookEnabled() {
+			if _, err := net.ResolveTCPAddr("tcp", strings.TrimSpace(c.Connectors.GitHub.Webhook.ListenAddr)); err != nil {
+				return fmt.Errorf("connectors.github.webhook.listen_addr is invalid: %w", err)
+			}
+			if strings.TrimSpace(c.Connectors.GitHub.Webhook.SecretEnvVar) == "" && strings.TrimSpace(c.Connectors.GitHub.Webhook.SecretFile) == "" {
+				return fmt.Errorf("connectors.github.webhook.secret_env_var or connectors.github.webhook.secret_file is required when github webhook intake is enabled")
+			}
 		}
 		for i, project := range c.Connectors.Jira.Projects {
 			if strings.TrimSpace(project.Key) == "" {
@@ -336,6 +366,26 @@ func (c Config) GitHubOAuthEnabled() bool {
 
 func (c Config) GitHubOAuthConfig() ConnectorOAuthConfig {
 	return c.resolveOAuthConfig(c.Connectors.GitHub.OAuth)
+}
+
+func (c Config) GitHubWebhookEnabled() bool {
+	return c.Connectors.GitHub.Webhook.Enabled
+}
+
+func (c Config) GitHubWebhookListenAddr() string {
+	return strings.TrimSpace(c.Connectors.GitHub.Webhook.ListenAddr)
+}
+
+func (c Config) GitHubWebhookSecretEnvVar() string {
+	return strings.TrimSpace(c.Connectors.GitHub.Webhook.SecretEnvVar)
+}
+
+func (c Config) GitHubWebhookSecretFile() string {
+	return c.resolveConnectorPath(c.Connectors.GitHub.Webhook.SecretFile)
+}
+
+func (c Config) GitHubWebhookRepositories() []GitHubRepositoryConfig {
+	return append([]GitHubRepositoryConfig(nil), c.Connectors.GitHub.Webhook.Repositories...)
 }
 
 func (c Config) JiraAPIBaseURL() string {

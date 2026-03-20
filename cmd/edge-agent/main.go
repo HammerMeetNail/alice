@@ -7,6 +7,8 @@ import (
 	"flag"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"alice/internal/edge"
@@ -15,6 +17,7 @@ import (
 func main() {
 	configPath := flag.String("config", "", "path to edge agent JSON config")
 	bootstrapConnector := flag.String("bootstrap-connector", "", "connector to bootstrap via local oauth callback (github, jira, gcal)")
+	serveWebhooks := flag.Bool("serve-webhooks", false, "serve configured connector webhook endpoints")
 	bootstrapTimeout := flag.Duration("bootstrap-timeout", 5*time.Minute, "how long to wait for the local oauth callback")
 	flag.Parse()
 
@@ -31,8 +34,10 @@ func main() {
 	encoder.SetIndent("", "  ")
 
 	runtime := edge.NewRuntime(cfg)
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	if *bootstrapConnector != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), *bootstrapTimeout)
+		ctx, cancel := context.WithTimeout(rootCtx, *bootstrapTimeout)
 		defer cancel()
 
 		result, err := runtime.BootstrapConnector(ctx, *bootstrapConnector, func(prompt edge.ConnectorBootstrapPrompt) error {
@@ -59,7 +64,15 @@ func main() {
 		return
 	}
 
-	report, err := runtime.RunOnce(context.Background())
+	if *serveWebhooks {
+		log.Printf("Serving GitHub webhooks on http://%s%s", cfg.GitHubWebhookListenAddr(), edge.GitHubWebhookPath)
+		if err := runtime.ServeGitHubWebhooks(rootCtx); err != nil {
+			log.Fatalf("edge webhook server failed: %v", err)
+		}
+		return
+	}
+
+	report, err := runtime.RunOnce(rootCtx)
 	if err != nil {
 		var reauthErr *edge.ConnectorReauthRequiredError
 		if errors.As(err, &reauthErr) {

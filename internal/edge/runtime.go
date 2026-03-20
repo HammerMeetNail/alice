@@ -168,6 +168,10 @@ func (r *Runtime) publishArtifacts(ctx context.Context, state *State, credential
 	if err != nil {
 		return nil, nil, err
 	}
+	return r.publishArtifactBatch(ctx, state, artifacts, cursorUpdates, registrationPerformed)
+}
+
+func (r *Runtime) publishArtifactBatch(ctx context.Context, state *State, artifacts []core.Artifact, cursorUpdates map[string]time.Time, registrationPerformed *bool) ([]PublishedArtifact, []string, error) {
 	if len(artifacts) == 0 {
 		applyCursorUpdates(state, cursorUpdates)
 		return nil, nil, nil

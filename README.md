@@ -204,7 +204,7 @@ Implemented now:
 
 - Go coordination server entrypoint and HTTP health endpoint
 - MCP stdio server entrypoint in `cmd/mcp-server` for local CLI-native tool access
-- edge runtime skeleton entrypoint in `cmd/edge-agent` for local runtime bootstrap
+- edge runtime skeleton entrypoint in `cmd/edge-agent` for local runtime bootstrap, polling, and webhook intake
 - domain models for agents, artifacts, grants, queries, requests, approvals, and audit events
 - registration challenge and short-lived bearer-token auth for agent registration and authenticated requests
 - JSON schemas for artifact, query, and policy-grant payloads
@@ -225,6 +225,7 @@ Implemented now:
   - fixture-driven artifact publication
   - fixture-driven GitHub, Jira, and calendar ingestion with deterministic derived artifacts
   - live GitHub polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus repository-to-project mapping
+  - signed local GitHub webhook intake for `pull_request` events through `cmd/edge-agent -serve-webhooks`
   - live Jira polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus project scoping and assignee filtering
   - live Google Calendar polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus calendar-scoped event ingestion
   - live connector pagination across GitHub, Jira, and Google Calendar API pages
@@ -234,7 +235,7 @@ Implemented now:
   - watched query-result retrieval
   - incoming-request polling
 - end-to-end MCP test coverage for registration, artifact publish, grant creation, peer listing, query submission/result retrieval, request send/respond, and approval resolution
-- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, replacement-aware edge publication, live GitHub/Jira/Calendar polling, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
+- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, replacement-aware edge publication, live GitHub/Jira/Calendar polling, signed GitHub webhook intake, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
 - targeted HTTP test coverage for the permissioned query flow and request/approval flow in memory and, when configured, against PostgreSQL
 - Podman-based container workflow for local execution with both the server and PostgreSQL
 
@@ -247,7 +248,7 @@ Current implementation assumptions:
 - the first Gatekeeper request and approval flow exists, but approval policy is still explicit/manual rather than risk-engine driven
 - query time windows use source observation timestamps when artifacts carry source refs
 - the edge runtime uses JSON config plus local fixture files, with live polling now available for GitHub, Jira, and Google Calendar via env vars, token files, or locally bootstrapped OAuth credentials
-- live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, and the edge runtime now stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
+- the edge runtime now supports both polling and an initial push path through signed local GitHub webhooks, live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, and the edge runtime stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
 - edge-derived artifacts now carry stable derivation keys, the edge runtime persists the latest published artifact ID per derivation slot, updated summaries, blockers, commitments, and status deltas supersede older logical artifacts, and superseded artifacts are hidden from query results
 - richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
 - local container runs use PostgreSQL; tests and ad hoc runs can still fall back to in-memory storage when no database URL is set
@@ -284,13 +285,15 @@ For live connector use:
 
 Each live connector path persists a local last-seen cursor in the edge state file so subsequent runs can narrow polling and avoid republishing stale events. The live connector configs also accept `token_file` as a local-file alternative to env vars, and the OAuth bootstrap path stores connector credentials in a separate `0600` credentials file so later polls can reuse them without process env injection. When a stored OAuth credential expires and includes a refresh token, the runtime now refreshes it automatically before polling. If the credential store is encrypted, the same key must be present on later runs through `ALICE_EDGE_CREDENTIAL_KEY` or `runtime.credentials_key_file`.
 
+For local GitHub webhook intake, set `ALICE_GITHUB_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-github-webhook-config.json -serve-webhooks`, and configure GitHub to deliver `pull_request` events to `http://127.0.0.1:8788/webhooks/github`. The current webhook path verifies `X-Hub-Signature-256`, maps repositories to project refs, ignores unrelated pull requests, and publishes derived artifacts directly without polling the GitHub API.
+
 The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL instance is exposed on `127.0.0.1:5432`.
 
 ## Next steps
 
 The next recommended implementation steps are:
 
-1. add webhook intake and connector-native push paths so polling is no longer the only incremental input mechanism
+1. add Jira and Google Calendar push paths so polling is no longer the only incremental input mechanism
 2. deepen derivation beyond the current project-level heuristics with richer blocker-resolution and commitment-completion signals
 3. harden local operator workflows further with rotation tooling and safer credential-key management
 

@@ -37,7 +37,7 @@ type gitHubUserResponse struct {
 	Login string `json:"login"`
 }
 
-func newGitHubLiveSource(cfg Config) EventSource {
+func newGitHubLiveSource(cfg Config) *gitHubLiveSource {
 	return &gitHubLiveSource{
 		baseURL:      cfg.GitHubAPIBaseURL(),
 		tokenEnvVar:  cfg.GitHubTokenEnvVar(),
@@ -202,6 +202,16 @@ func projectRefsForRepository(repository GitHubRepositoryConfig) []string {
 		return []string{strings.TrimSpace(repository.Name)}
 	}
 	return nil
+}
+
+func findGitHubRepositoryConfig(repositories []GitHubRepositoryConfig, repository string) (GitHubRepositoryConfig, bool) {
+	trimmed := strings.TrimSpace(repository)
+	for _, candidate := range repositories {
+		if strings.EqualFold(strings.TrimSpace(candidate.Name), trimmed) {
+			return candidate, true
+		}
+	}
+	return GitHubRepositoryConfig{}, false
 }
 
 func gitHubRepositoryAPIPath(repository string) (string, error) {

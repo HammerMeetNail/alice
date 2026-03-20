@@ -3,8 +3,11 @@ package edge
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -589,6 +592,185 @@ func TestRuntimeRunOnceRetriesAndPaginatesLiveGitHub(t *testing.T) {
 	}
 	if requestCount != 3 {
 		t.Fatalf("expected github retry plus two page fetches, got %d requests", requestCount)
+	}
+}
+
+func TestRuntimeGitHubWebhookPublishesArtifact(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	updatedAt := time.Date(2026, 3, 19, 18, 30, 0, 0, time.UTC)
+	t.Setenv("ALICE_GITHUB_WEBHOOK_SECRET", "test-webhook-secret")
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				Webhook: GitHubWebhookConfig{
+					Enabled:      true,
+					ListenAddr:   "127.0.0.1:8788",
+					SecretEnvVar: "ALICE_GITHUB_WEBHOOK_SECRET",
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load github webhook config: %v", err)
+	}
+
+	webhookHandler, err := NewRuntime(cfg).GitHubWebhookHandler()
+	if err != nil {
+		t.Fatalf("build github webhook handler: %v", err)
+	}
+	webhookServer := httptest.NewServer(webhookHandler)
+	defer webhookServer.Close()
+
+	var webhookResult WebhookDeliveryResult
+	postGitHubWebhook(t, webhookServer.URL+GitHubWebhookPath, "pull_request", "test-webhook-secret", map[string]any{
+		"action": "review_requested",
+		"repository": map[string]any{
+			"full_name": "acme/payments-api",
+		},
+		"pull_request": map[string]any{
+			"number":     128,
+			"state":      "open",
+			"draft":      false,
+			"title":      "Retry payments handler",
+			"updated_at": updatedAt.Format(time.RFC3339),
+			"user": map[string]any{
+				"login": "sam",
+			},
+			"requested_reviewers": []map[string]any{},
+			"assignees":           []map[string]any{},
+		},
+	}, http.StatusOK, &webhookResult)
+
+	if !webhookResult.Accepted {
+		t.Fatalf("expected github webhook to be accepted, got %+v", webhookResult)
+	}
+	if len(webhookResult.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one artifact from github webhook, got %d", len(webhookResult.PublishedArtifacts))
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after github webhook publish: %v", err)
+	}
+	aliceToken := registerAgent(t, server.URL, "example-corp", "alice@example.com", "alice-agent")
+	grantPermission(t, server.URL, state.AccessToken, map[string]any{
+		"grantee_user_email":     "alice@example.com",
+		"scope_type":             "project",
+		"scope_ref":              "payments-api",
+		"allowed_artifact_types": []string{"summary"},
+		"max_sensitivity":        "medium",
+		"allowed_purposes":       []string{"status_check"},
+	})
+
+	queryID := queryPeerStatus(t, server.URL, aliceToken, map[string]any{
+		"to_user_email":   "sam@example.com",
+		"purpose":         "status_check",
+		"question":        "What has Sam been working on today?",
+		"requested_types": []string{"summary"},
+		"project_scope":   []string{"payments-api"},
+		"time_window": map[string]any{
+			"start": updatedAt.Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   updatedAt.Add(1 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	var result map[string]any
+	doJSON(t, server.URL, http.MethodGet, "/v1/queries/"+queryID, aliceToken, nil, &result)
+	response := result["response"].(map[string]any)
+	artifacts := response["artifacts"].([]any)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected one github webhook artifact in query result, got %d", len(artifacts))
+	}
+}
+
+func TestRuntimeGitHubWebhookRejectsInvalidSignature(t *testing.T) {
+	t.Setenv("ALICE_GITHUB_WEBHOOK_SECRET", "test-webhook-secret")
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: "http://127.0.0.1:8080",
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				Webhook: GitHubWebhookConfig{
+					Enabled:      true,
+					ListenAddr:   "127.0.0.1:8788",
+					SecretEnvVar: "ALICE_GITHUB_WEBHOOK_SECRET",
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load github webhook config: %v", err)
+	}
+
+	webhookHandler, err := NewRuntime(cfg).GitHubWebhookHandler()
+	if err != nil {
+		t.Fatalf("build github webhook handler: %v", err)
+	}
+	webhookServer := httptest.NewServer(webhookHandler)
+	defer webhookServer.Close()
+
+	payload := map[string]any{
+		"action": "review_requested",
+		"repository": map[string]any{
+			"full_name": "acme/payments-api",
+		},
+		"pull_request": map[string]any{
+			"number":     128,
+			"state":      "open",
+			"draft":      false,
+			"title":      "Retry payments handler",
+			"updated_at": time.Now().UTC().Format(time.RFC3339),
+			"user": map[string]any{
+				"login": "sam",
+			},
+		},
+	}
+
+	var result WebhookDeliveryResult
+	postGitHubWebhookWithSignature(t, webhookServer.URL+GitHubWebhookPath, "pull_request", payload, "sha256=deadbeef", http.StatusUnauthorized, &result)
+	if !strings.Contains(result.Message, "signature is invalid") {
+		t.Fatalf("expected invalid github webhook signature message, got %+v", result)
 	}
 }
 
@@ -2185,6 +2367,61 @@ func writeGCalFixtureFile(t *testing.T, path string) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write gcal fixtures: %v", err)
 	}
+}
+
+func postGitHubWebhook(t *testing.T, webhookURL, eventType, secret string, body any, expectedStatus int, out any) {
+	t.Helper()
+	postGitHubWebhookWithSignature(t, webhookURL, eventType, body, signGitHubWebhookBody(t, secret, body), expectedStatus, out)
+}
+
+func postGitHubWebhookWithSignature(t *testing.T, webhookURL, eventType string, body any, signature string, expectedStatus int, out any) {
+	t.Helper()
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal github webhook body: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, webhookURL, strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("build github webhook request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", eventType)
+	if strings.TrimSpace(signature) != "" {
+		req.Header.Set("X-Hub-Signature-256", signature)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("perform github webhook request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != expectedStatus {
+		var payload map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&payload)
+		t.Fatalf("expected github webhook status %d, got %d body=%v", expectedStatus, resp.StatusCode, payload)
+	}
+
+	if out != nil {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			t.Fatalf("decode github webhook response: %v", err)
+		}
+	}
+}
+
+func signGitHubWebhookBody(t *testing.T, secret string, body any) string {
+	t.Helper()
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal github webhook body for signature: %v", err)
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(data)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 func registerAgent(t *testing.T, baseURL, orgSlug, email, agentName string) string {

@@ -1,0 +1,34 @@
+{
+  "agent": {
+    "org_slug": "example-corp",
+    "owner_email": "jane@example.com",
+    "agent_name": "jane-agent",
+    "client_type": "edge_agent"
+  },
+  "server": {
+    "base_url": "http://127.0.0.1:8080"
+  },
+  "connectors": {
+    "github": {
+      "actor_login": "jane",
+      "webhook": {
+        "enabled": true,
+        "listen_addr": "127.0.0.1:8788",
+        "secret_env_var": "ALICE_GITHUB_WEBHOOK_SECRET",
+        "repositories": [
+          {
+            "name": "example-corp/payments-api",
+            "project_refs": [
+              "payments-api"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "runtime": {
+    "state_file": "../.alice/edge-agent-github-webhook-state.json",
+    "query_watch_ids": [],
+    "poll_incoming_requests": true
+  }
+}
