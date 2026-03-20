@@ -774,6 +774,106 @@ func TestRuntimeGitHubWebhookRejectsInvalidSignature(t *testing.T) {
 	}
 }
 
+func TestRuntimeGitHubWebhookIgnoresDuplicateDelivery(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	updatedAt := time.Date(2026, 3, 19, 14, 30, 0, 0, time.UTC)
+	t.Setenv("ALICE_GITHUB_WEBHOOK_SECRET", "test-webhook-secret")
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GitHub: GitHubConnectorConfig{
+				ActorLogin: "sam",
+				Webhook: GitHubWebhookConfig{
+					Enabled:      true,
+					ListenAddr:   "127.0.0.1:8788",
+					SecretEnvVar: "ALICE_GITHUB_WEBHOOK_SECRET",
+					Repositories: []GitHubRepositoryConfig{
+						{
+							Name:        "example-corp/payments-api",
+							ProjectRefs: []string{"payments-api"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load github webhook config: %v", err)
+	}
+
+	webhookHandler, err := NewRuntime(cfg).GitHubWebhookHandler()
+	if err != nil {
+		t.Fatalf("build github webhook handler: %v", err)
+	}
+	webhookServer := httptest.NewServer(webhookHandler)
+	defer webhookServer.Close()
+
+	body := map[string]any{
+		"action": "opened",
+		"repository": map[string]any{
+			"full_name": "example-corp/payments-api",
+		},
+		"pull_request": map[string]any{
+			"number": 42,
+			"title":  "Add retry logic",
+			"user": map[string]any{
+				"login": "sam",
+			},
+			"updated_at": updatedAt.Format(time.RFC3339),
+		},
+	}
+
+	var firstResult WebhookDeliveryResult
+	postGitHubWebhookWithHeaders(t, webhookServer.URL+GitHubWebhookPath, "pull_request", "test-webhook-secret", map[string]string{
+		"X-GitHub-Delivery": "delivery-42",
+	}, body, http.StatusOK, &firstResult)
+	if !firstResult.Accepted || len(firstResult.PublishedArtifacts) != 1 {
+		t.Fatalf("expected first github delivery to publish once, got %+v", firstResult)
+	}
+
+	var duplicateResult WebhookDeliveryResult
+	postGitHubWebhookWithHeaders(t, webhookServer.URL+GitHubWebhookPath, "pull_request", "test-webhook-secret", map[string]string{
+		"X-GitHub-Delivery": "delivery-42",
+	}, body, http.StatusOK, &duplicateResult)
+	if !duplicateResult.Accepted || !strings.Contains(duplicateResult.Message, "duplicate") {
+		t.Fatalf("expected duplicate github delivery to be ignored, got %+v", duplicateResult)
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after duplicate github delivery: %v", err)
+	}
+	if len(state.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one published artifact after duplicate github delivery, got %d", len(state.PublishedArtifacts))
+	}
+}
+
 func TestRuntimeJiraWebhookPublishesArtifact(t *testing.T) {
 	handler, closeFn := newTestHandler(t)
 	if closeFn != nil {
@@ -956,6 +1056,109 @@ func TestRuntimeJiraWebhookRejectsInvalidSecret(t *testing.T) {
 	}, http.StatusUnauthorized, &result)
 	if !strings.Contains(result.Message, "secret is invalid") {
 		t.Fatalf("expected invalid jira webhook secret message, got %+v", result)
+	}
+}
+
+func TestRuntimeJiraWebhookIgnoresDuplicateDelivery(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	updatedAt := time.Date(2026, 3, 19, 19, 15, 0, 0, time.UTC)
+	t.Setenv("ALICE_JIRA_WEBHOOK_SECRET", "test-jira-webhook-secret")
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			Jira: JiraConnectorConfig{
+				Webhook: JiraWebhookConfig{
+					Enabled:      true,
+					ListenAddr:   "127.0.0.1:8789",
+					SecretEnvVar: "ALICE_JIRA_WEBHOOK_SECRET",
+					Projects: []JiraProjectConfig{
+						{
+							Key:         "PAY",
+							ProjectRefs: []string{"payments-api"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load jira webhook config: %v", err)
+	}
+
+	webhookHandler, err := NewRuntime(cfg).JiraWebhookHandler()
+	if err != nil {
+		t.Fatalf("build jira webhook handler: %v", err)
+	}
+	webhookServer := httptest.NewServer(webhookHandler)
+	defer webhookServer.Close()
+
+	body := map[string]any{
+		"webhookEvent": "jira:issue_updated",
+		"issue": map[string]any{
+			"key": "PAY-123",
+			"fields": map[string]any{
+				"issuetype": map[string]any{
+					"name": "Story",
+				},
+				"status": map[string]any{
+					"name": "In Review",
+				},
+				"updated": updatedAt.Format(time.RFC3339),
+				"assignee": map[string]any{
+					"emailAddress": "sam@example.com",
+				},
+			},
+		},
+	}
+
+	var firstResult WebhookDeliveryResult
+	postSecretWebhookWithHeaders(t, webhookServer.URL+JiraWebhookPath, "test-jira-webhook-secret", map[string]string{
+		"X-Atlassian-Webhook-Identifier": "jira-delivery-1",
+	}, body, http.StatusOK, &firstResult)
+	if !firstResult.Accepted || len(firstResult.PublishedArtifacts) != 1 {
+		t.Fatalf("expected first jira delivery to publish once, got %+v", firstResult)
+	}
+
+	var duplicateResult WebhookDeliveryResult
+	postSecretWebhookWithHeaders(t, webhookServer.URL+JiraWebhookPath, "test-jira-webhook-secret", map[string]string{
+		"X-Atlassian-Webhook-Identifier": "jira-delivery-1",
+	}, body, http.StatusOK, &duplicateResult)
+	if !duplicateResult.Accepted || !strings.Contains(duplicateResult.Message, "duplicate") {
+		t.Fatalf("expected duplicate jira delivery to be ignored, got %+v", duplicateResult)
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after duplicate jira delivery: %v", err)
+	}
+	if len(state.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one published artifact after duplicate jira delivery, got %d", len(state.PublishedArtifacts))
 	}
 }
 
@@ -1162,6 +1365,141 @@ func TestRuntimeGCalWebhookRejectsInvalidChannelToken(t *testing.T) {
 	}, http.StatusUnauthorized, &result)
 	if !strings.Contains(result.Message, "channel token is invalid") {
 		t.Fatalf("expected invalid gcal webhook token message, got %+v", result)
+	}
+}
+
+func TestRuntimeGCalWebhookIgnoresDuplicateAndOutOfOrderDeliveries(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	eventUpdatedAt := time.Date(2026, 3, 19, 18, 0, 0, 0, time.UTC)
+	eventStartAt := time.Date(2026, 3, 19, 18, 30, 0, 0, time.UTC)
+	eventEndAt := eventStartAt.Add(30 * time.Minute)
+	t.Setenv("ALICE_GCAL_WEBHOOK_SECRET", "test-gcal-webhook-secret")
+	t.Setenv("ALICE_GCAL_TOKEN", "test-gcal-token")
+
+	requestCount := 0
+	gcalAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		payload := map[string]any{
+			"items": []map[string]any{
+				{
+					"id":        "evt-webhook-1",
+					"status":    "confirmed",
+					"updated":   eventUpdatedAt.Format(time.RFC3339),
+					"eventType": "focusTime",
+					"start": map[string]any{
+						"dateTime": eventStartAt.Format(time.RFC3339),
+					},
+					"end": map[string]any{
+						"dateTime": eventEndAt.Format(time.RFC3339),
+					},
+					"attendees": []map[string]any{
+						{"email": "sam@example.com"},
+					},
+				},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode gcal duplicate payload: %v", err)
+		}
+	}))
+	defer gcalAPI.Close()
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GCal: GCalConnectorConfig{
+				APIBaseURL:  gcalAPI.URL + "/calendar/v3",
+				TokenEnvVar: "ALICE_GCAL_TOKEN",
+				Webhook: GCalWebhookConfig{
+					Enabled:      true,
+					ListenAddr:   "127.0.0.1:8790",
+					SecretEnvVar: "ALICE_GCAL_WEBHOOK_SECRET",
+				},
+				Calendars: []GCalCalendarConfig{
+					{
+						ID:          "primary",
+						ProjectRefs: []string{"payments-api"},
+						Category:    "focus",
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load gcal webhook config: %v", err)
+	}
+
+	webhookHandler, err := NewRuntime(cfg).GCalWebhookHandler()
+	if err != nil {
+		t.Fatalf("build gcal webhook handler: %v", err)
+	}
+	webhookServer := httptest.NewServer(webhookHandler)
+	defer webhookServer.Close()
+
+	headers := map[string]string{
+		"X-Goog-Resource-State": "exists",
+		"X-Goog-Resource-URI":   gcalAPI.URL + "/calendar/v3/calendars/primary/events",
+		"X-Goog-Channel-ID":     "channel-1",
+		"X-Goog-Message-Number": "2",
+		"X-Goog-Resource-ID":    "resource-1",
+	}
+
+	var firstResult WebhookDeliveryResult
+	postGCalWebhook(t, webhookServer.URL+GCalWebhookPath, "test-gcal-webhook-secret", headers, http.StatusOK, &firstResult)
+	if !firstResult.Accepted || len(firstResult.PublishedArtifacts) != 1 {
+		t.Fatalf("expected first gcal delivery to publish once, got %+v", firstResult)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected one gcal API fetch after first delivery, got %d", requestCount)
+	}
+
+	var duplicateResult WebhookDeliveryResult
+	postGCalWebhook(t, webhookServer.URL+GCalWebhookPath, "test-gcal-webhook-secret", headers, http.StatusOK, &duplicateResult)
+	if !duplicateResult.Accepted || !strings.Contains(duplicateResult.Message, "duplicate") {
+		t.Fatalf("expected duplicate gcal delivery to be ignored, got %+v", duplicateResult)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected duplicate gcal delivery to skip API fetch, got %d requests", requestCount)
+	}
+
+	var outOfOrderResult WebhookDeliveryResult
+	postGCalWebhook(t, webhookServer.URL+GCalWebhookPath, "test-gcal-webhook-secret", map[string]string{
+		"X-Goog-Resource-State": "exists",
+		"X-Goog-Resource-URI":   gcalAPI.URL + "/calendar/v3/calendars/primary/events",
+		"X-Goog-Channel-ID":     "channel-1",
+		"X-Goog-Message-Number": "1",
+		"X-Goog-Resource-ID":    "resource-1",
+	}, http.StatusOK, &outOfOrderResult)
+	if !outOfOrderResult.Accepted || !strings.Contains(outOfOrderResult.Message, "out-of-order") {
+		t.Fatalf("expected out-of-order gcal delivery to be ignored, got %+v", outOfOrderResult)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected out-of-order gcal delivery to skip API fetch, got %d requests", requestCount)
 	}
 }
 
@@ -2762,10 +3100,20 @@ func writeGCalFixtureFile(t *testing.T, path string) {
 
 func postGitHubWebhook(t *testing.T, webhookURL, eventType, secret string, body any, expectedStatus int, out any) {
 	t.Helper()
-	postGitHubWebhookWithSignature(t, webhookURL, eventType, body, signGitHubWebhookBody(t, secret, body), expectedStatus, out)
+	postGitHubWebhookWithHeaders(t, webhookURL, eventType, secret, nil, body, expectedStatus, out)
+}
+
+func postGitHubWebhookWithHeaders(t *testing.T, webhookURL, eventType, secret string, headers map[string]string, body any, expectedStatus int, out any) {
+	t.Helper()
+	postGitHubWebhookWithSignatureAndHeaders(t, webhookURL, eventType, body, signGitHubWebhookBody(t, secret, body), headers, expectedStatus, out)
 }
 
 func postGitHubWebhookWithSignature(t *testing.T, webhookURL, eventType string, body any, signature string, expectedStatus int, out any) {
+	t.Helper()
+	postGitHubWebhookWithSignatureAndHeaders(t, webhookURL, eventType, body, signature, nil, expectedStatus, out)
+}
+
+func postGitHubWebhookWithSignatureAndHeaders(t *testing.T, webhookURL, eventType string, body any, signature string, headers map[string]string, expectedStatus int, out any) {
 	t.Helper()
 
 	data, err := json.Marshal(body)
@@ -2781,6 +3129,9 @@ func postGitHubWebhookWithSignature(t *testing.T, webhookURL, eventType string, 
 	req.Header.Set("X-GitHub-Event", eventType)
 	if strings.TrimSpace(signature) != "" {
 		req.Header.Set("X-Hub-Signature-256", signature)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
@@ -2804,10 +3155,15 @@ func postGitHubWebhookWithSignature(t *testing.T, webhookURL, eventType string, 
 
 func postSecretWebhook(t *testing.T, webhookURL, secret string, body any, expectedStatus int, out any) {
 	t.Helper()
-	postSecretWebhookWithToken(t, webhookURL, secret, body, expectedStatus, out)
+	postSecretWebhookWithHeaders(t, webhookURL, secret, nil, body, expectedStatus, out)
 }
 
 func postSecretWebhookWithToken(t *testing.T, webhookURL, secret string, body any, expectedStatus int, out any) {
+	t.Helper()
+	postSecretWebhookWithHeaders(t, webhookURL, secret, nil, body, expectedStatus, out)
+}
+
+func postSecretWebhookWithHeaders(t *testing.T, webhookURL, secret string, headers map[string]string, body any, expectedStatus int, out any) {
 	t.Helper()
 
 	data, err := json.Marshal(body)
@@ -2822,6 +3178,9 @@ func postSecretWebhookWithToken(t *testing.T, webhookURL, secret string, body an
 	req.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(secret) != "" {
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(secret))
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 
 	resp, err := http.DefaultClient.Do(req)

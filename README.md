@@ -230,6 +230,7 @@ Implemented now:
   - shared-secret local Jira webhook intake for issue events through `cmd/edge-agent -serve-webhooks`
   - live Google Calendar polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus calendar-scoped event ingestion
   - shared-secret local Google Calendar webhook intake that verifies `X-Goog-Channel-Token`, parses the calendar resource URI, and fetches incremental event changes through the saved cursor
+  - persisted replay and duplicate-delivery suppression across GitHub, Jira, and Google Calendar webhook inputs
   - live connector pagination across GitHub, Jira, and Google Calendar API pages
   - transient connector retry/backoff for 429, 502, 503, and 504 responses
   - project-level aggregate status deltas, blockers, and commitments derived from cross-source signals
@@ -237,7 +238,7 @@ Implemented now:
   - watched query-result retrieval
   - incoming-request polling
 - end-to-end MCP test coverage for registration, artifact publish, grant creation, peer listing, query submission/result retrieval, request send/respond, and approval resolution
-- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, replacement-aware edge publication, live GitHub/Jira/Calendar polling, signed GitHub webhook intake, shared-secret Jira webhook intake, shared-secret Google Calendar webhook intake, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
+- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, replacement-aware edge publication, live GitHub/Jira/Calendar polling, signed GitHub webhook intake, shared-secret Jira webhook intake, shared-secret Google Calendar webhook intake, webhook duplicate/replay handling, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
 - targeted HTTP test coverage for the permissioned query flow and request/approval flow in memory and, when configured, against PostgreSQL
 - Podman-based container workflow for local execution with both the server and PostgreSQL
 
@@ -250,7 +251,7 @@ Current implementation assumptions:
 - the first Gatekeeper request and approval flow exists, but approval policy is still explicit/manual rather than risk-engine driven
 - query time windows use source observation timestamps when artifacts carry source refs
 - the edge runtime uses JSON config plus local fixture files, with live polling now available for GitHub, Jira, and Google Calendar via env vars, token files, or locally bootstrapped OAuth credentials
-- the edge runtime now supports both polling and initial push paths through signed local GitHub webhooks, shared-secret Jira webhooks, and shared-secret Google Calendar change notifications, live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, and the edge runtime stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
+- the edge runtime now supports both polling and initial push paths through signed local GitHub webhooks, shared-secret Jira webhooks, and shared-secret Google Calendar change notifications, persists webhook delivery receipts and Calendar channel message numbers to suppress replayed or duplicate deliveries, live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, and the edge runtime stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
 - edge-derived artifacts now carry stable derivation keys, the edge runtime persists the latest published artifact ID per derivation slot, updated summaries, blockers, commitments, and status deltas supersede older logical artifacts, and superseded artifacts are hidden from query results
 - richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
 - local container runs use PostgreSQL; tests and ad hoc runs can still fall back to in-memory storage when no database URL is set
@@ -264,12 +265,12 @@ Run these commands from the repository root:
 - prerequisites: `podman` and `podman-compose`
 - `make local`: build and start the local stack with Podman Compose, including PostgreSQL
 - `make down`: stop the local stack
-- `make postgres-up`: start only the PostgreSQL container and wait for it to become ready
+- `make postgres-up`: start only the PostgreSQL container, reusing an existing `alice-db` container when present, and wait for it to become ready
 - `make postgres-down`: stop only the PostgreSQL container
 - `make status`: show container status
 - `make logs`: tail server logs
 - `make test`: run the Go test suite
-- `make test-postgres`: start the PostgreSQL container if needed, wait for health, and run the Go test suite with `ALICE_TEST_DATABASE_URL` set
+- `make test-postgres`: start or reuse the PostgreSQL container, wait for health, and run the Go test suite with `ALICE_TEST_DATABASE_URL` set
 
 The server reads `ALICE_DATABASE_URL` to decide whether to use PostgreSQL or the in-memory fallback.
 
@@ -289,11 +290,11 @@ For live connector use:
 
 Each live connector path persists a local last-seen cursor in the edge state file so subsequent runs can narrow polling and avoid republishing stale events. The live connector configs also accept `token_file` as a local-file alternative to env vars, and the OAuth bootstrap path stores connector credentials in a separate `0600` credentials file so later polls can reuse them without process env injection. When a stored OAuth credential expires and includes a refresh token, the runtime now refreshes it automatically before polling. If the credential store is encrypted, the same key must be present on later runs through `ALICE_EDGE_CREDENTIAL_KEY` or `runtime.credentials_key_file`.
 
-For local GitHub webhook intake, set `ALICE_GITHUB_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-github-webhook-config.json -serve-webhooks`, and configure GitHub to deliver `pull_request` events to `http://127.0.0.1:8788/webhooks/github`. The current webhook path verifies `X-Hub-Signature-256`, maps repositories to project refs, ignores unrelated pull requests, and publishes derived artifacts directly without polling the GitHub API.
+For local GitHub webhook intake, set `ALICE_GITHUB_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-github-webhook-config.json -serve-webhooks`, and configure GitHub to deliver `pull_request` events to `http://127.0.0.1:8788/webhooks/github`. The current webhook path verifies `X-Hub-Signature-256`, records delivery IDs to ignore replayed deliveries, maps repositories to project refs, ignores unrelated pull requests, and publishes derived artifacts directly without polling the GitHub API.
 
-For local Jira webhook intake, set `ALICE_JIRA_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-jira-webhook-config.json -serve-webhooks`, and deliver issue webhooks to `http://127.0.0.1:8789/webhooks/jira` with `Authorization: Bearer $ALICE_JIRA_WEBHOOK_SECRET`. The current Jira path accepts `jira:issue_created` and `jira:issue_updated`, maps issue keys to configured projects, ignores unrelated assignees, and publishes derived artifacts directly without polling the Jira API.
+For local Jira webhook intake, set `ALICE_JIRA_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-jira-webhook-config.json -serve-webhooks`, and deliver issue webhooks to `http://127.0.0.1:8789/webhooks/jira` with `Authorization: Bearer $ALICE_JIRA_WEBHOOK_SECRET`. The current Jira path accepts `jira:issue_created` and `jira:issue_updated`, records delivery identifiers or payload hashes to ignore duplicate deliveries, maps issue keys to configured projects, ignores unrelated assignees, and publishes derived artifacts directly without polling the Jira API.
 
-For local Google Calendar webhook intake, set both `ALICE_GCAL_TOKEN` and `ALICE_GCAL_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-gcal-webhook-config.json -serve-webhooks`, and point the Calendar watch callback at `http://127.0.0.1:8790/webhooks/gcal`. The current Calendar path verifies `X-Goog-Channel-Token`, parses `X-Goog-Resource-URI` to identify the configured calendar, ignores unconfigured calendars and initial `sync` notifications, and performs an incremental events fetch through the saved calendar cursor before publishing derived artifacts.
+For local Google Calendar webhook intake, set both `ALICE_GCAL_TOKEN` and `ALICE_GCAL_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-gcal-webhook-config.json -serve-webhooks`, and point the Calendar watch callback at `http://127.0.0.1:8790/webhooks/gcal`. The current Calendar path verifies `X-Goog-Channel-Token`, tracks channel message numbers to ignore duplicate or out-of-order notifications, parses `X-Goog-Resource-URI` to identify the configured calendar, ignores unconfigured calendars and initial `sync` notifications, and performs an incremental events fetch through the saved calendar cursor before publishing derived artifacts.
 
 The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL instance is exposed on `127.0.0.1:5432`.
 
@@ -301,9 +302,9 @@ The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL insta
 
 The next recommended implementation steps are:
 
-1. harden webhook replay and duplicate-delivery handling across GitHub, Jira, and Google Calendar push paths
-2. deepen derivation beyond the current project-level heuristics with richer blocker-resolution and commitment-completion signals
-3. harden local operator workflows further with rotation tooling and safer credential-key management
+1. deepen derivation beyond the current project-level heuristics with richer blocker-resolution and commitment-completion signals
+2. harden local operator workflows further with rotation tooling and safer credential-key management
+3. add better connector lifecycle tooling around webhook/watch registration and local rotation workflows
 
 Use `docs/implementation-plan.md` as the source of truth for the current step-by-step handoff.
 

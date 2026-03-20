@@ -19,6 +19,8 @@ type State struct {
 	LatestDerivedArtifacts map[string]string               `json:"latest_derived_artifacts,omitempty"`
 	PublishedFixtures      map[string]string               `json:"published_fixtures,omitempty"`
 	ConnectorCursors       map[string]string               `json:"connector_cursors,omitempty"`
+	ProcessedWebhookKeys   map[string]string               `json:"processed_webhook_keys,omitempty"`
+	WebhookSequenceNumbers map[string]int64                `json:"webhook_sequence_numbers,omitempty"`
 	ConnectorCredentials   map[string]ConnectorCredential  `json:"connector_credentials,omitempty"`
 	PendingConnectorAuths  map[string]PendingConnectorAuth `json:"pending_connector_auths,omitempty"`
 }
@@ -91,6 +93,12 @@ func (s *State) normalizePublishedArtifacts() {
 	if s.ConnectorCursors == nil {
 		s.ConnectorCursors = map[string]string{}
 	}
+	if s.ProcessedWebhookKeys == nil {
+		s.ProcessedWebhookKeys = map[string]string{}
+	}
+	if s.WebhookSequenceNumbers == nil {
+		s.WebhookSequenceNumbers = map[string]int64{}
+	}
 	if s.LatestDerivedArtifacts == nil {
 		s.LatestDerivedArtifacts = map[string]string{}
 	}
@@ -124,4 +132,56 @@ func (s *State) SetCursorTime(key string, value time.Time) {
 		return
 	}
 	s.ConnectorCursors[key] = value.UTC().Format(time.RFC3339Nano)
+}
+
+func (s State) WebhookProcessedAt(key string) time.Time {
+	value, ok := s.ProcessedWebhookKeys[key]
+	if !ok {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err == nil {
+		return parsed
+	}
+	parsed, err = time.Parse(time.RFC3339, value)
+	if err == nil {
+		return parsed
+	}
+	return time.Time{}
+}
+
+func (s *State) MarkWebhookProcessed(key string, value time.Time) {
+	s.normalizePublishedArtifacts()
+	if key == "" || value.IsZero() {
+		return
+	}
+	s.ProcessedWebhookKeys[key] = value.UTC().Format(time.RFC3339Nano)
+}
+
+func (s *State) PruneProcessedWebhooks(cutoff time.Time) {
+	s.normalizePublishedArtifacts()
+	if cutoff.IsZero() {
+		return
+	}
+	for key, value := range s.ProcessedWebhookKeys {
+		processedAt, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			processedAt, err = time.Parse(time.RFC3339, value)
+		}
+		if err != nil || processedAt.Before(cutoff) {
+			delete(s.ProcessedWebhookKeys, key)
+		}
+	}
+}
+
+func (s State) WebhookSequenceNumber(key string) int64 {
+	return s.WebhookSequenceNumbers[key]
+}
+
+func (s *State) SetWebhookSequenceNumber(key string, value int64) {
+	s.normalizePublishedArtifacts()
+	if key == "" || value <= 0 {
+		return
+	}
+	s.WebhookSequenceNumbers[key] = value
 }

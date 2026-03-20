@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 const GitHubWebhookPath = "/webhooks/github"
 const JiraWebhookPath = "/webhooks/jira"
 const GCalWebhookPath = "/webhooks/gcal"
+const webhookReplayRetention = 7 * 24 * time.Hour
 
 type WebhookDeliveryResult struct {
 	ConnectorType      string              `json:"connector_type"`
@@ -59,6 +61,12 @@ type gitHubWebhookPullRequestPayload struct {
 type jiraWebhookIssuePayload struct {
 	WebhookEvent string            `json:"webhookEvent"`
 	Issue        jiraIssueResponse `json:"issue"`
+}
+
+type webhookReplayGuard struct {
+	deliveryKey    string
+	sequenceKey    string
+	sequenceNumber int64
 }
 
 func (r *Runtime) GitHubWebhookHandler() (http.Handler, error) {
@@ -363,7 +371,7 @@ func (r *Runtime) handleGitHubWebhook(ctx context.Context, source *gitHubLiveSou
 		result.Message = "github webhook acknowledged"
 		return result, nil
 	case "pull_request":
-		return r.handleGitHubPullRequestWebhook(ctx, source, repositories, body)
+		return r.handleGitHubPullRequestWebhook(ctx, source, repositories, headers, body)
 	case "":
 		err := &webhookBadRequestError{reason: "github webhook event type is required"}
 		result.Message = err.Error()
@@ -374,7 +382,7 @@ func (r *Runtime) handleGitHubWebhook(ctx context.Context, source *gitHubLiveSou
 	}
 }
 
-func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gitHubLiveSource, repositories []GitHubRepositoryConfig, body []byte) (WebhookDeliveryResult, error) {
+func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gitHubLiveSource, repositories []GitHubRepositoryConfig, headers http.Header, body []byte) (WebhookDeliveryResult, error) {
 	result := WebhookDeliveryResult{
 		ConnectorType: "github",
 		EventType:     "pull_request",
@@ -415,6 +423,14 @@ func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gi
 		result.Message = err.Error()
 		return result, err
 	}
+	processedAt := time.Now().UTC()
+	pruneWebhookReplayState(&state, processedAt)
+	replayGuard := newGitHubWebhookReplayGuard(headers, body)
+	if isDuplicateWebhookDelivery(state, replayGuard) {
+		result.Accepted = true
+		result.Message = "ignored duplicate github webhook delivery"
+		return result, nil
+	}
 	if err := r.ensureKeyMaterial(&state); err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -423,6 +439,11 @@ func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gi
 	event := normalizeLiveGitHubPullRequest(repository, payload.PullRequest, source.actorLogin)
 	freshEvents, cursorUpdates := filterEventsSinceCursors(state, []NormalizedEvent{event})
 	if len(freshEvents) == 0 {
+		recordWebhookDelivery(&state, replayGuard, processedAt)
+		if err := SaveState(r.cfg.StatePath(), state); err != nil {
+			result.Message = err.Error()
+			return result, err
+		}
 		result.Accepted = true
 		result.Message = "github webhook did not advance the repository cursor"
 		return result, nil
@@ -434,6 +455,7 @@ func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gi
 		result.Message = err.Error()
 		return result, err
 	}
+	recordWebhookDelivery(&state, replayGuard, processedAt)
 	if err := SaveState(r.cfg.StatePath(), state); err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -476,14 +498,14 @@ func (r *Runtime) handleJiraWebhook(ctx context.Context, source *jiraLiveSource,
 		if strings.TrimSpace(result.EventType) == "" {
 			result.EventType = "jira:issue_updated"
 		}
-		return r.handleJiraIssueWebhook(ctx, source, projects, payload, result)
+		return r.handleJiraIssueWebhook(ctx, source, projects, headers, body, payload, result)
 	default:
 		result.Message = fmt.Sprintf("ignored unsupported jira event %q", result.EventType)
 		return result, nil
 	}
 }
 
-func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSource, projects []JiraProjectConfig, payload jiraWebhookIssuePayload, result WebhookDeliveryResult) (WebhookDeliveryResult, error) {
+func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSource, projects []JiraProjectConfig, headers http.Header, body []byte, payload jiraWebhookIssuePayload, result WebhookDeliveryResult) (WebhookDeliveryResult, error) {
 	issueKey := strings.TrimSpace(payload.Issue.Key)
 	if issueKey == "" {
 		parseErr := &webhookBadRequestError{reason: "jira webhook payload requires issue.key"}
@@ -512,6 +534,14 @@ func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSo
 		result.Message = err.Error()
 		return result, err
 	}
+	processedAt := time.Now().UTC()
+	pruneWebhookReplayState(&state, processedAt)
+	replayGuard := newJiraWebhookReplayGuard(headers, body)
+	if isDuplicateWebhookDelivery(state, replayGuard) {
+		result.Accepted = true
+		result.Message = "ignored duplicate jira webhook delivery"
+		return result, nil
+	}
 	if err := r.ensureKeyMaterial(&state); err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -520,6 +550,11 @@ func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSo
 	event := normalizeLiveJiraIssue(project, payload.Issue)
 	freshEvents, cursorUpdates := filterEventsSinceCursors(state, []NormalizedEvent{event})
 	if len(freshEvents) == 0 {
+		recordWebhookDelivery(&state, replayGuard, processedAt)
+		if err := SaveState(r.cfg.StatePath(), state); err != nil {
+			result.Message = err.Error()
+			return result, err
+		}
 		result.Accepted = true
 		result.Message = "jira webhook did not advance the project cursor"
 		return result, nil
@@ -531,6 +566,7 @@ func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSo
 		result.Message = err.Error()
 		return result, err
 	}
+	recordWebhookDelivery(&state, replayGuard, processedAt)
 	if err := SaveState(r.cfg.StatePath(), state); err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -603,6 +639,18 @@ func (r *Runtime) handleGCalExistsWebhook(ctx context.Context, source *gcalLiveS
 		result.Message = err.Error()
 		return result, err
 	}
+	processedAt := time.Now().UTC()
+	pruneWebhookReplayState(&state, processedAt)
+	replayGuard, err := newGCalWebhookReplayGuard(headers)
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	if isDuplicateWebhookDelivery(state, replayGuard) {
+		result.Accepted = true
+		result.Message = "ignored duplicate or out-of-order gcal webhook delivery"
+		return result, nil
+	}
 	if err := r.ensureKeyMaterial(&state); err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -621,6 +669,11 @@ func (r *Runtime) handleGCalExistsWebhook(ctx context.Context, source *gcalLiveS
 	}
 	freshEvents, cursorUpdates := filterEventsSinceCursors(state, events)
 	if len(freshEvents) == 0 {
+		recordWebhookDelivery(&state, replayGuard, processedAt)
+		if err := SaveState(r.cfg.StatePath(), state); err != nil {
+			result.Message = err.Error()
+			return result, err
+		}
 		result.Accepted = true
 		result.Message = "gcal webhook did not advance the calendar cursor"
 		return result, nil
@@ -632,6 +685,7 @@ func (r *Runtime) handleGCalExistsWebhook(ctx context.Context, source *gcalLiveS
 		result.Message = err.Error()
 		return result, err
 	}
+	recordWebhookDelivery(&state, replayGuard, processedAt)
 	if err := SaveState(r.cfg.StatePath(), state); err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -738,6 +792,84 @@ func parseGCalWebhookCalendarID(resourceURI string) (string, error) {
 		return calendarID, nil
 	}
 	return "", &webhookBadRequestError{reason: "gcal webhook resource URI must identify a calendar events feed"}
+}
+
+func pruneWebhookReplayState(state *State, now time.Time) {
+	state.PruneProcessedWebhooks(now.Add(-webhookReplayRetention))
+}
+
+func isDuplicateWebhookDelivery(state State, guard webhookReplayGuard) bool {
+	if guard.deliveryKey != "" && !state.WebhookProcessedAt(guard.deliveryKey).IsZero() {
+		return true
+	}
+	if guard.sequenceKey != "" && guard.sequenceNumber > 0 && state.WebhookSequenceNumber(guard.sequenceKey) >= guard.sequenceNumber {
+		return true
+	}
+	return false
+}
+
+func recordWebhookDelivery(state *State, guard webhookReplayGuard, processedAt time.Time) {
+	if guard.deliveryKey != "" {
+		state.MarkWebhookProcessed(guard.deliveryKey, processedAt)
+	}
+	if guard.sequenceKey != "" && guard.sequenceNumber > 0 {
+		state.SetWebhookSequenceNumber(guard.sequenceKey, guard.sequenceNumber)
+	}
+}
+
+func newGitHubWebhookReplayGuard(headers http.Header, body []byte) webhookReplayGuard {
+	if deliveryID := strings.TrimSpace(headers.Get("X-GitHub-Delivery")); deliveryID != "" {
+		return webhookReplayGuard{deliveryKey: "github:delivery:" + deliveryID}
+	}
+	return webhookReplayGuard{deliveryKey: "github:payload:" + digestWebhookPayload(body)}
+}
+
+func newJiraWebhookReplayGuard(headers http.Header, body []byte) webhookReplayGuard {
+	for _, headerName := range []string{"X-Atlassian-Webhook-Identifier", "X-Request-Id"} {
+		if deliveryID := strings.TrimSpace(headers.Get(headerName)); deliveryID != "" {
+			return webhookReplayGuard{deliveryKey: "jira:delivery:" + deliveryID}
+		}
+	}
+	return webhookReplayGuard{deliveryKey: "jira:payload:" + digestWebhookPayload(body)}
+}
+
+func newGCalWebhookReplayGuard(headers http.Header) (webhookReplayGuard, error) {
+	channelID := strings.TrimSpace(headers.Get("X-Goog-Channel-ID"))
+	messageNumber := strings.TrimSpace(headers.Get("X-Goog-Message-Number"))
+	if channelID != "" && messageNumber != "" {
+		parsed, err := strconv.ParseInt(messageNumber, 10, 64)
+		if err != nil || parsed <= 0 {
+			return webhookReplayGuard{}, &webhookBadRequestError{reason: "gcal webhook message number is invalid"}
+		}
+		return webhookReplayGuard{
+			deliveryKey:    fmt.Sprintf("gcal:channel:%s:message:%d", channelID, parsed),
+			sequenceKey:    "gcal:channel:" + channelID,
+			sequenceNumber: parsed,
+		}, nil
+	}
+
+	return webhookReplayGuard{
+		deliveryKey: "gcal:fallback:" + digestWebhookStrings(
+			headers.Get("X-Goog-Resource-State"),
+			headers.Get("X-Goog-Resource-URI"),
+			headers.Get("X-Goog-Resource-ID"),
+			headers.Get("X-Goog-Channel-ID"),
+		),
+	}, nil
+}
+
+func digestWebhookPayload(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func digestWebhookStrings(values ...string) string {
+	mac := sha256.New()
+	for _, value := range values {
+		_, _ = mac.Write([]byte(strings.TrimSpace(value)))
+		_, _ = mac.Write([]byte{0})
+	}
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func subtleConstantTimeEqual(expected, provided string) bool {

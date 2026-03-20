@@ -24,7 +24,14 @@ logs:
 	@$(PODMAN_COMPOSE) logs -f server
 
 postgres-up:
-	@$(PODMAN_COMPOSE) up -d $(POSTGRES_SERVICE)
+	@if $(PODMAN) container exists $(POSTGRES_CONTAINER_NAME) 2>/dev/null; then \
+		status="$$($(PODMAN) inspect --format '{{.State.Status}}' $(POSTGRES_CONTAINER_NAME) 2>/dev/null || true)"; \
+		if [ "$$status" != "running" ]; then \
+			$(PODMAN) start $(POSTGRES_CONTAINER_NAME) >/dev/null; \
+		fi; \
+	else \
+		$(PODMAN_COMPOSE) up -d $(POSTGRES_SERVICE); \
+	fi
 	@i=0; \
 	while [ $$i -lt $(POSTGRES_WAIT_TIMEOUT) ]; do \
 		status="$$($(PODMAN) inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $(POSTGRES_CONTAINER_NAME) 2>/dev/null || true)"; \

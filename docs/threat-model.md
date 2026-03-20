@@ -105,6 +105,7 @@ Current implementation note:
 - the dedicated credentials file can now be AES-GCM encrypted from a local env-provided or file-provided key
 - local operator workflows now surface actionable re-auth commands when stored connector credentials can no longer be refreshed
 - the initial push-based connector paths are now a local GitHub webhook endpoint with `X-Hub-Signature-256` verification, a local Jira webhook endpoint with shared-secret verification, and a local Google Calendar webhook endpoint with `X-Goog-Channel-Token` verification before any artifact publication
+- the edge runtime now persists webhook delivery receipts plus Google Calendar channel message numbers locally so duplicate or replayed deliveries can be dropped before publication
 
 ## 4.2 Private user work context
 
