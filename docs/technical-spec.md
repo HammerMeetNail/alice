@@ -235,7 +235,7 @@ Connectors are isolated modules with a stable interface.
 
 - authenticate to source system
 - collect events by webhook and/or polling
-- authenticate inbound webhook deliveries with provider signatures where available or local shared-secret validation when a relay path is used
+- authenticate inbound webhook deliveries with provider signatures where available or local shared-secret validation when a relay path is used, including Google Calendar channel-token verification for local watch callbacks
 - map source records into normalized events
 - declare source provenance and confidence
 - classify event sensitivity

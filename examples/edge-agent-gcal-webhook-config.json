@@ -1,0 +1,35 @@
+{
+  "agent": {
+    "org_slug": "example-corp",
+    "owner_email": "jane@example.com",
+    "agent_name": "jane-agent",
+    "client_type": "edge_agent"
+  },
+  "server": {
+    "base_url": "http://127.0.0.1:8080"
+  },
+  "connectors": {
+    "gcal": {
+      "token_env_var": "ALICE_GCAL_TOKEN",
+      "webhook": {
+        "enabled": true,
+        "listen_addr": "127.0.0.1:8790",
+        "secret_env_var": "ALICE_GCAL_WEBHOOK_SECRET"
+      },
+      "calendars": [
+        {
+          "id": "primary",
+          "project_refs": [
+            "payments-api"
+          ],
+          "category": "focus"
+        }
+      ]
+    }
+  },
+  "runtime": {
+    "state_file": "../.alice/edge-agent-gcal-webhook-state.json",
+    "query_watch_ids": [],
+    "poll_incoming_requests": true
+  }
+}

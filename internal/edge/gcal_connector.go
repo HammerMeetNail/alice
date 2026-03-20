@@ -44,7 +44,7 @@ type gcalAttendeeResponse struct {
 	Email string `json:"email"`
 }
 
-func newGCalLiveSource(cfg Config) EventSource {
+func newGCalLiveSource(cfg Config) *gcalLiveSource {
 	return &gcalLiveSource{
 		baseURL:     cfg.GCalAPIBaseURL(),
 		tokenEnvVar: cfg.GCalTokenEnvVar(),
@@ -72,14 +72,22 @@ func (s *gcalLiveSource) Poll(ctx context.Context, state State, credentials Cred
 		if err != nil {
 			return nil, fmt.Errorf("list events for %s: %w", calendar.ID, err)
 		}
-		for _, calendarEvent := range calendarEvents {
-			if strings.EqualFold(strings.TrimSpace(calendarEvent.Status), "cancelled") {
-				continue
-			}
-			events = append(events, normalizeLiveGCalEvent(calendar, calendarEvent))
-		}
+		events = append(events, normalizeLiveGCalEvents(calendar, calendarEvents)...)
 	}
 	return events, nil
+}
+
+func (s *gcalLiveSource) PollCalendar(ctx context.Context, state State, credentials CredentialStore, calendar GCalCalendarConfig) ([]NormalizedEvent, error) {
+	token, err := loadConnectorSecret("gcal", s.tokenEnvVar, s.tokenFile, credentials.ConnectorCredential("gcal"))
+	if err != nil {
+		return nil, err
+	}
+
+	calendarEvents, err := s.listEvents(ctx, token, calendar, state.CursorTime(gcalCursorKey(calendar.ID)))
+	if err != nil {
+		return nil, fmt.Errorf("list events for %s: %w", calendar.ID, err)
+	}
+	return normalizeLiveGCalEvents(calendar, calendarEvents), nil
 }
 
 func (s *gcalLiveSource) listEvents(ctx context.Context, token string, calendar GCalCalendarConfig, cursor time.Time) ([]gcalEventResponse, error) {
@@ -163,6 +171,17 @@ func normalizeLiveGCalEvent(calendar GCalCalendarConfig, event gcalEventResponse
 	}
 }
 
+func normalizeLiveGCalEvents(calendar GCalCalendarConfig, events []gcalEventResponse) []NormalizedEvent {
+	normalized := make([]NormalizedEvent, 0, len(events))
+	for _, event := range events {
+		if strings.EqualFold(strings.TrimSpace(event.Status), "cancelled") {
+			continue
+		}
+		normalized = append(normalized, normalizeLiveGCalEvent(calendar, event))
+	}
+	return normalized
+}
+
 func (v gcalEventTimeResponse) Time() time.Time {
 	if strings.TrimSpace(v.DateTime) != "" {
 		parsed, err := time.Parse(time.RFC3339, v.DateTime)
@@ -210,4 +229,14 @@ func projectRefsForCalendar(calendar GCalCalendarConfig) []string {
 
 func gcalCursorKey(calendarID string) string {
 	return "gcal:calendar:" + strings.TrimSpace(calendarID)
+}
+
+func findGCalCalendarConfig(calendars []GCalCalendarConfig, calendarID string) (GCalCalendarConfig, bool) {
+	trimmedCalendarID := strings.TrimSpace(calendarID)
+	for _, calendar := range calendars {
+		if strings.EqualFold(strings.TrimSpace(calendar.ID), trimmedCalendarID) {
+			return calendar, true
+		}
+	}
+	return GCalCalendarConfig{}, false
 }

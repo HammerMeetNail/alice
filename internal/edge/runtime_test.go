@@ -959,6 +959,212 @@ func TestRuntimeJiraWebhookRejectsInvalidSecret(t *testing.T) {
 	}
 }
 
+func TestRuntimeGCalWebhookPublishesArtifacts(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	eventUpdatedAt := time.Date(2026, 3, 19, 18, 0, 0, 0, time.UTC)
+	eventStartAt := time.Date(2026, 3, 19, 18, 30, 0, 0, time.UTC)
+	eventEndAt := eventStartAt.Add(30 * time.Minute)
+	t.Setenv("ALICE_GCAL_WEBHOOK_SECRET", "test-gcal-webhook-secret")
+	t.Setenv("ALICE_GCAL_TOKEN", "test-gcal-token")
+
+	requestCount := 0
+	gcalAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if got := r.Header.Get("Authorization"); got != "Bearer test-gcal-token" {
+			t.Fatalf("unexpected gcal auth header: %q", got)
+		}
+		if r.URL.Path != "/calendar/v3/calendars/primary/events" {
+			t.Fatalf("unexpected gcal path: %s", r.URL.Path)
+		}
+
+		payload := map[string]any{
+			"items": []map[string]any{
+				{
+					"id":        "evt-webhook-1",
+					"status":    "confirmed",
+					"updated":   eventUpdatedAt.Format(time.RFC3339),
+					"eventType": "focusTime",
+					"start": map[string]any{
+						"dateTime": eventStartAt.Format(time.RFC3339),
+					},
+					"end": map[string]any{
+						"dateTime": eventEndAt.Format(time.RFC3339),
+					},
+					"attendees": []map[string]any{
+						{"email": "sam@example.com"},
+					},
+				},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode gcal webhook payload: %v", err)
+		}
+	}))
+	defer gcalAPI.Close()
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GCal: GCalConnectorConfig{
+				APIBaseURL:  gcalAPI.URL + "/calendar/v3",
+				TokenEnvVar: "ALICE_GCAL_TOKEN",
+				Webhook: GCalWebhookConfig{
+					Enabled:      true,
+					ListenAddr:   "127.0.0.1:8790",
+					SecretEnvVar: "ALICE_GCAL_WEBHOOK_SECRET",
+				},
+				Calendars: []GCalCalendarConfig{
+					{
+						ID:          "primary",
+						ProjectRefs: []string{"payments-api"},
+						Category:    "focus",
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load gcal webhook config: %v", err)
+	}
+
+	webhookHandler, err := NewRuntime(cfg).GCalWebhookHandler()
+	if err != nil {
+		t.Fatalf("build gcal webhook handler: %v", err)
+	}
+	webhookServer := httptest.NewServer(webhookHandler)
+	defer webhookServer.Close()
+
+	var webhookResult WebhookDeliveryResult
+	postGCalWebhook(t, webhookServer.URL+GCalWebhookPath, "test-gcal-webhook-secret", map[string]string{
+		"X-Goog-Resource-State": "exists",
+		"X-Goog-Resource-URI":   gcalAPI.URL + "/calendar/v3/calendars/primary/events",
+	}, http.StatusOK, &webhookResult)
+
+	if !webhookResult.Accepted {
+		t.Fatalf("expected gcal webhook to be accepted, got %+v", webhookResult)
+	}
+	if len(webhookResult.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one artifact from gcal webhook, got %d", len(webhookResult.PublishedArtifacts))
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected one gcal API fetch from webhook, got %d", requestCount)
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after gcal webhook publish: %v", err)
+	}
+	aliceToken := registerAgent(t, server.URL, "example-corp", "alice@example.com", "alice-agent")
+	grantPermission(t, server.URL, state.AccessToken, map[string]any{
+		"grantee_user_email":     "alice@example.com",
+		"scope_type":             "project",
+		"scope_ref":              "payments-api",
+		"allowed_artifact_types": []string{"status_delta"},
+		"max_sensitivity":        "medium",
+		"allowed_purposes":       []string{"status_check"},
+	})
+
+	queryID := queryPeerStatus(t, server.URL, aliceToken, map[string]any{
+		"to_user_email":   "sam@example.com",
+		"purpose":         "status_check",
+		"question":        "Is Sam available this afternoon?",
+		"requested_types": []string{"status_delta"},
+		"project_scope":   []string{"payments-api"},
+		"time_window": map[string]any{
+			"start": eventUpdatedAt.Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   eventUpdatedAt.Add(2 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	var result map[string]any
+	doJSON(t, server.URL, http.MethodGet, "/v1/queries/"+queryID, aliceToken, nil, &result)
+	response := result["response"].(map[string]any)
+	artifacts := response["artifacts"].([]any)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected one gcal webhook artifact in query result, got %d", len(artifacts))
+	}
+}
+
+func TestRuntimeGCalWebhookRejectsInvalidChannelToken(t *testing.T) {
+	t.Setenv("ALICE_GCAL_WEBHOOK_SECRET", "test-gcal-webhook-secret")
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: "http://127.0.0.1:8080",
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			GCal: GCalConnectorConfig{
+				Webhook: GCalWebhookConfig{
+					Enabled:      true,
+					ListenAddr:   "127.0.0.1:8790",
+					SecretEnvVar: "ALICE_GCAL_WEBHOOK_SECRET",
+				},
+				Calendars: []GCalCalendarConfig{
+					{
+						ID: "primary",
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load gcal webhook config: %v", err)
+	}
+
+	webhookHandler, err := NewRuntime(cfg).GCalWebhookHandler()
+	if err != nil {
+		t.Fatalf("build gcal webhook handler: %v", err)
+	}
+	webhookServer := httptest.NewServer(webhookHandler)
+	defer webhookServer.Close()
+
+	var result WebhookDeliveryResult
+	postGCalWebhook(t, webhookServer.URL+GCalWebhookPath, "wrong-secret", map[string]string{
+		"X-Goog-Resource-State": "exists",
+		"X-Goog-Resource-URI":   "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+	}, http.StatusUnauthorized, &result)
+	if !strings.Contains(result.Message, "channel token is invalid") {
+		t.Fatalf("expected invalid gcal webhook token message, got %+v", result)
+	}
+}
+
 func TestRuntimeRunOncePollsLiveJira(t *testing.T) {
 	handler, closeFn := newTestHandler(t)
 	if closeFn != nil {
@@ -2633,6 +2839,40 @@ func postSecretWebhookWithToken(t *testing.T, webhookURL, secret string, body an
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 			t.Fatalf("decode secret webhook response: %v", err)
+		}
+	}
+}
+
+func postGCalWebhook(t *testing.T, webhookURL, secret string, headers map[string]string, expectedStatus int, out any) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, webhookURL, strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("build gcal webhook request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(secret) != "" {
+		req.Header.Set("X-Goog-Channel-Token", strings.TrimSpace(secret))
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("perform gcal webhook request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != expectedStatus {
+		var payload map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&payload)
+		t.Fatalf("expected gcal webhook status %d, got %d body=%v", expectedStatus, resp.StatusCode, payload)
+	}
+
+	if out != nil {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			t.Fatalf("decode gcal webhook response: %v", err)
 		}
 	}
 }

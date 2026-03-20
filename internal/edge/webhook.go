@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 
 const GitHubWebhookPath = "/webhooks/github"
 const JiraWebhookPath = "/webhooks/jira"
+const GCalWebhookPath = "/webhooks/gcal"
 
 type WebhookDeliveryResult struct {
 	ConnectorType      string              `json:"connector_type"`
@@ -188,6 +190,68 @@ func (r *Runtime) JiraWebhookHandler() (http.Handler, error) {
 	return mux, nil
 }
 
+func (r *Runtime) GCalWebhookHandler() (http.Handler, error) {
+	if !r.cfg.GCalWebhookEnabled() {
+		return nil, fmt.Errorf("gcal webhook intake is not configured")
+	}
+
+	secret, err := loadOptionalSecret("gcal webhook", r.cfg.GCalWebhookSecretEnvVar(), r.cfg.GCalWebhookSecretFile())
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(secret) == "" {
+		return nil, fmt.Errorf("gcal webhook secret is required")
+	}
+
+	source := newGCalLiveSource(r.cfg)
+	calendars := append([]GCalCalendarConfig(nil), r.cfg.Connectors.GCal.Calendars...)
+
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc(GCalWebhookPath, func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if _, err := io.Copy(io.Discard, io.LimitReader(req.Body, 1<<20)); err != nil {
+			http.Error(w, "read webhook body", http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		result, handleErr := r.handleGCalWebhook(req.Context(), source, calendars, secret, req.Header)
+		mu.Unlock()
+
+		statusCode := http.StatusOK
+		switch {
+		case handleErr == nil && !result.Accepted:
+			statusCode = http.StatusAccepted
+		case handleErr == nil:
+			statusCode = http.StatusOK
+		default:
+			var unauthorizedErr *webhookUnauthorizedError
+			var badRequestErr *webhookBadRequestError
+			switch {
+			case errors.As(handleErr, &unauthorizedErr):
+				statusCode = http.StatusUnauthorized
+			case errors.As(handleErr, &badRequestErr):
+				statusCode = http.StatusBadRequest
+			default:
+				statusCode = http.StatusInternalServerError
+			}
+			if strings.TrimSpace(result.Message) == "" {
+				result.Message = handleErr.Error()
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(result)
+	})
+	return mux, nil
+}
+
 func (r *Runtime) ServeWebhooks(ctx context.Context) error {
 	type route struct {
 		addr    string
@@ -195,7 +259,7 @@ func (r *Runtime) ServeWebhooks(ctx context.Context) error {
 		handler http.Handler
 	}
 
-	routes := make([]route, 0, 2)
+	routes := make([]route, 0, 3)
 	if r.cfg.GitHubWebhookEnabled() {
 		handler, err := r.GitHubWebhookHandler()
 		if err != nil {
@@ -215,6 +279,17 @@ func (r *Runtime) ServeWebhooks(ctx context.Context) error {
 		routes = append(routes, route{
 			addr:    r.cfg.JiraWebhookListenAddr(),
 			path:    JiraWebhookPath,
+			handler: handler,
+		})
+	}
+	if r.cfg.GCalWebhookEnabled() {
+		handler, err := r.GCalWebhookHandler()
+		if err != nil {
+			return err
+		}
+		routes = append(routes, route{
+			addr:    r.cfg.GCalWebhookListenAddr(),
+			path:    GCalWebhookPath,
 			handler: handler,
 		})
 	}
@@ -475,6 +550,107 @@ func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSo
 	return result, nil
 }
 
+func (r *Runtime) handleGCalWebhook(ctx context.Context, source *gcalLiveSource, calendars []GCalCalendarConfig, secret string, headers http.Header) (WebhookDeliveryResult, error) {
+	resourceState := strings.TrimSpace(headers.Get("X-Goog-Resource-State"))
+	result := WebhookDeliveryResult{
+		ConnectorType: "gcal",
+		EventType:     "calendar_notification",
+		Action:        resourceState,
+	}
+
+	if err := verifyGCalWebhookSecret(secret, headers); err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	if resourceState == "" {
+		err := &webhookBadRequestError{reason: "gcal webhook resource state is required"}
+		result.Message = err.Error()
+		return result, err
+	}
+
+	switch resourceState {
+	case "sync":
+		result.Accepted = true
+		result.Message = "gcal webhook acknowledged initial sync"
+		return result, nil
+	case "exists":
+		return r.handleGCalExistsWebhook(ctx, source, calendars, headers, result)
+	case "not_exists":
+		result.Accepted = true
+		result.Message = "gcal webhook reported a removed resource"
+		return result, nil
+	default:
+		result.Message = fmt.Sprintf("ignored unsupported gcal resource state %q", resourceState)
+		return result, nil
+	}
+}
+
+func (r *Runtime) handleGCalExistsWebhook(ctx context.Context, source *gcalLiveSource, calendars []GCalCalendarConfig, headers http.Header, result WebhookDeliveryResult) (WebhookDeliveryResult, error) {
+	calendarID, err := parseGCalWebhookCalendarID(headers.Get("X-Goog-Resource-URI"))
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+
+	calendar, ok := findGCalCalendarConfig(calendars, calendarID)
+	if !ok {
+		result.Message = fmt.Sprintf("ignored gcal webhook for unconfigured calendar %q", calendarID)
+		return result, nil
+	}
+
+	state, err := LoadState(r.cfg.StatePath())
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	if err := r.ensureKeyMaterial(&state); err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+
+	credentials, err := r.prepareCredentialStore(ctx, &state)
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+
+	events, err := source.PollCalendar(ctx, state, credentials, calendar)
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	freshEvents, cursorUpdates := filterEventsSinceCursors(state, events)
+	if len(freshEvents) == 0 {
+		result.Accepted = true
+		result.Message = "gcal webhook did not advance the calendar cursor"
+		return result, nil
+	}
+
+	registrationPerformed := false
+	published, skipped, err := r.publishArtifactBatch(ctx, &state, deriveArtifacts(freshEvents), cursorUpdates, &registrationPerformed)
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	if err := SaveState(r.cfg.StatePath(), state); err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+
+	result.Accepted = true
+	result.PublishedArtifacts = published
+	result.SkippedDigests = skipped
+	switch {
+	case len(published) > 0:
+		result.Message = fmt.Sprintf("published %d artifact(s) from gcal webhook", len(published))
+	case len(skipped) > 0:
+		result.Message = "gcal webhook matched already-published artifacts"
+	default:
+		result.Message = "gcal webhook produced no publishable artifacts"
+	}
+	return result, nil
+}
+
 func verifyGitHubWebhookSignature(secret, headerValue string, body []byte) error {
 	trimmedSecret := strings.TrimSpace(secret)
 	if trimmedSecret == "" {
@@ -518,6 +694,50 @@ func verifySharedSecretWebhook(secret string, headers http.Header) error {
 		return &webhookUnauthorizedError{reason: "webhook authorization must use Bearer auth"}
 	}
 	return &webhookUnauthorizedError{reason: "webhook shared secret is missing"}
+}
+
+func verifyGCalWebhookSecret(secret string, headers http.Header) error {
+	expectedSecret := strings.TrimSpace(secret)
+	if expectedSecret == "" {
+		return &webhookUnauthorizedError{reason: "gcal webhook secret is not configured"}
+	}
+
+	if providedToken := strings.TrimSpace(headers.Get("X-Goog-Channel-Token")); providedToken != "" {
+		if subtleConstantTimeEqual(expectedSecret, providedToken) {
+			return nil
+		}
+		return &webhookUnauthorizedError{reason: "gcal webhook channel token is invalid"}
+	}
+
+	return verifySharedSecretWebhook(secret, headers)
+}
+
+func parseGCalWebhookCalendarID(resourceURI string) (string, error) {
+	trimmedURI := strings.TrimSpace(resourceURI)
+	if trimmedURI == "" {
+		return "", &webhookBadRequestError{reason: "gcal webhook resource URI is required"}
+	}
+
+	parsed, err := url.Parse(trimmedURI)
+	if err != nil {
+		return "", &webhookBadRequestError{reason: fmt.Sprintf("parse gcal webhook resource URI: %v", err)}
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for i := 0; i+2 < len(segments); i++ {
+		if segments[i] != "calendars" || segments[i+2] != "events" {
+			continue
+		}
+		calendarID, unescapeErr := url.PathUnescape(segments[i+1])
+		if unescapeErr != nil {
+			return "", &webhookBadRequestError{reason: fmt.Sprintf("decode gcal webhook calendar id: %v", unescapeErr)}
+		}
+		calendarID = strings.TrimSpace(calendarID)
+		if calendarID == "" {
+			break
+		}
+		return calendarID, nil
+	}
+	return "", &webhookBadRequestError{reason: "gcal webhook resource URI must identify a calendar events feed"}
 }
 
 func subtleConstantTimeEqual(expected, provided string) bool {

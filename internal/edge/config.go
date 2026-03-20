@@ -76,6 +76,13 @@ type JiraWebhookConfig struct {
 	Projects     []JiraProjectConfig `json:"projects"`
 }
 
+type GCalWebhookConfig struct {
+	Enabled      bool   `json:"enabled"`
+	ListenAddr   string `json:"listen_addr"`
+	SecretEnvVar string `json:"secret_env_var"`
+	SecretFile   string `json:"secret_file"`
+}
+
 type GitHubConnectorConfig struct {
 	Enabled      bool                     `json:"enabled"`
 	FixtureFile  string                   `json:"fixture_file"`
@@ -118,6 +125,7 @@ type GCalConnectorConfig struct {
 	TokenEnvVar string               `json:"token_env_var"`
 	TokenFile   string               `json:"token_file"`
 	OAuth       ConnectorOAuthConfig `json:"oauth"`
+	Webhook     GCalWebhookConfig    `json:"webhook"`
 	Calendars   []GCalCalendarConfig `json:"calendars"`
 }
 
@@ -227,6 +235,14 @@ func (c *Config) applyDefaults() {
 			c.Connectors.GCal.TokenEnvVar = "ALICE_GCAL_TOKEN"
 		}
 	}
+	if c.GCalWebhookEnabled() {
+		if strings.TrimSpace(c.Connectors.GCal.Webhook.ListenAddr) == "" {
+			c.Connectors.GCal.Webhook.ListenAddr = "127.0.0.1:8790"
+		}
+		if strings.TrimSpace(c.Connectors.GCal.Webhook.SecretEnvVar) == "" {
+			c.Connectors.GCal.Webhook.SecretEnvVar = "ALICE_GCAL_WEBHOOK_SECRET"
+		}
+	}
 	if c.GCalOAuthEnabled() {
 		c.applyOAuthDefaults(
 			&c.Connectors.GCal.OAuth,
@@ -311,6 +327,17 @@ func (c Config) Validate() error {
 		}
 		if c.GCalLiveEnabled() && len(c.Connectors.GCal.Calendars) == 0 {
 			return fmt.Errorf("connectors.gcal.calendars is required when gcal live polling is enabled")
+		}
+		if c.GCalWebhookEnabled() {
+			if _, err := net.ResolveTCPAddr("tcp", strings.TrimSpace(c.Connectors.GCal.Webhook.ListenAddr)); err != nil {
+				return fmt.Errorf("connectors.gcal.webhook.listen_addr is invalid: %w", err)
+			}
+			if strings.TrimSpace(c.Connectors.GCal.Webhook.SecretEnvVar) == "" && strings.TrimSpace(c.Connectors.GCal.Webhook.SecretFile) == "" {
+				return fmt.Errorf("connectors.gcal.webhook.secret_env_var or connectors.gcal.webhook.secret_file is required when gcal webhook intake is enabled")
+			}
+			if len(c.Connectors.GCal.Calendars) == 0 {
+				return fmt.Errorf("connectors.gcal.calendars is required when gcal webhook intake is enabled")
+			}
 		}
 		if err := validateOAuthConfig("connectors.github.oauth", c.Connectors.GitHub.OAuth, c.GitHubOAuthEnabled()); err != nil {
 			return err
@@ -482,6 +509,22 @@ func (c Config) GCalOAuthEnabled() bool {
 
 func (c Config) GCalOAuthConfig() ConnectorOAuthConfig {
 	return c.resolveOAuthConfig(c.Connectors.GCal.OAuth)
+}
+
+func (c Config) GCalWebhookEnabled() bool {
+	return c.Connectors.GCal.Webhook.Enabled
+}
+
+func (c Config) GCalWebhookListenAddr() string {
+	return strings.TrimSpace(c.Connectors.GCal.Webhook.ListenAddr)
+}
+
+func (c Config) GCalWebhookSecretEnvVar() string {
+	return strings.TrimSpace(c.Connectors.GCal.Webhook.SecretEnvVar)
+}
+
+func (c Config) GCalWebhookSecretFile() string {
+	return c.resolveConnectorPath(c.Connectors.GCal.Webhook.SecretFile)
 }
 
 func (c Config) resolvePath(value string) string {
