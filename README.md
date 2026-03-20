@@ -227,6 +227,7 @@ Implemented now:
   - live GitHub polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus repository-to-project mapping
   - signed local GitHub webhook intake for `pull_request` events through `cmd/edge-agent -serve-webhooks`
   - live Jira polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus project scoping and assignee filtering
+  - shared-secret local Jira webhook intake for issue events through `cmd/edge-agent -serve-webhooks`
   - live Google Calendar polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus calendar-scoped event ingestion
   - live connector pagination across GitHub, Jira, and Google Calendar API pages
   - transient connector retry/backoff for 429, 502, 503, and 504 responses
@@ -235,7 +236,7 @@ Implemented now:
   - watched query-result retrieval
   - incoming-request polling
 - end-to-end MCP test coverage for registration, artifact publish, grant creation, peer listing, query submission/result retrieval, request send/respond, and approval resolution
-- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, replacement-aware edge publication, live GitHub/Jira/Calendar polling, signed GitHub webhook intake, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
+- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, replacement-aware edge publication, live GitHub/Jira/Calendar polling, signed GitHub webhook intake, shared-secret Jira webhook intake, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
 - targeted HTTP test coverage for the permissioned query flow and request/approval flow in memory and, when configured, against PostgreSQL
 - Podman-based container workflow for local execution with both the server and PostgreSQL
 
@@ -248,7 +249,7 @@ Current implementation assumptions:
 - the first Gatekeeper request and approval flow exists, but approval policy is still explicit/manual rather than risk-engine driven
 - query time windows use source observation timestamps when artifacts carry source refs
 - the edge runtime uses JSON config plus local fixture files, with live polling now available for GitHub, Jira, and Google Calendar via env vars, token files, or locally bootstrapped OAuth credentials
-- the edge runtime now supports both polling and an initial push path through signed local GitHub webhooks, live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, and the edge runtime stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
+- the edge runtime now supports both polling and initial push paths through signed local GitHub webhooks plus shared-secret Jira webhooks, live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, and the edge runtime stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
 - edge-derived artifacts now carry stable derivation keys, the edge runtime persists the latest published artifact ID per derivation slot, updated summaries, blockers, commitments, and status deltas supersede older logical artifacts, and superseded artifacts are hidden from query results
 - richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
 - local container runs use PostgreSQL; tests and ad hoc runs can still fall back to in-memory storage when no database URL is set
@@ -262,10 +263,12 @@ Run these commands from the repository root:
 - prerequisites: `podman` and `podman-compose`
 - `make local`: build and start the local stack with Podman Compose, including PostgreSQL
 - `make down`: stop the local stack
+- `make postgres-up`: start only the PostgreSQL container and wait for it to become ready
+- `make postgres-down`: stop only the PostgreSQL container
 - `make status`: show container status
 - `make logs`: tail server logs
 - `make test`: run the Go test suite
-- `make test-postgres`: run the query-flow test path against the local PostgreSQL service
+- `make test-postgres`: start the PostgreSQL container if needed, wait for health, and run the Go test suite with `ALICE_TEST_DATABASE_URL` set
 
 The server reads `ALICE_DATABASE_URL` to decide whether to use PostgreSQL or the in-memory fallback.
 
@@ -287,13 +290,15 @@ Each live connector path persists a local last-seen cursor in the edge state fil
 
 For local GitHub webhook intake, set `ALICE_GITHUB_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-github-webhook-config.json -serve-webhooks`, and configure GitHub to deliver `pull_request` events to `http://127.0.0.1:8788/webhooks/github`. The current webhook path verifies `X-Hub-Signature-256`, maps repositories to project refs, ignores unrelated pull requests, and publishes derived artifacts directly without polling the GitHub API.
 
+For local Jira webhook intake, set `ALICE_JIRA_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-jira-webhook-config.json -serve-webhooks`, and deliver issue webhooks to `http://127.0.0.1:8789/webhooks/jira` with `Authorization: Bearer $ALICE_JIRA_WEBHOOK_SECRET`. The current Jira path accepts `jira:issue_created` and `jira:issue_updated`, maps issue keys to configured projects, ignores unrelated assignees, and publishes derived artifacts directly without polling the Jira API.
+
 The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL instance is exposed on `127.0.0.1:5432`.
 
 ## Next steps
 
 The next recommended implementation steps are:
 
-1. add Jira and Google Calendar push paths so polling is no longer the only incremental input mechanism
+1. add a Google Calendar push path so polling is no longer the only incremental input mechanism for calendar data
 2. deepen derivation beyond the current project-level heuristics with richer blocker-resolution and commitment-completion signals
 3. harden local operator workflows further with rotation tooling and safer credential-key management
 

@@ -104,7 +104,7 @@ Current implementation note:
 - refresh tokens may also be stored there when a connector returns them so the runtime can renew short-lived access tokens locally
 - the dedicated credentials file can now be AES-GCM encrypted from a local env-provided or file-provided key
 - local operator workflows now surface actionable re-auth commands when stored connector credentials can no longer be refreshed
-- the initial push-based connector path is now a local GitHub webhook endpoint with `X-Hub-Signature-256` verification before any artifact publication
+- the initial push-based connector paths are now a local GitHub webhook endpoint with `X-Hub-Signature-256` verification and a local Jira webhook endpoint with shared-secret verification before any artifact publication
 
 ## 4.2 Private user work context
 

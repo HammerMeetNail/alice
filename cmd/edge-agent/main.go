@@ -65,8 +65,13 @@ func main() {
 	}
 
 	if *serveWebhooks {
-		log.Printf("Serving GitHub webhooks on http://%s%s", cfg.GitHubWebhookListenAddr(), edge.GitHubWebhookPath)
-		if err := runtime.ServeGitHubWebhooks(rootCtx); err != nil {
+		if cfg.GitHubWebhookEnabled() {
+			log.Printf("Serving GitHub webhooks on http://%s%s", cfg.GitHubWebhookListenAddr(), edge.GitHubWebhookPath)
+		}
+		if cfg.JiraWebhookEnabled() {
+			log.Printf("Serving Jira webhooks on http://%s%s", cfg.JiraWebhookListenAddr(), edge.JiraWebhookPath)
+		}
+		if err := runtime.ServeWebhooks(rootCtx); err != nil {
 			log.Fatalf("edge webhook server failed: %v", err)
 		}
 		return

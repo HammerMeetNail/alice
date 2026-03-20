@@ -16,6 +16,7 @@ import (
 )
 
 const GitHubWebhookPath = "/webhooks/github"
+const JiraWebhookPath = "/webhooks/jira"
 
 type WebhookDeliveryResult struct {
 	ConnectorType      string              `json:"connector_type"`
@@ -51,6 +52,11 @@ type gitHubWebhookPullRequestPayload struct {
 	Action      string                  `json:"action"`
 	Repository  gitHubWebhookRepository `json:"repository"`
 	PullRequest gitHubPullResponse      `json:"pull_request"`
+}
+
+type jiraWebhookIssuePayload struct {
+	WebhookEvent string            `json:"webhookEvent"`
+	Issue        jiraIssueResponse `json:"issue"`
 }
 
 func (r *Runtime) GitHubWebhookHandler() (http.Handler, error) {
@@ -119,34 +125,149 @@ func (r *Runtime) GitHubWebhookHandler() (http.Handler, error) {
 	return mux, nil
 }
 
-func (r *Runtime) ServeGitHubWebhooks(ctx context.Context) error {
-	handler, err := r.GitHubWebhookHandler()
+func (r *Runtime) JiraWebhookHandler() (http.Handler, error) {
+	if !r.cfg.JiraWebhookEnabled() {
+		return nil, fmt.Errorf("jira webhook intake is not configured")
+	}
+
+	secret, err := loadOptionalSecret("jira webhook", r.cfg.JiraWebhookSecretEnvVar(), r.cfg.JiraWebhookSecretFile())
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if strings.TrimSpace(secret) == "" {
+		return nil, fmt.Errorf("jira webhook secret is required")
 	}
 
-	server := &http.Server{
-		Addr:              r.cfg.GitHubWebhookListenAddr(),
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	source := newJiraLiveSource(r.cfg)
+	projects := r.cfg.JiraWebhookProjects()
 
-	serverErrors := make(chan error, 1)
-	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErrors <- err
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc(JiraWebhookPath, func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
 		}
-	}()
+
+		body, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "read webhook body", http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		result, handleErr := r.handleJiraWebhook(req.Context(), source, projects, secret, req.Header, body)
+		mu.Unlock()
+
+		statusCode := http.StatusOK
+		switch {
+		case handleErr == nil && !result.Accepted:
+			statusCode = http.StatusAccepted
+		case handleErr == nil:
+			statusCode = http.StatusOK
+		default:
+			var unauthorizedErr *webhookUnauthorizedError
+			var badRequestErr *webhookBadRequestError
+			switch {
+			case errors.As(handleErr, &unauthorizedErr):
+				statusCode = http.StatusUnauthorized
+			case errors.As(handleErr, &badRequestErr):
+				statusCode = http.StatusBadRequest
+			default:
+				statusCode = http.StatusInternalServerError
+			}
+			if strings.TrimSpace(result.Message) == "" {
+				result.Message = handleErr.Error()
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(result)
+	})
+	return mux, nil
+}
+
+func (r *Runtime) ServeWebhooks(ctx context.Context) error {
+	type route struct {
+		addr    string
+		path    string
+		handler http.Handler
+	}
+
+	routes := make([]route, 0, 2)
+	if r.cfg.GitHubWebhookEnabled() {
+		handler, err := r.GitHubWebhookHandler()
+		if err != nil {
+			return err
+		}
+		routes = append(routes, route{
+			addr:    r.cfg.GitHubWebhookListenAddr(),
+			path:    GitHubWebhookPath,
+			handler: handler,
+		})
+	}
+	if r.cfg.JiraWebhookEnabled() {
+		handler, err := r.JiraWebhookHandler()
+		if err != nil {
+			return err
+		}
+		routes = append(routes, route{
+			addr:    r.cfg.JiraWebhookListenAddr(),
+			path:    JiraWebhookPath,
+			handler: handler,
+		})
+	}
+	if len(routes) == 0 {
+		return fmt.Errorf("no webhook endpoints configured")
+	}
+
+	muxes := make(map[string]*http.ServeMux)
+	for _, route := range routes {
+		mux := muxes[route.addr]
+		if mux == nil {
+			mux = http.NewServeMux()
+			muxes[route.addr] = mux
+		}
+		mux.Handle(route.path, route.handler)
+	}
+
+	servers := make([]*http.Server, 0, len(muxes))
+	serverErrors := make(chan error, len(muxes))
+	for addr, mux := range muxes {
+		server := &http.Server{
+			Addr:              addr,
+			Handler:           mux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		servers = append(servers, server)
+		go func(server *http.Server) {
+			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrors <- err
+			}
+		}(server)
+	}
+
+	shutdown := func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		for _, server := range servers {
+			_ = server.Shutdown(shutdownCtx)
+		}
+	}
 
 	select {
 	case err := <-serverErrors:
-		return fmt.Errorf("serve github webhooks: %w", err)
+		shutdown()
+		return fmt.Errorf("serve webhooks: %w", err)
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
+		shutdown()
 		return nil
 	}
+}
+
+func (r *Runtime) ServeGitHubWebhooks(ctx context.Context) error {
+	return r.ServeWebhooks(ctx)
 }
 
 func (r *Runtime) handleGitHubWebhook(ctx context.Context, source *gitHubLiveSource, repositories []GitHubRepositoryConfig, secret string, headers http.Header, body []byte) (WebhookDeliveryResult, error) {
@@ -257,6 +378,103 @@ func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gi
 	return result, nil
 }
 
+func (r *Runtime) handleJiraWebhook(ctx context.Context, source *jiraLiveSource, projects []JiraProjectConfig, secret string, headers http.Header, body []byte) (WebhookDeliveryResult, error) {
+	result := WebhookDeliveryResult{
+		ConnectorType: "jira",
+	}
+
+	if err := verifySharedSecretWebhook(secret, headers); err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+
+	var payload jiraWebhookIssuePayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		parseErr := &webhookBadRequestError{reason: fmt.Sprintf("decode jira webhook payload: %v", err)}
+		result.Message = parseErr.Error()
+		return result, parseErr
+	}
+
+	result.EventType = strings.TrimSpace(payload.WebhookEvent)
+	switch result.EventType {
+	case "", "jira:issue_created", "jira:issue_updated":
+		if strings.TrimSpace(result.EventType) == "" {
+			result.EventType = "jira:issue_updated"
+		}
+		return r.handleJiraIssueWebhook(ctx, source, projects, payload, result)
+	default:
+		result.Message = fmt.Sprintf("ignored unsupported jira event %q", result.EventType)
+		return result, nil
+	}
+}
+
+func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSource, projects []JiraProjectConfig, payload jiraWebhookIssuePayload, result WebhookDeliveryResult) (WebhookDeliveryResult, error) {
+	issueKey := strings.TrimSpace(payload.Issue.Key)
+	if issueKey == "" {
+		parseErr := &webhookBadRequestError{reason: "jira webhook payload requires issue.key"}
+		result.Message = parseErr.Error()
+		return result, parseErr
+	}
+
+	project, ok := findJiraProjectForIssue(projects, issueKey)
+	if !ok {
+		projectKey, _, found := strings.Cut(issueKey, "-")
+		if !found || strings.TrimSpace(projectKey) == "" {
+			parseErr := &webhookBadRequestError{reason: "jira webhook payload requires an issue key with a project prefix"}
+			result.Message = parseErr.Error()
+			return result, parseErr
+		}
+		project = JiraProjectConfig{Key: strings.TrimSpace(projectKey)}
+	}
+
+	if !source.isRelevantIssue(payload.Issue) {
+		result.Message = "ignored jira webhook for unrelated issue"
+		return result, nil
+	}
+
+	state, err := LoadState(r.cfg.StatePath())
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	if err := r.ensureKeyMaterial(&state); err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+
+	event := normalizeLiveJiraIssue(project, payload.Issue)
+	freshEvents, cursorUpdates := filterEventsSinceCursors(state, []NormalizedEvent{event})
+	if len(freshEvents) == 0 {
+		result.Accepted = true
+		result.Message = "jira webhook did not advance the project cursor"
+		return result, nil
+	}
+
+	registrationPerformed := false
+	published, skipped, err := r.publishArtifactBatch(ctx, &state, deriveArtifacts(freshEvents), cursorUpdates, &registrationPerformed)
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	if err := SaveState(r.cfg.StatePath(), state); err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+
+	result.Accepted = true
+	result.PublishedArtifacts = published
+	result.SkippedDigests = skipped
+	switch {
+	case len(published) > 0:
+		result.Message = fmt.Sprintf("published %d artifact(s) from jira webhook", len(published))
+	case len(skipped) > 0:
+		result.Message = "jira webhook matched already-published artifacts"
+	default:
+		result.Message = "jira webhook produced no publishable artifacts"
+	}
+	return result, nil
+}
+
 func verifyGitHubWebhookSignature(secret, headerValue string, body []byte) error {
 	trimmedSecret := strings.TrimSpace(secret)
 	if trimmedSecret == "" {
@@ -274,4 +492,34 @@ func verifyGitHubWebhookSignature(secret, headerValue string, body []byte) error
 		return &webhookUnauthorizedError{reason: "github webhook signature is invalid"}
 	}
 	return nil
+}
+
+func verifySharedSecretWebhook(secret string, headers http.Header) error {
+	expectedSecret := strings.TrimSpace(secret)
+	if expectedSecret == "" {
+		return &webhookUnauthorizedError{reason: "webhook secret is not configured"}
+	}
+
+	if providedSecret := strings.TrimSpace(headers.Get("X-Alice-Webhook-Secret")); providedSecret != "" {
+		if subtleConstantTimeEqual(expectedSecret, providedSecret) {
+			return nil
+		}
+		return &webhookUnauthorizedError{reason: "webhook shared secret is invalid"}
+	}
+
+	authorization := strings.TrimSpace(headers.Get("Authorization"))
+	if token, ok := strings.CutPrefix(authorization, "Bearer "); ok {
+		if subtleConstantTimeEqual(expectedSecret, strings.TrimSpace(token)) {
+			return nil
+		}
+		return &webhookUnauthorizedError{reason: "webhook bearer secret is invalid"}
+	}
+	if authorization != "" {
+		return &webhookUnauthorizedError{reason: "webhook authorization must use Bearer auth"}
+	}
+	return &webhookUnauthorizedError{reason: "webhook shared secret is missing"}
+}
+
+func subtleConstantTimeEqual(expected, provided string) bool {
+	return hmac.Equal([]byte(expected), []byte(provided))
 }

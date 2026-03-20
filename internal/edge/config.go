@@ -68,6 +68,14 @@ type GitHubWebhookConfig struct {
 	Repositories []GitHubRepositoryConfig `json:"repositories"`
 }
 
+type JiraWebhookConfig struct {
+	Enabled      bool                `json:"enabled"`
+	ListenAddr   string              `json:"listen_addr"`
+	SecretEnvVar string              `json:"secret_env_var"`
+	SecretFile   string              `json:"secret_file"`
+	Projects     []JiraProjectConfig `json:"projects"`
+}
+
 type GitHubConnectorConfig struct {
 	Enabled      bool                     `json:"enabled"`
 	FixtureFile  string                   `json:"fixture_file"`
@@ -92,6 +100,7 @@ type JiraConnectorConfig struct {
 	TokenEnvVar    string               `json:"token_env_var"`
 	TokenFile      string               `json:"token_file"`
 	OAuth          ConnectorOAuthConfig `json:"oauth"`
+	Webhook        JiraWebhookConfig    `json:"webhook"`
 	ActorAccountID string               `json:"actor_account_id"`
 	ActorEmail     string               `json:"actor_email"`
 	Projects       []JiraProjectConfig  `json:"projects"`
@@ -185,6 +194,17 @@ func (c *Config) applyDefaults() {
 			c.Connectors.Jira.ActorEmail = c.Agent.OwnerEmail
 		}
 	}
+	if c.JiraWebhookEnabled() {
+		if strings.TrimSpace(c.Connectors.Jira.Webhook.ListenAddr) == "" {
+			c.Connectors.Jira.Webhook.ListenAddr = "127.0.0.1:8789"
+		}
+		if strings.TrimSpace(c.Connectors.Jira.Webhook.SecretEnvVar) == "" {
+			c.Connectors.Jira.Webhook.SecretEnvVar = "ALICE_JIRA_WEBHOOK_SECRET"
+		}
+		if strings.TrimSpace(c.Connectors.Jira.ActorEmail) == "" {
+			c.Connectors.Jira.ActorEmail = c.Agent.OwnerEmail
+		}
+	}
 	if c.JiraOAuthEnabled() {
 		c.applyOAuthDefaults(
 			&c.Connectors.Jira.OAuth,
@@ -263,12 +283,25 @@ func (c Config) Validate() error {
 				return fmt.Errorf("connectors.jira.projects[%d].key is required", i)
 			}
 		}
+		for i, project := range c.Connectors.Jira.Webhook.Projects {
+			if strings.TrimSpace(project.Key) == "" {
+				return fmt.Errorf("connectors.jira.webhook.projects[%d].key is required", i)
+			}
+		}
 		if c.JiraLiveEnabled() {
 			if strings.TrimSpace(c.Connectors.Jira.APIBaseURL) == "" {
 				return fmt.Errorf("connectors.jira.api_base_url is required when jira live polling is enabled")
 			}
 			if len(c.Connectors.Jira.Projects) == 0 {
 				return fmt.Errorf("connectors.jira.projects is required when jira live polling is enabled")
+			}
+		}
+		if c.JiraWebhookEnabled() {
+			if _, err := net.ResolveTCPAddr("tcp", strings.TrimSpace(c.Connectors.Jira.Webhook.ListenAddr)); err != nil {
+				return fmt.Errorf("connectors.jira.webhook.listen_addr is invalid: %w", err)
+			}
+			if strings.TrimSpace(c.Connectors.Jira.Webhook.SecretEnvVar) == "" && strings.TrimSpace(c.Connectors.Jira.Webhook.SecretFile) == "" {
+				return fmt.Errorf("connectors.jira.webhook.secret_env_var or connectors.jira.webhook.secret_file is required when jira webhook intake is enabled")
 			}
 		}
 		for i, calendar := range c.Connectors.GCal.Calendars {
@@ -406,6 +439,29 @@ func (c Config) JiraOAuthEnabled() bool {
 
 func (c Config) JiraOAuthConfig() ConnectorOAuthConfig {
 	return c.resolveOAuthConfig(c.Connectors.Jira.OAuth)
+}
+
+func (c Config) JiraWebhookEnabled() bool {
+	return c.Connectors.Jira.Webhook.Enabled
+}
+
+func (c Config) JiraWebhookListenAddr() string {
+	return strings.TrimSpace(c.Connectors.Jira.Webhook.ListenAddr)
+}
+
+func (c Config) JiraWebhookSecretEnvVar() string {
+	return strings.TrimSpace(c.Connectors.Jira.Webhook.SecretEnvVar)
+}
+
+func (c Config) JiraWebhookSecretFile() string {
+	return c.resolveConnectorPath(c.Connectors.Jira.Webhook.SecretFile)
+}
+
+func (c Config) JiraWebhookProjects() []JiraProjectConfig {
+	if len(c.Connectors.Jira.Webhook.Projects) > 0 {
+		return append([]JiraProjectConfig(nil), c.Connectors.Jira.Webhook.Projects...)
+	}
+	return append([]JiraProjectConfig(nil), c.Connectors.Jira.Projects...)
 }
 
 func (c Config) GCalAPIBaseURL() string {

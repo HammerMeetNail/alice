@@ -774,6 +774,191 @@ func TestRuntimeGitHubWebhookRejectsInvalidSignature(t *testing.T) {
 	}
 }
 
+func TestRuntimeJiraWebhookPublishesArtifact(t *testing.T) {
+	handler, closeFn := newTestHandler(t)
+	if closeFn != nil {
+		t.Cleanup(func() {
+			if err := closeFn(); err != nil {
+				t.Fatalf("close test container: %v", err)
+			}
+		})
+	}
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	updatedAt := time.Date(2026, 3, 19, 19, 15, 0, 0, time.UTC)
+	t.Setenv("ALICE_JIRA_WEBHOOK_SECRET", "test-jira-webhook-secret")
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: server.URL,
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			Jira: JiraConnectorConfig{
+				Webhook: JiraWebhookConfig{
+					Enabled:      true,
+					ListenAddr:   "127.0.0.1:8789",
+					SecretEnvVar: "ALICE_JIRA_WEBHOOK_SECRET",
+					Projects: []JiraProjectConfig{
+						{
+							Key:         "PAY",
+							ProjectRefs: []string{"payments-api"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load jira webhook config: %v", err)
+	}
+
+	webhookHandler, err := NewRuntime(cfg).JiraWebhookHandler()
+	if err != nil {
+		t.Fatalf("build jira webhook handler: %v", err)
+	}
+	webhookServer := httptest.NewServer(webhookHandler)
+	defer webhookServer.Close()
+
+	var webhookResult WebhookDeliveryResult
+	postSecretWebhook(t, webhookServer.URL+JiraWebhookPath, "test-jira-webhook-secret", map[string]any{
+		"webhookEvent": "jira:issue_updated",
+		"issue": map[string]any{
+			"key": "PAY-123",
+			"fields": map[string]any{
+				"issuetype": map[string]any{
+					"name": "Story",
+				},
+				"status": map[string]any{
+					"name": "In Review",
+				},
+				"updated": updatedAt.Format(time.RFC3339),
+				"assignee": map[string]any{
+					"emailAddress": "sam@example.com",
+				},
+			},
+		},
+	}, http.StatusOK, &webhookResult)
+
+	if !webhookResult.Accepted {
+		t.Fatalf("expected jira webhook to be accepted, got %+v", webhookResult)
+	}
+	if len(webhookResult.PublishedArtifacts) != 1 {
+		t.Fatalf("expected one artifact from jira webhook, got %d", len(webhookResult.PublishedArtifacts))
+	}
+
+	state, err := LoadState(cfg.StatePath())
+	if err != nil {
+		t.Fatalf("load state after jira webhook publish: %v", err)
+	}
+	aliceToken := registerAgent(t, server.URL, "example-corp", "alice@example.com", "alice-agent")
+	grantPermission(t, server.URL, state.AccessToken, map[string]any{
+		"grantee_user_email":     "alice@example.com",
+		"scope_type":             "project",
+		"scope_ref":              "payments-api",
+		"allowed_artifact_types": []string{"summary"},
+		"max_sensitivity":        "medium",
+		"allowed_purposes":       []string{"status_check"},
+	})
+
+	queryID := queryPeerStatus(t, server.URL, aliceToken, map[string]any{
+		"to_user_email":   "sam@example.com",
+		"purpose":         "status_check",
+		"question":        "What has Sam been working on today?",
+		"requested_types": []string{"summary"},
+		"project_scope":   []string{"payments-api"},
+		"time_window": map[string]any{
+			"start": updatedAt.Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   updatedAt.Add(1 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	var result map[string]any
+	doJSON(t, server.URL, http.MethodGet, "/v1/queries/"+queryID, aliceToken, nil, &result)
+	response := result["response"].(map[string]any)
+	artifacts := response["artifacts"].([]any)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected one jira webhook artifact in query result, got %d", len(artifacts))
+	}
+}
+
+func TestRuntimeJiraWebhookRejectsInvalidSecret(t *testing.T) {
+	t.Setenv("ALICE_JIRA_WEBHOOK_SECRET", "test-jira-webhook-secret")
+
+	tempDir := t.TempDir()
+	configPath := writeEdgeConfig(t, tempDir, edgeConfigFile{
+		Agent: AgentConfig{
+			OrgSlug:    "example-corp",
+			OwnerEmail: "sam@example.com",
+			AgentName:  "sam-agent",
+			ClientType: "edge_agent",
+		},
+		Server: ServerConfig{
+			BaseURL: "http://127.0.0.1:8080",
+		},
+		Runtime: RuntimeConfig{
+			StateFile: "sam-state.json",
+		},
+		Connectors: ConnectorsConfig{
+			Jira: JiraConnectorConfig{
+				Webhook: JiraWebhookConfig{
+					Enabled:      true,
+					ListenAddr:   "127.0.0.1:8789",
+					SecretEnvVar: "ALICE_JIRA_WEBHOOK_SECRET",
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load jira webhook config: %v", err)
+	}
+
+	webhookHandler, err := NewRuntime(cfg).JiraWebhookHandler()
+	if err != nil {
+		t.Fatalf("build jira webhook handler: %v", err)
+	}
+	webhookServer := httptest.NewServer(webhookHandler)
+	defer webhookServer.Close()
+
+	var result WebhookDeliveryResult
+	postSecretWebhookWithToken(t, webhookServer.URL+JiraWebhookPath, "wrong-secret", map[string]any{
+		"webhookEvent": "jira:issue_updated",
+		"issue": map[string]any{
+			"key": "PAY-123",
+			"fields": map[string]any{
+				"issuetype": map[string]any{
+					"name": "Story",
+				},
+				"status": map[string]any{
+					"name": "In Review",
+				},
+				"updated": time.Now().UTC().Format(time.RFC3339),
+				"assignee": map[string]any{
+					"emailAddress": "sam@example.com",
+				},
+			},
+		},
+	}, http.StatusUnauthorized, &result)
+	if !strings.Contains(result.Message, "secret is invalid") {
+		t.Fatalf("expected invalid jira webhook secret message, got %+v", result)
+	}
+}
+
 func TestRuntimeRunOncePollsLiveJira(t *testing.T) {
 	handler, closeFn := newTestHandler(t)
 	if closeFn != nil {
@@ -2407,6 +2592,47 @@ func postGitHubWebhookWithSignature(t *testing.T, webhookURL, eventType string, 
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 			t.Fatalf("decode github webhook response: %v", err)
+		}
+	}
+}
+
+func postSecretWebhook(t *testing.T, webhookURL, secret string, body any, expectedStatus int, out any) {
+	t.Helper()
+	postSecretWebhookWithToken(t, webhookURL, secret, body, expectedStatus, out)
+}
+
+func postSecretWebhookWithToken(t *testing.T, webhookURL, secret string, body any, expectedStatus int, out any) {
+	t.Helper()
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal secret webhook body: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, webhookURL, strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("build secret webhook request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(secret) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(secret))
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("perform secret webhook request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != expectedStatus {
+		var payload map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&payload)
+		t.Fatalf("expected secret webhook status %d, got %d body=%v", expectedStatus, resp.StatusCode, payload)
+	}
+
+	if out != nil {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			t.Fatalf("decode secret webhook response: %v", err)
 		}
 	}
 }

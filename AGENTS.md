@@ -9,7 +9,7 @@ The repository is in early implementation. The root now contains runnable server
 - `cmd/server/`: coordination server HTTP entrypoint
 - `cmd/mcp-server/`: stdio MCP entrypoint for local tool clients
 - `cmd/edge-agent/`: local edge runtime skeleton entrypoint plus webhook-server mode
-- `internal/`: current server and edge-runtime packages including auth, HTTP API, MCP, Gatekeeper flows, normalized edge connector events, live GitHub/Jira/Calendar pollers with pagination and transient retry handling, signed GitHub webhook intake, connector cursor state, loopback OAuth connector bootstrap, encrypted local connector credential storage, refresh-token handling, actionable re-auth errors, persisted latest-derived-artifact tracking, replacement-aware artifact derivation, project-level aggregate derivation, and memory/PostgreSQL implementations
+- `internal/`: current server and edge-runtime packages including auth, HTTP API, MCP, Gatekeeper flows, normalized edge connector events, live GitHub/Jira/Calendar pollers with pagination and transient retry handling, signed GitHub webhook intake, shared-secret Jira webhook intake, connector cursor state, loopback OAuth connector bootstrap, encrypted local connector credential storage, refresh-token handling, actionable re-auth errors, persisted latest-derived-artifact tracking, replacement-aware artifact derivation, project-level aggregate derivation, and memory/PostgreSQL implementations
 - `examples/`: runnable local example configs plus artifact fixtures, connector fixtures, live polling examples, webhook intake examples, and OAuth bootstrap examples for GitHub, Jira, and Google Calendar
 - `api/jsonschema/`: current machine-readable schema files
 
@@ -20,10 +20,12 @@ Run these commands from the repository root:
 
 - `make local`: build and start the current server stack with Podman Compose
 - `make down`: stop the Podman Compose stack
+- `make postgres-up`: start only the PostgreSQL container and wait for it to become ready
+- `make postgres-down`: stop only the PostgreSQL container
 - `make status`: show container status
 - `make logs`: tail server container logs
 - `make test`: run the Go test suite
-- `make test-postgres`: run the query-flow test path against the local PostgreSQL service
+- `make test-postgres`: start the PostgreSQL container if needed, wait for health, and run the Go test suite with `ALICE_TEST_DATABASE_URL` set
 - `git diff -- README.md AGENTS.md docs/ examples/`: inspect documentation and example-config changes before committing
 
 Podman is the expected local container runtime for this repository, and the default local stack includes PostgreSQL.

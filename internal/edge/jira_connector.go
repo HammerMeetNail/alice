@@ -52,7 +52,7 @@ type jiraAssigneeResponse struct {
 	DisplayName  string `json:"displayName"`
 }
 
-func newJiraLiveSource(cfg Config) EventSource {
+func newJiraLiveSource(cfg Config) *jiraLiveSource {
 	return &jiraLiveSource{
 		baseURL:        cfg.JiraAPIBaseURL(),
 		tokenEnvVar:    cfg.JiraTokenEnvVar(),
@@ -200,6 +200,20 @@ func projectRefsForJiraProject(project JiraProjectConfig) []string {
 		return nil
 	}
 	return []string{strings.ToLower(strings.TrimSpace(project.Key))}
+}
+
+func findJiraProjectForIssue(projects []JiraProjectConfig, issueKey string) (JiraProjectConfig, bool) {
+	trimmedIssueKey := strings.TrimSpace(issueKey)
+	for _, project := range projects {
+		prefix := strings.TrimSpace(project.Key)
+		if prefix == "" {
+			continue
+		}
+		if strings.EqualFold(trimmedIssueKey, prefix) || strings.HasPrefix(strings.ToUpper(trimmedIssueKey), strings.ToUpper(prefix)+"-") {
+			return project, true
+		}
+	}
+	return JiraProjectConfig{}, false
 }
 
 func jiraCursorKey(projectKey string) string {
