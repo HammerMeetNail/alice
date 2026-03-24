@@ -44,6 +44,8 @@ The repository is no longer design-only. The current implementation includes:
 - a targeted MCP test covering local registration, artifact publish, grant, peer listing, query/result retrieval, request response, and approval resolution
 - a targeted edge runtime test covering registration reuse, fixture publication, fixture-derived artifacts, replacement-aware connector publication, live GitHub/Jira/Calendar polling, signed GitHub webhook intake, shared-secret Jira webhook intake, shared-secret Google Calendar webhook intake, webhook duplicate/replay handling, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store behavior, actionable re-auth errors, query-result retrieval, and incoming-request polling
 - a `RegisterConnectorWatch` edge runtime method and `watch.go` for Google Calendar provider-side watch (push channel) registration with reuse-detection and state persistence
+- a `-register-watches <connector>` flag on the `edge-agent` CLI that invokes `RegisterConnectorWatch` and prints the `ConnectorWatchReport` as JSON
+- cross-org isolation verified at the HTTP level: query, grant, and request endpoints all return 404 when the target email belongs to a different org
 - a Podman-based local container workflow through `make local` and `make down` that runs both the server and PostgreSQL, plus `make postgres-up` / `make test-postgres` helpers that bring up PostgreSQL-only test infrastructure, reuse an existing `alice-db` container when present, and wait for container health before running the PostgreSQL-backed test path
 
 ---
@@ -346,10 +348,10 @@ Steps a through p are largely complete. The remaining open security gaps and spe
 3. **`RegisterConnectorWatch` CLI command** — `watch.go` and the supporting config/state types are implemented but no `edge-agent watch` subcommand wires them up yet
 4. **cross-org negative authorization HTTP tests** — the service-level tests cover cross-org user lookup isolation; an HTTP-level cross-org registration + query attempt would further harden the test surface
 
-Concrete next change if continuing security hardening:
+All current items are complete. Remaining open spec items:
 
-- Add a `watch` subcommand to `cmd/edge-agent/main.go` that calls `runtime.RegisterConnectorWatch` and prints the `ConnectorWatchReport` as JSON
-- Add an HTTP-level test that registers two agents in different orgs and verifies a cross-org query attempt is denied
+1. **CORS/CSRF** — requires a known browser-facing origin; not applicable to the current API-only surface
+2. **`team_scope` / `manager_scope` visibility modes** — require an org graph not yet in scope
 
 ### previously completed steps (for reference)
 

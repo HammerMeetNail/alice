@@ -161,6 +161,71 @@ func TestCrossAgentArtifactCorrection(t *testing.T) {
 	}
 }
 
+func TestCrossOrgIsolation(t *testing.T) {
+	// Alice registers in org "alpha"; Bob registers in org "beta".
+	// Each org is completely separate: neither can query or grant across org boundaries.
+	handler := newTestHandler(t, "")
+
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	aliceEmail := "alice-" + suffix + "@example.com"
+	bobEmail := "bob-" + suffix + "@example.com"
+
+	alice := registerAgent(t, handler, "alpha-"+suffix, aliceEmail)
+	bob := registerAgent(t, handler, "beta-"+suffix, bobEmail)
+
+	// Bob publishes an artifact in his own org.
+	publishArtifact(t, handler, bob.AccessToken, core.Artifact{
+		Type:           core.ArtifactTypeSummary,
+		Title:          "Bob's cross-org status",
+		Content:        "All good.",
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Sensitivity:    core.SensitivityLow,
+		Confidence:     0.9,
+		SourceRefs: []core.SourceReference{
+			{SourceSystem: "test", SourceType: "manual", SourceID: "xorg-1", ObservedAt: time.Now().UTC()},
+		},
+	})
+
+	// Alice queries Bob's status — Bob's email is not in Alice's org, so 404.
+	rec := performJSON(t, handler, http.MethodPost, "/v1/queries", alice.AccessToken, map[string]any{
+		"to_user_email":   bobEmail,
+		"purpose":         "status_check",
+		"question":        "What has Bob been working on?",
+		"requested_types": []string{"summary"},
+		"time_window": map[string]any{
+			"start": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+			"end":   time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+		},
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-org query: expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Alice tries to grant Bob permission — Bob's email is not in Alice's org, so 404.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/policy-grants", alice.AccessToken, map[string]any{
+		"grantee_user_email":     bobEmail,
+		"scope_type":             "project",
+		"scope_ref":              "any-project",
+		"allowed_artifact_types": []string{"summary"},
+		"max_sensitivity":        "low",
+		"allowed_purposes":       []string{"status_check"},
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-org grant: expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Bob tries to send Alice a request — Alice's email is not in Bob's org, so 404.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/requests", bob.AccessToken, map[string]any{
+		"to_user_email": aliceEmail,
+		"request_type":  "ask_for_review",
+		"title":         "Cross-org request",
+		"content":       "Can you review this?",
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-org request: expected 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRegisterAgentRejectsInvalidSignature(t *testing.T) {
 	handler := newTestHandler(t, "")
 	fixture := newFixture(t)

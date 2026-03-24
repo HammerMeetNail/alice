@@ -17,6 +17,7 @@ import (
 func main() {
 	configPath := flag.String("config", "", "path to edge agent JSON config")
 	bootstrapConnector := flag.String("bootstrap-connector", "", "connector to bootstrap via local oauth callback (github, jira, gcal)")
+	registerWatches := flag.String("register-watches", "", "register provider-side push watches for a connector (gcal)")
 	serveWebhooks := flag.Bool("serve-webhooks", false, "serve configured connector webhook endpoints")
 	bootstrapTimeout := flag.Duration("bootstrap-timeout", 5*time.Minute, "how long to wait for the local oauth callback")
 	flag.Parse()
@@ -63,6 +64,29 @@ func main() {
 		}
 		if err := encoder.Encode(result); err != nil {
 			slog.Error("encode bootstrap report", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *registerWatches != "" {
+		report, err := runtime.RegisterConnectorWatch(rootCtx, *registerWatches)
+		if err != nil {
+			var keyErr *edge.CredentialStoreKeyRequiredError
+			if errors.As(err, &keyErr) {
+				slog.Error("register watches failed", "err", err, "hint", "Set "+cfg.CredentialsKeyEnvVar()+" or runtime.credentials_key_file before retrying.")
+				os.Exit(1)
+			}
+			var decryptErr *edge.CredentialStoreDecryptError
+			if errors.As(err, &decryptErr) {
+				slog.Error("register watches failed", "err", err, "hint", "Check "+cfg.CredentialsKeyEnvVar()+" or runtime.credentials_key_file and retry.")
+				os.Exit(1)
+			}
+			slog.Error("register watches failed", "err", err)
+			os.Exit(1)
+		}
+		if err := encoder.Encode(report); err != nil {
+			slog.Error("encode watch report", "err", err)
 			os.Exit(1)
 		}
 		return
