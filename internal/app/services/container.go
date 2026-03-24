@@ -8,7 +8,7 @@ import (
 )
 
 type AgentService interface {
-	BeginRegistration(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string, capabilities []string) (core.AgentRegistrationChallenge, string, error)
+	BeginRegistration(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string) (core.AgentRegistrationChallenge, string, error)
 	CompleteRegistration(ctx context.Context, challengeID, challengeSignature string) (core.Organization, core.User, core.Agent, string, time.Time, error)
 	AuthenticateAgent(ctx context.Context, accessToken string) (core.Agent, core.User, error)
 	RequireAgent(ctx context.Context, agentID string) (core.Agent, core.User, error)
@@ -24,6 +24,7 @@ type ArtifactService interface {
 
 type PolicyService interface {
 	Grant(ctx context.Context, orgID string, grantorUser core.User, granteeUser core.User, scopeType, scopeRef string, artifactTypes []core.ArtifactType, maxSensitivity core.Sensitivity, purposes []core.QueryPurpose) (core.PolicyGrant, error)
+	RevokeGrant(ctx context.Context, grantID, grantorUserID string) (core.PolicyGrant, error)
 	ListAllowedPeers(ctx context.Context, granteeUserID string) ([]core.PolicyGrant, error)
 }
 

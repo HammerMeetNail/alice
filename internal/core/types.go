@@ -134,7 +134,6 @@ type Agent struct {
 	RuntimeKind  string    `json:"runtime_kind"`
 	ClientType   string    `json:"client_type"`
 	PublicKey    string    `json:"public_key"`
-	Capabilities []string  `json:"capabilities"`
 	Status       string    `json:"status"`
 	LastSeenAt   time.Time `json:"last_seen_at"`
 }
@@ -146,7 +145,6 @@ type AgentRegistrationChallenge struct {
 	AgentName    string     `json:"agent_name"`
 	ClientType   string     `json:"client_type"`
 	PublicKey    string     `json:"public_key"`
-	Capabilities []string   `json:"capabilities"`
 	Nonce        string     `json:"nonce"`
 	CreatedAt    time.Time  `json:"created_at"`
 	ExpiresAt    time.Time  `json:"expires_at"`
@@ -284,6 +282,7 @@ type PolicyGrant struct {
 	RequiresApprovalAboveRisk RiskLevel      `json:"requires_approval_above_risk"`
 	CreatedAt                 time.Time      `json:"created_at"`
 	ExpiresAt                 *time.Time     `json:"expires_at,omitempty"`
+	RevokedAt                 *time.Time     `json:"revoked_at,omitempty"`
 }
 
 type AuditEvent struct {

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"alice/internal/agents"
@@ -18,9 +19,59 @@ import (
 	"alice/internal/requests"
 )
 
+// ipBucket is a simple token-bucket rate limiter entry per IP address.
+type ipBucket struct {
+	mu       sync.Mutex
+	tokens   float64
+	lastSeen time.Time
+}
+
+// ipRateLimiter holds per-IP token buckets for unauthenticated endpoint protection.
+type ipRateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*ipBucket
+	// rate is tokens added per nanosecond (10 per minute = 10/60e9 per ns)
+	rate  float64
+	burst float64
+}
+
+func newIPRateLimiter(ratePerMin, burst float64) *ipRateLimiter {
+	return &ipRateLimiter{
+		buckets: make(map[string]*ipBucket),
+		rate:    ratePerMin / 60e9,
+		burst:   burst,
+	}
+}
+
+func (l *ipRateLimiter) allow(ip string) bool {
+	l.mu.Lock()
+	b, ok := l.buckets[ip]
+	if !ok {
+		b = &ipBucket{tokens: l.burst, lastSeen: time.Now()}
+		l.buckets[ip] = b
+	}
+	l.mu.Unlock()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	elapsed := now.Sub(b.lastSeen)
+	b.tokens += float64(elapsed) * l.rate
+	if b.tokens > l.burst {
+		b.tokens = l.burst
+	}
+	b.lastSeen = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
 type router struct {
-	services services.Container
-	mux      *http.ServeMux
+	services    services.Container
+	mux         *http.ServeMux
+	rateLimiter *ipRateLimiter
 }
 
 type currentAgentContextKey struct{}
@@ -28,19 +79,21 @@ type currentUserContextKey struct{}
 
 func NewRouter(services services.Container) http.Handler {
 	r := &router{
-		services: services,
-		mux:      http.NewServeMux(),
+		services:    services,
+		mux:         http.NewServeMux(),
+		rateLimiter: newIPRateLimiter(10, 10),
 	}
 	r.routes()
-	return r.mux
+	return r.securityHeaders(r.mux)
 }
 
 func (r *router) routes() {
 	r.mux.HandleFunc("GET /healthz", r.handleHealthz)
-	r.mux.Handle("POST /v1/agents/register/challenge", r.limitBody(http.HandlerFunc(r.handleBeginRegisterAgent)))
-	r.mux.Handle("POST /v1/agents/register", r.limitBody(http.HandlerFunc(r.handleRegisterAgent)))
+	r.mux.Handle("POST /v1/agents/register/challenge", r.rateLimit(r.limitBody(http.HandlerFunc(r.handleBeginRegisterAgent))))
+	r.mux.Handle("POST /v1/agents/register", r.rateLimit(r.limitBody(http.HandlerFunc(r.handleRegisterAgent))))
 	r.mux.Handle("POST /v1/artifacts", r.limitBody(r.requireAuth(http.HandlerFunc(r.handlePublishArtifact))))
 	r.mux.Handle("POST /v1/policy-grants", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleGrantPermission))))
+	r.mux.Handle("DELETE /v1/policy-grants/", r.requireAuth(http.HandlerFunc(r.handleRevokePermission)))
 	r.mux.Handle("GET /v1/peers", r.requireAuth(http.HandlerFunc(r.handleListAllowedPeers)))
 	r.mux.Handle("POST /v1/queries", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleQueryPeerStatus))))
 	r.mux.Handle("GET /v1/queries/", r.requireAuth(http.HandlerFunc(r.handleGetQueryResult)))
@@ -57,12 +110,11 @@ func (r *router) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 type registerAgentRequest struct {
-	OrgSlug      string   `json:"org_slug"`
-	OwnerEmail   string   `json:"owner_email"`
-	AgentName    string   `json:"agent_name"`
-	ClientType   string   `json:"client_type"`
-	PublicKey    string   `json:"public_key"`
-	Capabilities []string `json:"capabilities"`
+	OrgSlug    string `json:"org_slug"`
+	OwnerEmail string `json:"owner_email"`
+	AgentName  string `json:"agent_name"`
+	ClientType string `json:"client_type"`
+	PublicKey  string `json:"public_key"`
 }
 
 func (r *router) handleBeginRegisterAgent(w http.ResponseWriter, req *http.Request) {
@@ -72,7 +124,7 @@ func (r *router) handleBeginRegisterAgent(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	challenge, payload, err := r.services.Agents.BeginRegistration(req.Context(), input.OrgSlug, input.OwnerEmail, input.AgentName, input.ClientType, input.PublicKey, input.Capabilities)
+	challenge, payload, err := r.services.Agents.BeginRegistration(req.Context(), input.OrgSlug, input.OwnerEmail, input.AgentName, input.ClientType, input.PublicKey)
 	if err != nil {
 		writeServiceError(w, err, "registration challenge failed")
 		return
@@ -215,6 +267,37 @@ func (r *router) handleGrantPermission(w http.ResponseWriter, req *http.Request)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"policy_grant_id": grant.PolicyGrantID,
+	})
+}
+
+func (r *router) handleRevokePermission(w http.ResponseWriter, req *http.Request) {
+	agent, user, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	grantID := strings.TrimPrefix(req.URL.Path, "/v1/policy-grants/")
+	if grantID == "" {
+		writeError(w, http.StatusBadRequest, "grant_id is required")
+		return
+	}
+
+	grant, err := r.services.Policy.RevokeGrant(req.Context(), grantID, user.UserID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "grant not found or not owned by caller")
+		return
+	}
+
+	if _, err := r.services.Audit.Record(req.Context(), "policy.grant.revoked", "policy_grant", grant.PolicyGrantID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, []string{"grant:" + grant.PolicyGrantID}, map[string]any{
+		"scope_ref": grant.ScopeRef,
+	}); err != nil {
+		log.Printf("audit record failed for grant revocation: %v", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"policy_grant_id": grant.PolicyGrantID,
+		"revoked":         true,
 	})
 }
 
@@ -551,6 +634,9 @@ func (r *router) handleRespondToRequest(w http.ResponseWriter, req *http.Request
 		case errors.Is(err, requests.ErrRequestAlreadyClosed):
 			writeError(w, http.StatusConflict, err.Error())
 			return
+		case errors.Is(err, requests.ErrExpiredRequest):
+			writeError(w, http.StatusGone, err.Error())
+			return
 		default:
 			writeError(w, http.StatusInternalServerError, "request response failed")
 			return
@@ -645,6 +731,9 @@ func (r *router) handleResolveApproval(w http.ResponseWriter, req *http.Request)
 		case errors.Is(err, approvals.ErrApprovalResolved):
 			writeError(w, http.StatusConflict, err.Error())
 			return
+		case errors.Is(err, approvals.ErrExpiredApproval):
+			writeError(w, http.StatusGone, err.Error())
+			return
 		default:
 			writeError(w, http.StatusInternalServerError, "approval resolution failed")
 			return
@@ -663,6 +752,40 @@ func (r *router) handleResolveApproval(w http.ResponseWriter, req *http.Request)
 		"approval_id": approval.ApprovalID,
 		"state":       approval.State,
 		"request_id":  requestRecord.RequestID,
+	})
+}
+
+func (r *router) rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ip := clientIP(req)
+		if !r.rateLimiter.allow(ip) {
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, req)
+	})
+}
+
+func clientIP(req *http.Request) string {
+	if forwarded := req.Header.Get("X-Forwarded-For"); forwarded != "" {
+		if idx := strings.IndexByte(forwarded, ','); idx >= 0 {
+			return strings.TrimSpace(forwarded[:idx])
+		}
+		return strings.TrimSpace(forwarded)
+	}
+	host := req.RemoteAddr
+	if idx := strings.LastIndexByte(host, ':'); idx >= 0 {
+		return host[:idx]
+	}
+	return host
+}
+
+func (r *router) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, req)
 	})
 }
 
@@ -718,16 +841,14 @@ func currentActor(req *http.Request) (core.Agent, core.User, bool) {
 
 func accessTokenFromRequest(req *http.Request) (string, bool) {
 	authorization := strings.TrimSpace(req.Header.Get("Authorization"))
-	if authorization != "" {
-		prefix := "bearer "
-		if len(authorization) < len(prefix) || !strings.EqualFold(authorization[:len(prefix)], prefix) {
-			return "", false
-		}
-		return strings.TrimSpace(authorization[len(prefix):]), true
+	if authorization == "" {
+		return "", false
 	}
-
-	token := strings.TrimSpace(req.Header.Get("X-Agent-Token"))
-	return token, token != ""
+	prefix := "bearer "
+	if len(authorization) < len(prefix) || !strings.EqualFold(authorization[:len(prefix)], prefix) {
+		return "", false
+	}
+	return strings.TrimSpace(authorization[len(prefix):]), true
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {

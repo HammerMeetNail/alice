@@ -155,12 +155,11 @@ func (r *Runtime) ensureSession(ctx context.Context, state *State) (bool, error)
 	}
 
 	challenge, err := r.client.BeginRegistration(ctx, map[string]any{
-		"org_slug":     r.cfg.Agent.OrgSlug,
-		"owner_email":  r.cfg.Agent.OwnerEmail,
-		"agent_name":   r.cfg.Agent.AgentName,
-		"client_type":  r.cfg.Agent.ClientType,
-		"public_key":   state.PublicKey,
-		"capabilities": r.cfg.Agent.Capabilities,
+		"org_slug":    r.cfg.Agent.OrgSlug,
+		"owner_email": r.cfg.Agent.OwnerEmail,
+		"agent_name":  r.cfg.Agent.AgentName,
+		"client_type": r.cfg.Agent.ClientType,
+		"public_key":  state.PublicKey,
 	})
 	if err != nil {
 		return false, err

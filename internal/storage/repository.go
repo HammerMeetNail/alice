@@ -41,6 +41,8 @@ type ArtifactRepository interface {
 
 type PolicyGrantRepository interface {
 	SaveGrant(ctx context.Context, grant core.PolicyGrant) (core.PolicyGrant, error)
+	FindGrant(ctx context.Context, grantID string) (core.PolicyGrant, bool, error)
+	RevokeGrant(ctx context.Context, grantID, grantorUserID string) (core.PolicyGrant, error)
 	ListGrantsForPair(ctx context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error)
 	ListIncomingGrantsForUser(ctx context.Context, granteeUserID string) ([]core.PolicyGrant, error)
 }

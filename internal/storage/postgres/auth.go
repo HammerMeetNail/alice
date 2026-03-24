@@ -10,17 +10,12 @@ import (
 )
 
 func (s *Store) SaveAgentRegistrationChallenge(ctx context.Context, challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error) {
-	capabilities, err := marshalStringSlice(challenge.Capabilities)
-	if err != nil {
-		return core.AgentRegistrationChallenge{}, fmt.Errorf("marshal challenge capabilities: %w", err)
-	}
-
-	_, err = s.db.ExecContext(
+	_, err := s.db.ExecContext(
 		ctx,
 		`INSERT INTO agent_registration_challenges (
-			challenge_id, org_slug, owner_email, agent_name, client_type, public_key, capabilities, nonce, created_at, expires_at, used_at
+			challenge_id, org_slug, owner_email, agent_name, client_type, public_key, nonce, created_at, expires_at, used_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)
 		ON CONFLICT (challenge_id) DO UPDATE
 		SET org_slug = EXCLUDED.org_slug,
@@ -28,7 +23,6 @@ func (s *Store) SaveAgentRegistrationChallenge(ctx context.Context, challenge co
 		    agent_name = EXCLUDED.agent_name,
 		    client_type = EXCLUDED.client_type,
 		    public_key = EXCLUDED.public_key,
-		    capabilities = EXCLUDED.capabilities,
 		    nonce = EXCLUDED.nonce,
 		    created_at = EXCLUDED.created_at,
 		    expires_at = EXCLUDED.expires_at,
@@ -39,7 +33,6 @@ func (s *Store) SaveAgentRegistrationChallenge(ctx context.Context, challenge co
 		challenge.AgentName,
 		challenge.ClientType,
 		challenge.PublicKey,
-		capabilities,
 		challenge.Nonce,
 		challenge.CreatedAt,
 		challenge.ExpiresAt,
@@ -56,14 +49,13 @@ func (s *Store) SaveAgentRegistrationChallenge(ctx context.Context, challenge co
 
 func (s *Store) FindAgentRegistrationChallenge(ctx context.Context, challengeID string) (core.AgentRegistrationChallenge, bool, error) {
 	var (
-		challenge        core.AgentRegistrationChallenge
-		capabilitiesJSON []byte
-		usedAt           sql.NullTime
+		challenge core.AgentRegistrationChallenge
+		usedAt    sql.NullTime
 	)
 
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT challenge_id, org_slug, owner_email, agent_name, client_type, public_key, capabilities, nonce, created_at, expires_at, used_at
+		`SELECT challenge_id, org_slug, owner_email, agent_name, client_type, public_key, nonce, created_at, expires_at, used_at
 		FROM agent_registration_challenges
 		WHERE challenge_id = $1`,
 		challengeID,
@@ -74,7 +66,6 @@ func (s *Store) FindAgentRegistrationChallenge(ctx context.Context, challengeID 
 		&challenge.AgentName,
 		&challenge.ClientType,
 		&challenge.PublicKey,
-		&capabilitiesJSON,
 		&challenge.Nonce,
 		&challenge.CreatedAt,
 		&challenge.ExpiresAt,
@@ -87,9 +78,6 @@ func (s *Store) FindAgentRegistrationChallenge(ctx context.Context, challengeID 
 		return core.AgentRegistrationChallenge{}, false, fmt.Errorf("find registration challenge: %w", err)
 	}
 
-	if err := unmarshalJSON(capabilitiesJSON, &challenge.Capabilities); err != nil {
-		return core.AgentRegistrationChallenge{}, false, fmt.Errorf("decode challenge capabilities: %w", err)
-	}
 	if usedAt.Valid {
 		challenge.UsedAt = &usedAt.Time
 	}

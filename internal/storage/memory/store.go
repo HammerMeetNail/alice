@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -227,13 +228,35 @@ func (s *Store) SaveGrant(_ context.Context, grant core.PolicyGrant) (core.Polic
 	return grant, nil
 }
 
+func (s *Store) FindGrant(_ context.Context, grantID string) (core.PolicyGrant, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	grant, ok := s.grants[grantID]
+	return grant, ok, nil
+}
+
+func (s *Store) RevokeGrant(_ context.Context, grantID, grantorUserID string) (core.PolicyGrant, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	grant, ok := s.grants[grantID]
+	if !ok || grant.GrantorUserID != grantorUserID || grant.RevokedAt != nil {
+		return core.PolicyGrant{}, fmt.Errorf("grant not found or not owned by grantor")
+	}
+	now := time.Now().UTC()
+	grant.RevokedAt = &now
+	s.grants[grantID] = grant
+	return grant, nil
+}
+
 func (s *Store) ListGrantsForPair(_ context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	grants := make([]core.PolicyGrant, 0)
 	for _, grant := range s.grants {
-		if grant.GrantorUserID == grantorUserID && grant.GranteeUserID == granteeUserID {
+		if grant.GrantorUserID == grantorUserID && grant.GranteeUserID == granteeUserID && grant.RevokedAt == nil {
 			grants = append(grants, grant)
 		}
 	}
@@ -251,7 +274,7 @@ func (s *Store) ListIncomingGrantsForUser(_ context.Context, granteeUserID strin
 
 	grants := make([]core.PolicyGrant, 0)
 	for _, grant := range s.grants {
-		if grant.GranteeUserID == granteeUserID {
+		if grant.GranteeUserID == granteeUserID && grant.RevokedAt == nil {
 			grants = append(grants, grant)
 		}
 	}
@@ -336,11 +359,15 @@ func (s *Store) ListIncomingRequests(_ context.Context, toAgentID string) ([]cor
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	now := time.Now().UTC()
 	ids := s.requestsByAgent[toAgentID]
 	requests := make([]core.Request, 0, len(ids))
 	for _, requestID := range ids {
 		request, ok := s.requests[requestID]
 		if !ok {
+			continue
+		}
+		if !request.ExpiresAt.IsZero() && request.ExpiresAt.Before(now) {
 			continue
 		}
 		requests = append(requests, request)
@@ -395,11 +422,15 @@ func (s *Store) ListPendingApprovals(_ context.Context, agentID string) ([]core.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	now := time.Now().UTC()
 	ids := s.approvalsByAgent[agentID]
 	approvals := make([]core.Approval, 0, len(ids))
 	for _, approvalID := range ids {
 		approval, ok := s.approvals[approvalID]
 		if !ok || approval.State != core.ApprovalStatePending {
+			continue
+		}
+		if !approval.ExpiresAt.IsZero() && approval.ExpiresAt.Before(now) {
 			continue
 		}
 		approvals = append(approvals, approval)
@@ -416,7 +447,7 @@ func (s *Store) ResolveApproval(_ context.Context, approvalID string, state core
 	defer s.mu.Unlock()
 
 	approval, ok := s.approvals[approvalID]
-	if !ok {
+	if !ok || approval.State != core.ApprovalStatePending {
 		return core.Approval{}, false, nil
 	}
 	approval.State = state

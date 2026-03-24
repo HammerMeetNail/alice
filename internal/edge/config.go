@@ -20,11 +20,10 @@ type Config struct {
 }
 
 type AgentConfig struct {
-	OrgSlug      string   `json:"org_slug"`
-	OwnerEmail   string   `json:"owner_email"`
-	AgentName    string   `json:"agent_name"`
-	ClientType   string   `json:"client_type"`
-	Capabilities []string `json:"capabilities"`
+	OrgSlug    string `json:"org_slug"`
+	OwnerEmail string `json:"owner_email"`
+	AgentName  string `json:"agent_name"`
+	ClientType string `json:"client_type"`
 }
 
 type ServerConfig struct {
@@ -161,9 +160,7 @@ func (c *Config) applyDefaults() {
 	if strings.TrimSpace(c.Agent.ClientType) == "" {
 		c.Agent.ClientType = "edge_agent"
 	}
-	if len(c.Agent.Capabilities) == 0 {
-		c.Agent.Capabilities = []string{"publish_artifact", "respond_query", "request_approval"}
-	}
+
 	if strings.TrimSpace(c.Runtime.CredentialsKeyEnvVar) == "" {
 		c.Runtime.CredentialsKeyEnvVar = "ALICE_EDGE_CREDENTIAL_KEY"
 	}

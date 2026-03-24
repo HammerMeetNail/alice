@@ -141,15 +141,10 @@ func (s *Store) FindUserByID(ctx context.Context, userID string) (core.User, boo
 }
 
 func (s *Store) UpsertAgent(ctx context.Context, agent core.Agent) (core.Agent, error) {
-	capabilities, err := marshalStringSlice(agent.Capabilities)
-	if err != nil {
-		return core.Agent{}, fmt.Errorf("marshal agent capabilities: %w", err)
-	}
-
-	_, err = s.db.ExecContext(
+	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO agents (agent_id, org_id, owner_user_id, agent_name, runtime_kind, client_type, public_key, capabilities, status, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+		`INSERT INTO agents (agent_id, org_id, owner_user_id, agent_name, runtime_kind, client_type, public_key, status, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (agent_id) DO UPDATE
 		SET org_id = EXCLUDED.org_id,
 		    owner_user_id = EXCLUDED.owner_user_id,
@@ -157,7 +152,6 @@ func (s *Store) UpsertAgent(ctx context.Context, agent core.Agent) (core.Agent, 
 		    runtime_kind = EXCLUDED.runtime_kind,
 		    client_type = EXCLUDED.client_type,
 		    public_key = EXCLUDED.public_key,
-		    capabilities = EXCLUDED.capabilities,
 		    status = EXCLUDED.status,
 		    last_seen_at = EXCLUDED.last_seen_at`,
 		agent.AgentID,
@@ -167,7 +161,6 @@ func (s *Store) UpsertAgent(ctx context.Context, agent core.Agent) (core.Agent, 
 		agent.RuntimeKind,
 		agent.ClientType,
 		agent.PublicKey,
-		capabilities,
 		agent.Status,
 		agent.LastSeenAt,
 	)
@@ -178,53 +171,39 @@ func (s *Store) UpsertAgent(ctx context.Context, agent core.Agent) (core.Agent, 
 }
 
 func (s *Store) FindAgentByID(ctx context.Context, agentID string) (core.Agent, bool, error) {
-	var (
-		agent        core.Agent
-		capabilities []byte
-	)
+	var agent core.Agent
 
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT agent_id, org_id, owner_user_id, agent_name, runtime_kind, client_type, public_key, capabilities, status, last_seen_at
+		`SELECT agent_id, org_id, owner_user_id, agent_name, runtime_kind, client_type, public_key, status, last_seen_at
 		FROM agents
 		WHERE agent_id = $1`,
 		agentID,
-	).Scan(&agent.AgentID, &agent.OrgID, &agent.OwnerUserID, &agent.AgentName, &agent.RuntimeKind, &agent.ClientType, &agent.PublicKey, &capabilities, &agent.Status, &agent.LastSeenAt)
+	).Scan(&agent.AgentID, &agent.OrgID, &agent.OwnerUserID, &agent.AgentName, &agent.RuntimeKind, &agent.ClientType, &agent.PublicKey, &agent.Status, &agent.LastSeenAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return core.Agent{}, false, nil
 		}
 		return core.Agent{}, false, fmt.Errorf("find agent by id: %w", err)
 	}
-
-	if err := unmarshalJSON(capabilities, &agent.Capabilities); err != nil {
-		return core.Agent{}, false, fmt.Errorf("decode agent capabilities: %w", err)
-	}
 	return agent, true, nil
 }
 
 func (s *Store) FindAgentByUserID(ctx context.Context, userID string) (core.Agent, bool, error) {
-	var (
-		agent        core.Agent
-		capabilities []byte
-	)
+	var agent core.Agent
 
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT agent_id, org_id, owner_user_id, agent_name, runtime_kind, client_type, public_key, capabilities, status, last_seen_at
+		`SELECT agent_id, org_id, owner_user_id, agent_name, runtime_kind, client_type, public_key, status, last_seen_at
 		FROM agents
 		WHERE owner_user_id = $1`,
 		userID,
-	).Scan(&agent.AgentID, &agent.OrgID, &agent.OwnerUserID, &agent.AgentName, &agent.RuntimeKind, &agent.ClientType, &agent.PublicKey, &capabilities, &agent.Status, &agent.LastSeenAt)
+	).Scan(&agent.AgentID, &agent.OrgID, &agent.OwnerUserID, &agent.AgentName, &agent.RuntimeKind, &agent.ClientType, &agent.PublicKey, &agent.Status, &agent.LastSeenAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return core.Agent{}, false, nil
 		}
 		return core.Agent{}, false, fmt.Errorf("find agent by user id: %w", err)
-	}
-
-	if err := unmarshalJSON(capabilities, &agent.Capabilities); err != nil {
-		return core.Agent{}, false, fmt.Errorf("decode agent capabilities: %w", err)
 	}
 	return agent, true, nil
 }

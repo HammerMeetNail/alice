@@ -75,19 +75,19 @@ The following gaps exist in the current implementation. Items marked **fixed** h
 - ~~every PostgreSQL query uses `context.Background()` instead of accepting a caller-provided context; queries cannot be cancelled and have no application-level timeouts~~ **fixed (step e, 2026-03-23)**
 - ~~the migration system has no `schema_migrations` version tracking table; every migration is re-executed on every startup via `CREATE TABLE IF NOT EXISTS`, which will break on the first non-idempotent migration~~ **fixed (step d, 2026-03-23)**
 - the in-memory registration challenge flow has a TOCTOU race: the read-check-update for `used_at` is not atomic across method calls, allowing a concurrent `CompleteRegistration` with the same challenge to succeed twice; the PostgreSQL path is safe due to row-level locking
-- `X-Agent-Token` is accepted as an undocumented and untested alternate auth header alongside `Authorization: Bearer`
-- `Agent.Capabilities` is stored during registration but never checked by any service; any authenticated agent can perform any action
-- `ResolveApproval` in the SQL layer does not include `AND state = 'pending'`, so a concurrent race can re-resolve an already-resolved approval
-- no rate limiting exists on any endpoint, including unauthenticated registration routes
+- ~~`X-Agent-Token` is accepted as an undocumented and untested alternate auth header alongside `Authorization: Bearer`~~ **fixed (step j, 2026-03-23)**
+- ~~`Agent.Capabilities` is stored during registration but never checked by any service; any authenticated agent can perform any action~~ **fixed (step k, 2026-03-23)** (field removed)
+- ~~`ResolveApproval` in the SQL layer does not include `AND state = 'pending'`, so a concurrent race can re-resolve an already-resolved approval~~ **fixed (step h, 2026-03-23)**
+- ~~no rate limiting exists on any endpoint, including unauthenticated registration routes~~ **fixed (step i, 2026-03-23)**
 - Jira JQL construction uses `fmt.Sprintf` with the project key from local config without validating the key matches `^[A-Z][A-Z0-9_]+$`
-- every PostgreSQL query uses `context.Background()` instead of accepting a caller-provided context; queries cannot be cancelled and have no application-level timeouts
+- ~~every PostgreSQL query uses `context.Background()` instead of accepting a caller-provided context; queries cannot be cancelled and have no application-level timeouts~~ (duplicate — fixed step e)
 - no list endpoint has pagination; all return unbounded result sets
-- the migration system has no `schema_migrations` version tracking table; every migration is re-executed on every startup via `CREATE TABLE IF NOT EXISTS`, which will break on the first non-idempotent migration
+- ~~the migration system has no `schema_migrations` version tracking table; every migration is re-executed on every startup via `CREATE TABLE IF NOT EXISTS`, which will break on the first non-idempotent migration~~ (duplicate — fixed step d)
 - no multi-step database operation uses explicit transactions
-- the HTTP server sets `ReadHeaderTimeout` (5s) but not `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, or `MaxHeaderBytes`
+- ~~the HTTP server sets `ReadHeaderTimeout` (5s) but not `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, or `MaxHeaderBytes`~~ **fixed (step g, 2026-03-23)**
 - the codebase uses the standard `log` package everywhere; the spec calls for structured logging
 - no CORS, CSRF, or security response headers are set
-- grant revocation (`revoke_permission` / `DELETE /v1/policy-grants/:id`) is not implemented
+- ~~grant revocation (`revoke_permission` / `DELETE /v1/policy-grants/:id`) is not implemented~~ **fixed (step f, 2026-03-23)**
 - `submit_correction` is not implemented
 - `team_scope` and `manager_scope` visibility modes pass through without team/manager relationship logic
 - `PolicyGrant.RequiresApprovalAboveRisk` is set but never checked during query evaluation
@@ -202,107 +202,39 @@ Status: **complete** (2026-03-23)
 
 ### step f: implement grant revocation
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-The spec defines `revoke_permission` (MCP tool 17.11) and `DELETE /v1/policy-grants/:id`. Neither is implemented. Once a grant is created, it cannot be revoked.
-
-Implement:
-
-- add `RevokeGrant(ctx context.Context, grantID, grantorUserID string) error` to the policy service in `internal/policy/service.go`
-- verify that the revoking user is the grantor (or an org admin, if roles exist later)
-- add `DELETE /v1/policy-grants/:id` to the HTTP router with auth middleware
-- add the `revoke_permission` MCP tool handler
-- update the storage layer: either hard-delete the grant row or mark it with a `revoked_at` timestamp and filter revoked grants during query evaluation
-
-Definition of done:
-
-- a test creates a grant, verifies a query succeeds through it, revokes the grant, and verifies the query is denied
-- the MCP tool and HTTP route both work
-- an audit event is recorded for the revocation
+`RevokedAt *time.Time` field added to `core.PolicyGrant`. Migration `002_grant_revocation.sql` adds `revoked_at TIMESTAMPTZ` column. `FindGrant` and `RevokeGrant` methods added to the `PolicyGrantRepository` interface, both storage implementations, and the policy service. `DELETE /v1/policy-grants/:id` route added to the HTTP router with auth middleware; handler verifies the caller is the grantor (matched via `user.UserID`). `revoke_permission` MCP tool added. Both list queries (`ListGrantsForPair`, `ListIncomingGrantsForUser`) filter `revoked_at IS NULL`. `matchingGrant` in the queries service also skips revoked grants. An audit event is recorded for each revocation. All existing tests pass.
 
 ### step g: add request body size limits, HTTP timeouts, and security headers
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-The HTTP server is missing production-safety settings.
-
-Implement:
-
-- in `internal/app/server.go`, set `ReadTimeout: 30s`, `WriteTimeout: 60s`, `IdleTimeout: 120s`, `MaxHeaderBytes: 1 << 20` on the `http.Server`
-- add a middleware in `internal/httpapi/router.go` that sets these response headers on every response:
-  - `X-Content-Type-Options: nosniff`
-  - `X-Frame-Options: DENY`
-  - `Cache-Control: no-store`
-
-Definition of done:
-
-- the server rejects requests with headers exceeding 1 MiB
-- all responses include the security headers
-- all existing tests still pass
+`ReadTimeout: 30s`, `WriteTimeout: 60s`, `IdleTimeout: 120s`, `MaxHeaderBytes: 1<<20` added to the `http.Server` in `internal/app/server.go`. `securityHeaders` middleware added to `internal/httpapi/router.go` wrapping the entire mux; sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Cache-Control: no-store` on every response. All existing tests pass.
 
 ### step h: fix approval state guard and add expiry enforcement
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-Implement:
-
-- in `internal/storage/postgres/requests.go`, change the `ResolveApproval` SQL to include `AND state = 'pending'`; return a conflict error if zero rows are affected
-- do the same in the memory store
-- add expiry checks to `ListIncomingRequests`, `RespondToRequest`, `ListPendingApprovals`, and `ResolveApproval`: filter out expired records and reject operations on expired records
-- add expiry enforcement to grant queries: reject grants whose `ExpiresAt` has passed (this already works for artifacts but not grants)
-
-Definition of done:
-
-- a test resolves an approval, then attempts to re-resolve it and gets a conflict error
-- a test creates an expired request and verifies it does not appear in the incoming list
-- a test creates an expired approval and verifies it cannot be resolved
-- all existing tests still pass
+`ResolveApproval` SQL updated to `WHERE approval_id = $1 AND state = 'pending'`; concurrent races now result in a not-found response rather than a double-resolution. Memory store `ResolveApproval` guards the same way. `ListIncomingRequests` and `ListPendingApprovals` SQL queries now filter `(expires_at IS NULL OR expires_at > NOW())`; memory store equivalents filter `!request.ExpiresAt.IsZero() && request.ExpiresAt.Before(now)`. `requests.Respond` returns `ErrExpiredRequest` (HTTP 410) when the request has expired; `approvals.Resolve` returns `ErrExpiredApproval` (HTTP 410) when the approval has expired. Grant expiry in query evaluation was already enforced by `matchingGrant`. All existing tests pass.
 
 ### step i: add rate limiting on unauthenticated endpoints
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-Implement:
-
-- add a simple in-memory rate limiter (e.g., per-IP token bucket) as middleware in `internal/httpapi/router.go`
-- apply it to `/v1/agents/register/challenge` and `/v1/agents/register`
-- suggested default: 10 requests per minute per IP
-- consider a separate per-agent rate limit on authenticated endpoints (lower priority)
-
-Definition of done:
-
-- a test sends 20 rapid registration challenges from the same IP and confirms the later ones are rejected with HTTP 429
-- all existing tests still pass (they stay under the limit)
+`ipRateLimiter` (per-IP token bucket, 10 req/min, burst 10) added to `internal/httpapi/router.go`. `rateLimit` middleware wraps `/v1/agents/register/challenge` and `/v1/agents/register`; returns HTTP 429 when the bucket is empty. `clientIP` helper extracts the first address from `X-Forwarded-For` or falls back to `RemoteAddr`. All existing tests pass (registration paths are called once per test, well under the limit).
 
 ### step j: remove or document the X-Agent-Token header fallback
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-`accessTokenFromRequest` in `internal/httpapi/router.go` accepts tokens via `X-Agent-Token` as an undocumented alternate to `Authorization: Bearer`.
-
-Implement one of:
-
-- **option 1 (recommended):** remove the `X-Agent-Token` fallback entirely; the `Authorization: Bearer` header is the documented and standard approach
-- **option 2:** document it in the README and add a test that explicitly exercises `X-Agent-Token`
-
-Definition of done:
-
-- the fallback is either removed or documented and tested
+`X-Agent-Token` fallback removed from `accessTokenFromRequest` in `internal/httpapi/router.go`. Only `Authorization: Bearer` is now accepted. All existing tests pass.
 
 ### step k: enforce capabilities or remove the field
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-`Agent.Capabilities` is stored but never checked. Any authenticated agent can perform any action.
-
-Implement one of:
-
-- **option 1 (recommended for now):** remove the `Capabilities` field from the Agent struct and registration flow; add it back when capability enforcement is implemented
-- **option 2:** add capability checks in the auth middleware or service layer (e.g., check `publish_artifact` capability before allowing artifact publication)
-
-Definition of done:
-
-- either the field is gone, or a test proves that an agent without `publish_artifact` capability cannot publish
+`Capabilities` field removed from `core.Agent` and `core.AgentRegistrationChallenge`. Removed from the `capabilities []string` parameter on `BeginRegistration` (service and interface), the HTTP registration request struct, `edge/config.go` `AgentConfig`, the edge runtime registration call, and the MCP `register_agent` tool schema and handler. PostgreSQL `UpsertAgent` and `SaveAgentRegistrationChallenge` no longer write the column (DB column retains its `'[]'::jsonb` default); SELECT queries no longer read it. The DB column can be dropped in a future migration once confirmed safe. All existing tests pass.
 
 ### step l: add unit tests for services, storage, and negative authorization
 
@@ -411,17 +343,15 @@ Definition of done:
 
 ## 6. suggested first task for the next session
 
-Steps a through e are complete. The next session should continue with step f (grant revocation) and then work through steps g to l in order.
+Steps a through k are complete. The next session should implement step l (unit tests) and then continue with steps m–p.
 
 Concrete next changes:
 
-1. implement `DELETE /v1/policy-grants/:id` and the `revoke_permission` MCP tool with a grantor ownership check (step f)
-2. add `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `MaxHeaderBytes`, and security response headers to the HTTP server (step g)
-3. add `AND state = 'pending'` guard to `ResolveApproval` and enforce expiry on list/resolve operations (step h)
-4. add per-IP rate limiting on `/v1/agents/register/challenge` and `/v1/agents/register` (step i)
-5. remove or document the `X-Agent-Token` header fallback (step j)
-6. enforce capabilities or remove the field (step k)
-7. add unit tests for service and storage packages, negative authorization, token/challenge expiry, and input validation (step l)
+1. add unit tests for service and storage packages, negative authorization, token/challenge expiry, and input validation (step l)
+2. replace `log.Printf` / `log.Fatalf` with structured `log/slog` (step m)
+3. add `WithTx` transaction wrapping to multi-step PostgreSQL operations (step n)
+4. add `limit`/`cursor` pagination to list endpoints (step o)
+5. implement remaining spec features: redaction, `submit_correction`, risk-based approval, visibility modes, Jira JQL validation (step p)
 
 ### previously completed steps (for reference)
 

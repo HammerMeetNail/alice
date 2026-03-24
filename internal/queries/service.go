@@ -141,6 +141,9 @@ func matchingGrant(grants []core.PolicyGrant, query core.Query, artifact core.Ar
 		if grant.ExpiresAt != nil && grant.ExpiresAt.Before(time.Now().UTC()) {
 			continue
 		}
+		if grant.RevokedAt != nil {
+			continue
+		}
 		if !slices.Contains(grant.AllowedPurposes, query.Purpose) {
 			continue
 		}

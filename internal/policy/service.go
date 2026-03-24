@@ -46,6 +46,14 @@ func (s *Service) Grant(ctx context.Context, orgID string, grantorUser core.User
 	return saved, nil
 }
 
+func (s *Service) RevokeGrant(ctx context.Context, grantID, grantorUserID string) (core.PolicyGrant, error) {
+	grant, err := s.repo.RevokeGrant(ctx, grantID, grantorUserID)
+	if err != nil {
+		return core.PolicyGrant{}, fmt.Errorf("revoke grant: %w", err)
+	}
+	return grant, nil
+}
+
 func (s *Service) ListGrantsForPair(ctx context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
 	return s.repo.ListGrantsForPair(ctx, grantorUserID, granteeUserID)
 }

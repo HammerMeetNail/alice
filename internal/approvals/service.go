@@ -43,6 +43,9 @@ func (s *Service) Resolve(ctx context.Context, agent core.Agent, approvalID stri
 	if approval.State != core.ApprovalStatePending {
 		return core.Approval{}, core.Request{}, ErrApprovalResolved
 	}
+	if !approval.ExpiresAt.IsZero() && approval.ExpiresAt.Before(time.Now().UTC()) {
+		return core.Approval{}, core.Request{}, ErrExpiredApproval
+	}
 
 	resolvedApproval, found, err := s.approvals.ResolveApproval(ctx, approval.ApprovalID, decision, time.Now().UTC())
 	if err != nil {

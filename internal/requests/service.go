@@ -60,6 +60,9 @@ func (s *Service) Respond(ctx context.Context, agent core.Agent, requestID strin
 	if request.State != core.RequestStatePending {
 		return core.Request{}, nil, ErrRequestAlreadyClosed
 	}
+	if !request.ExpiresAt.IsZero() && request.ExpiresAt.Before(time.Now().UTC()) {
+		return core.Request{}, nil, ErrExpiredRequest
+	}
 
 	if action == core.RequestResponseRequireApproval {
 		approval := core.Approval{

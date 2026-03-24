@@ -87,7 +87,7 @@ func (s *Store) ListIncomingRequests(ctx context.Context, toAgentID string) ([]c
 		`SELECT request_id, org_id, from_agent_id, from_user_id, to_agent_id, to_user_id, request_type, title, content,
 		        structured_payload, risk_level, state, approval_state, response_message, created_at, expires_at
 		FROM requests
-		WHERE to_agent_id = $1
+		WHERE to_agent_id = $1 AND (expires_at IS NULL OR expires_at > NOW())
 		ORDER BY created_at ASC`,
 		toAgentID,
 	)
@@ -193,7 +193,7 @@ func (s *Store) ListPendingApprovals(ctx context.Context, agentID string) ([]cor
 		ctx,
 		`SELECT approval_id, org_id, agent_id, owner_user_id, subject_type, subject_id, reason, state, created_at, expires_at, resolved_at
 		FROM approvals
-		WHERE agent_id = $1 AND state = $2
+		WHERE agent_id = $1 AND state = $2 AND (expires_at IS NULL OR expires_at > NOW())
 		ORDER BY created_at ASC`,
 		agentID,
 		core.ApprovalStatePending,
@@ -223,7 +223,7 @@ func (s *Store) ResolveApproval(ctx context.Context, approvalID string, state co
 		`UPDATE approvals
 		SET state = $2,
 		    resolved_at = $3
-		WHERE approval_id = $1
+		WHERE approval_id = $1 AND state = 'pending'
 		RETURNING approval_id, org_id, agent_id, owner_user_id, subject_type, subject_id, reason, state, created_at, expires_at, resolved_at`,
 		approvalID,
 		state,

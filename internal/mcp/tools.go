@@ -26,10 +26,6 @@ func (s *Server) registerTools() map[string]toolDefinition {
 				"private_key":         stringSchema("Optional base64-encoded Ed25519 private key for one-shot local bootstrap."),
 				"challenge_id":        stringSchema("Optional challenge id for explicit registration completion."),
 				"challenge_signature": stringSchema("Optional base64-encoded challenge signature for explicit registration completion."),
-				"capabilities": arraySchema(
-					map[string]any{"type": "string"},
-					"Agent capabilities.",
-				),
 			}),
 			Handler: s.handleRegisterAgent,
 		},
@@ -80,6 +76,14 @@ func (s *Server) registerTools() map[string]toolDefinition {
 				"allowed_purposes":       arraySchema(map[string]any{"type": "string"}, "Allowed query purposes."),
 			}),
 			Handler: s.handleGrantPermission,
+		},
+		"revoke_permission": {
+			Name:        "revoke_permission",
+			Description: "Revoke a previously created permission grant. Only the grantor can revoke.",
+			InputSchema: objectSchema(map[string]any{
+				"policy_grant_id": stringSchema("Grant identifier to revoke."),
+			}),
+			Handler: s.handleRevokePermission,
 		},
 		"list_allowed_peers": {
 			Name:        "list_allowed_peers",
@@ -163,12 +167,11 @@ func (s *Server) handleRegisterAgent(ctx context.Context, args map[string]any) (
 	}
 
 	body := map[string]any{
-		"org_slug":     args["org_slug"],
-		"owner_email":  args["owner_email"],
-		"agent_name":   args["agent_name"],
-		"client_type":  args["client_type"],
-		"public_key":   args["public_key"],
-		"capabilities": args["capabilities"],
+		"org_slug":    args["org_slug"],
+		"owner_email": args["owner_email"],
+		"agent_name":  args["agent_name"],
+		"client_type": args["client_type"],
+		"public_key":  args["public_key"],
 	}
 	challenge, err := s.callJSON(ctx, http.MethodPost, "/v1/agents/register/challenge", body, "")
 	if err != nil {
@@ -218,6 +221,14 @@ func (s *Server) handleGetQueryResult(ctx context.Context, args map[string]any) 
 
 func (s *Server) handleGrantPermission(ctx context.Context, args map[string]any) (any, error) {
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/policy-grants", args)
+}
+
+func (s *Server) handleRevokePermission(ctx context.Context, args map[string]any) (any, error) {
+	grantID := stringArg(args, "policy_grant_id")
+	if grantID == "" {
+		return nil, fmt.Errorf("policy_grant_id is required")
+	}
+	return s.callAuthedJSON(ctx, http.MethodDelete, "/v1/policy-grants/"+grantID, nil)
 }
 
 func (s *Server) handleListAllowedPeers(ctx context.Context, _ map[string]any) (any, error) {

@@ -45,7 +45,7 @@ func NewService(
 	}
 }
 
-func (s *Service) BeginRegistration(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string, capabilities []string) (core.AgentRegistrationChallenge, string, error) {
+func (s *Service) BeginRegistration(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string) (core.AgentRegistrationChallenge, string, error) {
 	if err := core.ValidateAgentRegistration(orgSlug, ownerEmail, agentName, clientType, publicKey); err != nil {
 		return core.AgentRegistrationChallenge{}, "", err
 	}
@@ -67,7 +67,6 @@ func (s *Service) BeginRegistration(ctx context.Context, orgSlug, ownerEmail, ag
 		AgentName:    strings.TrimSpace(agentName),
 		ClientType:   strings.TrimSpace(clientType),
 		PublicKey:    strings.TrimSpace(publicKey),
-		Capabilities: capabilities,
 		Nonce:        nonce,
 		CreatedAt:    now,
 		ExpiresAt:    now.Add(s.cfg.AuthChallengeTTL),
@@ -110,7 +109,7 @@ func (s *Service) CompleteRegistration(ctx context.Context, challengeID, challen
 		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, fmt.Errorf("mark registration challenge used: %w", err)
 	}
 
-	org, user, agent, err := s.upsertRegisteredAgent(ctx, challenge.OrgSlug, challenge.OwnerEmail, challenge.AgentName, challenge.ClientType, challenge.PublicKey, challenge.Capabilities, now)
+	org, user, agent, err := s.upsertRegisteredAgent(ctx, challenge.OrgSlug, challenge.OwnerEmail, challenge.AgentName, challenge.ClientType, challenge.PublicKey, now)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, err
 	}
@@ -123,7 +122,7 @@ func (s *Service) CompleteRegistration(ctx context.Context, challengeID, challen
 	return org, user, agent, rawToken, token.ExpiresAt, nil
 }
 
-func (s *Service) upsertRegisteredAgent(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string, capabilities []string, now time.Time) (core.Organization, core.User, core.Agent, error) {
+func (s *Service) upsertRegisteredAgent(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string, now time.Time) (core.Organization, core.User, core.Agent, error) {
 	org, ok, err := s.orgs.FindOrganizationBySlug(ctx, orgSlug)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find organization by slug: %w", err)
@@ -169,20 +168,18 @@ func (s *Service) upsertRegisteredAgent(ctx context.Context, orgSlug, ownerEmail
 		agent.AgentName = agentName
 		agent.ClientType = clientType
 		agent.PublicKey = publicKey
-		agent.Capabilities = capabilities
 		agent.LastSeenAt = now
 	} else {
 		agent = core.Agent{
-			AgentID:      id.New("agent"),
-			OrgID:        org.OrgID,
-			OwnerUserID:  user.UserID,
-			AgentName:    agentName,
-			RuntimeKind:  "edge",
-			ClientType:   clientType,
-			PublicKey:    publicKey,
-			Capabilities: capabilities,
-			Status:       "active",
-			LastSeenAt:   now,
+			AgentID:     id.New("agent"),
+			OrgID:       org.OrgID,
+			OwnerUserID: user.UserID,
+			AgentName:   agentName,
+			RuntimeKind: "edge",
+			ClientType:  clientType,
+			PublicKey:   publicKey,
+			Status:      "active",
+			LastSeenAt:  now,
 		}
 	}
 
