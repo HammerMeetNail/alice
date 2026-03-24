@@ -502,6 +502,44 @@ A compromised agent runtime accesses other local resources or external destinati
 
 ---
 
+## 9.11 Cross-organization data leakage
+
+### Description
+An agent in one organization accesses, queries, or sends requests to users or agents in a different organization due to missing tenant isolation.
+
+### Examples
+- Agent A in Org-X grants permission to User B in Org-Y because `FindUserByEmail` is a global lookup
+- Agent A in Org-X queries artifacts belonging to Org-Y users because query evaluation does not validate org membership
+- Agent A in Org-X sends a request to Agent B in Org-Y because the request path does not check org consistency
+
+### Controls
+- org-scoped user lookups (accept orgID as a parameter in all user resolution)
+- org membership validation on every grant, query, and request path
+- storage-layer org filtering on all cross-entity lookups
+- integration tests that create agents in different orgs and verify isolation
+
+---
+
+## 9.12 Resource exhaustion via unbounded inputs
+
+### Description
+An attacker or misbehaving client sends oversized or excessive requests that exhaust server memory, connections, or processing capacity.
+
+### Examples
+- POST body with multi-gigabyte JSON to any endpoint
+- slowloris-style attacks holding connections open indefinitely
+- rapid registration challenge requests flooding the challenge store
+- unbounded list queries returning millions of rows
+
+### Controls
+- `http.MaxBytesReader` on all endpoints that read request bodies
+- `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `MaxHeaderBytes` on the HTTP server
+- rate limiting on unauthenticated endpoints (per-IP token bucket)
+- pagination on all list endpoints with enforced maximum page size
+- query timeouts via `context.Context` propagation to the storage layer
+
+---
+
 ## 10. Threat matrix
 
 | Threat | Target | Likelihood | Impact | Initial mitigation |
@@ -516,6 +554,14 @@ A compromised agent runtime accesses other local resources or external destinati
 | Local workstation compromise | local context | Medium | High | sandbox, least privilege, local encryption |
 | Audit log oversharing | privacy/compliance | Low | High | structured audit fields, no raw content |
 | Model hallucinated status | correctness/trust | Medium | Medium | source refs, confidence, user correction |
+| Cross-org data leakage | tenant isolation | Medium | Critical | org-scoped lookups, org validation on all paths |
+| Plaintext private key in state file | agent identity | Medium | High | AES-256-GCM state encryption, 0700 dir perms |
+| Registration challenge replay (TOCTOU) | auth | Low | Medium | atomic compare-and-swap, row-level locking |
+| Unbounded request body (memory exhaustion) | availability | Medium | High | MaxBytesReader on all POST endpoints |
+| Approval state re-resolution race | approval integrity | Low | Medium | AND state='pending' in SQL UPDATE |
+| Unauthenticated endpoint flooding | availability | Medium | Medium | per-IP rate limiting on registration endpoints |
+| Unbounded list query (memory exhaustion) | availability | Medium | Medium | pagination with enforced max page size |
+| Stale/expired grant still effective | permissions | Medium | High | expiry enforcement at evaluation time |
 
 ---
 
@@ -574,6 +620,16 @@ Before any cross-agent response or action:
 
 No one can query anyone else unless permission exists.
 
+**Implementation note (2026-03-23):** The baseline rule is partially enforced. Grants exist and query evaluation checks for matching grants, but several policy dimensions specified in the PolicyGrant schema are not yet enforced at runtime:
+- `max_sensitivity` is not checked against artifact sensitivity
+- `allowed_purposes` is not checked against the query's purpose
+- `requires_approval_above_risk` is not checked against the query's risk level
+- `team_scope` and `manager_scope` visibility modes behave identically to `explicit_grants_only`
+- grants with a set `expires_at` are not filtered at evaluation time
+- no cross-org isolation exists — agents in different orgs can currently interact
+
+See `docs/technical-spec.md` section 16.5 for the full list of enforcement requirements.
+
 ## 12.2 Permission dimensions
 
 Permissions should be scoped by:
@@ -628,7 +684,7 @@ Redaction targets may include:
 
 ## 13.2 Requirements
 
-- encrypt at rest
+- encrypt at rest: this includes the edge runtime state file (`internal/edge/state.go`), which currently stores the Ed25519 private key and bearer token in plaintext; the connector credential store (`internal/edge/credentials.go`) correctly uses AES-256-GCM but the state file does not; the state directory is created with `0755` and should be `0700`
 - avoid plaintext logging
 - separate prod/dev secrets
 - rotate where supported
@@ -785,6 +841,20 @@ The test suite should include at minimum:
 13. edge runtime attempting outbound connection to unapproved host
 14. debug log accidentally emitting OAuth token
 15. approval replay on a different subject
+16. Agent A in Org-X querying User B in Org-Y (cross-org isolation)
+17. POST body exceeding 1 MiB to any endpoint (body size limit)
+18. concurrent `CompleteRegistration` with the same challenge (TOCTOU race)
+19. resolving an already-resolved approval (state guard)
+20. querying with a purpose not in the grant's allowed purposes
+21. querying for artifact types not in the grant's allowed types
+22. querying with sensitivity exceeding the grant's max_sensitivity
+23. using an expired grant that has a set `expires_at`
+24. responding to an expired request
+25. resolving an expired approval
+26. rapid-fire registration challenges from one IP (rate limiting)
+27. request with `X-Agent-Token` header instead of `Authorization: Bearer` (if the fallback is kept)
+28. agent with `["publish_artifact"]` capability attempting to create a grant (capability enforcement)
+29. Jira config with JQL-injectable project key (e.g., `"FOO OR 1=1 --"`)
 
 ---
 
@@ -792,23 +862,59 @@ The test suite should include at minimum:
 
 ## 19.1 Required for MVP
 
-- [ ] deny-by-default policy engine
-- [ ] scoped permission grants
-- [x] signed or strongly authenticated agent registration
-- [x] short-lived server-issued access tokens
-- [x] connector OAuth state validation for the current loopback bootstrap path
-- [x] webhook signature validation where supported
+Authentication and identity:
+- [x] signed or strongly authenticated agent registration (Ed25519 challenge flow implemented)
+- [x] short-lived server-issued access tokens (implemented with SHA-256 hashed storage)
+- [ ] remove or document `X-Agent-Token` alternate auth header (undocumented fallback widens attack surface)
+- [ ] enforce `Agent.Capabilities` or remove the field (stored but never checked)
+
+Policy and authorization:
+- [ ] deny-by-default policy engine (grants exist but several policy dimensions are not enforced)
+- [ ] scoped permission grants with enforced sensitivity ceiling, purpose filtering, and artifact type filtering
+- [ ] cross-org isolation on all grant, query, and request paths (`FindUserByEmail` must be org-scoped)
+- [ ] grant revocation via `DELETE /v1/policy-grants/:id` and `revoke_permission` MCP tool
+- [ ] grant expiry enforcement at evaluation time
+- [ ] risk-based approval enforcement (`requires_approval_above_risk` stored but never checked)
+- [ ] visibility mode enforcement for `team_scope` and `manager_scope` (currently behave like `explicit_grants_only`)
+- [ ] request and approval expiry enforcement (expired records must not be listable or resolvable)
+- [ ] approval state guard (`AND state = 'pending'` in SQL UPDATE to prevent re-resolution races)
+
+Content protection:
 - [ ] provenance-tagged content fragments
 - [ ] content/policy separation in model input construction
 - [ ] typed outputs only from model layer
 - [ ] deterministic sink gate
 - [ ] no raw logs shared cross-agent
-- [ ] encrypted credential storage
+- [ ] redaction before publication (Redactions field always empty; no redaction logic exists)
+
+Credential and secret handling:
+- [ ] encrypted credential storage (connector credential store uses AES-256-GCM, but state file with private key and token is plaintext)
+- [ ] state file encryption using existing AES-256-GCM mechanism
+- [ ] state directory created with `0700` permissions (currently `0755`)
+- [x] connector OAuth state validation for the current loopback bootstrap path
+- [x] webhook signature validation where supported (HMAC-SHA256 for GitHub, shared secret for Jira, channel token for GCal)
+
+Infrastructure hardening:
+- [ ] `http.MaxBytesReader` on all POST endpoints (webhook handlers use `io.LimitReader` but server endpoints do not)
+- [ ] HTTP server timeouts: `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `MaxHeaderBytes`
+- [ ] security response headers: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Cache-Control: no-store`
+- [ ] rate limiting on unauthenticated endpoints
+- [ ] `context.Context` propagation through storage layer (all queries currently use `context.Background()`)
+- [ ] migration version tracking table (`schema_migrations`)
+- [ ] explicit transaction handling for multi-step operations
+- [ ] pagination on all list endpoints
+
+Logging and audit:
 - [ ] append-only or strongly protected audit events
-- [ ] redaction before publication
+- [ ] structured logging (`log/slog` with JSON output; currently uses `log` package)
+- [ ] audit event on `get_query_result` (reading query results currently unaudited)
 - [ ] local raw retention cap
-- [ ] rate limiting and idempotency controls
+
+Testing:
 - [ ] security test fixtures for prompt injection and permission abuse
+- [ ] negative authorization tests (cross-agent, cross-org, sensitivity ceiling, purpose mismatch)
+- [ ] token and challenge expiration tests
+- [ ] malformed input tests (oversized, missing fields, wrong content type)
 
 ## 19.2 Strongly recommended soon after MVP
 
@@ -820,6 +926,9 @@ The test suite should include at minimum:
 - [ ] sandbox profiles for supported runtimes
 - [ ] signed connector event ingestion records
 - [ ] artifact leak linting in CI
+- [ ] Jira JQL project key validation (`^[A-Z][A-Z0-9_]+$` before interpolation)
+- [ ] database CHECK constraints for enum columns
+- [ ] `t.Parallel()` in test suites for faster execution
 
 ---
 
@@ -838,7 +947,53 @@ These risks must be acknowledged in docs, UI copy, policy defaults, and deployme
 
 ---
 
-## 21. Summary
+## 21. Implementation vulnerabilities identified (2026-03-23)
+
+A full code review on 2026-03-23 identified the following concrete vulnerabilities in the current implementation. These are grouped by severity and include file-level locations for remediation. Each is tracked in `docs/implementation-plan.md` with a corresponding hardening step.
+
+### 21.1 HIGH severity
+
+**Plaintext state file.** `internal/edge/state.go` stores the Ed25519 private key and bearer token in an unencrypted JSON file. The state directory is created with `0755` permissions (world-listable). The credential store (`internal/edge/credentials.go`) already implements AES-256-GCM encryption — the same mechanism should be extended to the state file. The directory should use `0700`.
+
+**No cross-org isolation.** `FindUserByEmail` in the storage layer is a global lookup. Grant creation, query evaluation, and request routing in `internal/agents/service.go`, `internal/queries/service.go`, and the grant handler in `internal/httpapi/router.go` set `OrgID` on records but never validate that both parties belong to the same org. In a multi-org deployment, any agent could access any other org's data.
+
+**No request body size limits.** No HTTP endpoint in `internal/httpapi/router.go` uses `http.MaxBytesReader` or equivalent. All JSON decoding reads from unbounded request bodies. The `Content`, `Question`, `StructuredPayload`, and `Metadata` fields accept arbitrarily large content. The webhook handlers correctly use `io.LimitReader(req.Body, 1<<20)`, proving the pattern is known.
+
+### 21.2 MEDIUM severity
+
+**Registration challenge TOCTOU race.** `internal/agents/service.go` (`CompleteRegistration`) reads the challenge, checks `used_at`, then updates it. The in-memory store's mutex protects individual operations but the read-check-update across method calls is not atomic. The PostgreSQL path uses row-level locking and is safe.
+
+**Undocumented auth header fallback.** `internal/httpapi/router.go:722-723` accepts tokens via `X-Agent-Token` in addition to `Authorization: Bearer`. This is not documented, not tested, and invisible to security monitoring that inspects only the `Authorization` header.
+
+**Capabilities stored but unenforced.** `Agent.Capabilities` in `internal/core/types.go` is stored during registration but never checked by any service. Any authenticated agent can perform any action.
+
+**Approval state re-resolution.** `internal/storage/postgres/requests.go` does not include `AND state = 'pending'` in the approval UPDATE query. A concurrent request can race past the application-layer check and re-resolve an already-resolved approval.
+
+**No rate limiting.** No endpoint has rate limiting. Unauthenticated registration endpoints are especially vulnerable to flooding.
+
+### 21.3 LOW severity
+
+**Jira JQL interpolation.** `internal/edge/jira_connector.go` inserts the project key into JQL via `fmt.Sprintf` with only `strings.TrimSpace`. The value comes from local config, but the config file is user-authored. A project key containing JQL metacharacters could alter the query.
+
+---
+
+## 22. Positive security observations (2026-03-23)
+
+The following patterns were found to be correct and should be preserved:
+
+1. **Cryptographic usage.** Ed25519 for registration, SHA-256 for token hashing, AES-256-GCM for credential encryption, HMAC-SHA256 for webhook verification, `crypto/rand` exclusively for security-sensitive randomness, `subtle.ConstantTimeCompare` for token comparison. No weak or deprecated primitives were found.
+
+2. **Webhook security.** HMAC signature verification, delivery-ID deduplication, sequence-number tracking, body size limits, and TTL-based pruning of old delivery records. This is production-grade.
+
+3. **OAuth best practices.** PKCE with S256, state parameter validation, loopback-only callback URLs, automatic token refresh with proper error handling.
+
+4. **Generic error messages.** Auth failures return messages that do not distinguish between unknown, expired, or revoked tokens. This prevents enumeration.
+
+5. **Artifact supersession.** Stable derivation keys, persisted latest-artifact tracking, and query-time filtering of superseded artifacts provide clean replacement semantics.
+
+---
+
+## 23. Summary
 
 `alice` should be built as a security-conscious coordination platform where:
 - private raw context stays local

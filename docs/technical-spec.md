@@ -444,6 +444,17 @@ Every source-to-sink path records:
 - no automatic escalation from untrusted text to L3/L4 sink
 - redaction occurs before publication, not after
 
+### 10.4 HTTP hardening requirements
+
+These constraints apply to all HTTP endpoints on the coordination server:
+
+- every endpoint that reads a request body must wrap `req.Body` with `http.MaxBytesReader` before decoding; suggested ceiling is 1 MiB (1 << 20 bytes); exceeding the limit must return HTTP 413
+- the HTTP server must set `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, and `MaxHeaderBytes` in addition to `ReadHeaderTimeout`; suggested values: `ReadTimeout: 30s`, `WriteTimeout: 60s`, `IdleTimeout: 120s`, `MaxHeaderBytes: 1 << 20`
+- every response must include security headers: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Cache-Control: no-store`
+- unauthenticated endpoints (`/v1/agents/register/challenge`, `/v1/agents/register`) must be rate-limited; suggested default: 10 requests per minute per source IP
+- URL path parameters must be validated against expected formats (e.g., ULID pattern) before use; manual `strings.TrimPrefix` extraction without validation is fragile and must be replaced or augmented with format checks
+- authentication must use only the `Authorization: Bearer` header; undocumented alternate headers widen the attack surface and must be removed or explicitly documented and tested
+
 ---
 
 ## 11. Domain model
@@ -827,6 +838,12 @@ Use PostgreSQL initially.
 - permissions are versioned
 - derived artifacts may supersede earlier artifacts
 - expired artifacts should not be returned for new queries unless explicitly requested
+- all storage methods must accept `context.Context` as the first parameter; callers must pass the request context from the HTTP handler through the service layer so that queries can be cancelled and timed out
+- all list queries must support pagination (cursor-based or offset/limit); unbounded `SELECT` without `LIMIT` is not acceptable
+- multi-step state changes (e.g., resolve approval + update linked request, mark challenge used + create token) must be wrapped in a database transaction
+- migrations must be tracked in a `schema_migrations` table; `CREATE TABLE IF NOT EXISTS` is only acceptable for the initial bootstrap; all subsequent migrations must use explicit version tracking and must not be re-executed
+- enum-like columns (`status`, `state`, `risk_level`, `sensitivity`, `visibility_mode`) should have `CHECK` constraints at the database level, not rely solely on application validation
+- the memory store must maintain behavioral parity with the PostgreSQL store for all tested paths, including duplicate-ID rejection, email normalization, and unique-constraint enforcement
 
 ---
 
@@ -970,6 +987,63 @@ Output:
 - manager may query the same plus broader time windows for direct reports
 - no one may query `restricted` artifacts without explicit grant plus approval
 - raw source content is never returnable regardless of grant
+
+### 16.5 Required enforcement rules
+
+The following policy behaviors are specified in the schema but must actually be enforced at runtime. Any field that is stored but unenforced creates a false sense of security and must either be enforced or removed.
+
+#### Cross-org isolation
+
+Every grant, query, and request path must validate that both the acting agent and the target user/agent belong to the same organization. `FindUserByEmail` must accept an org ID and scope its lookup accordingly. A global email lookup without org scoping is a cross-tenant data leak vector.
+
+#### Sensitivity ceiling
+
+When evaluating a query against a grant, the grant's `max_sensitivity` must be compared against each candidate artifact's `sensitivity`. Artifacts with sensitivity exceeding the grant's ceiling must be excluded from the response. The sensitivity ordering is: `low` < `medium` < `high` < `restricted`.
+
+#### Purpose filtering
+
+The grant's `allowed_purposes` must be compared against the query's `purpose`. A query whose purpose is not in the grant's allowed list must be denied.
+
+#### Artifact type filtering
+
+The grant's `allowed_artifact_types` must be compared against each candidate artifact's `type`. Artifacts with types not in the grant's allowed list must be excluded.
+
+#### Risk-based approval
+
+The grant's `requires_approval_above_risk` must be compared against the query's `risk_level`. When the query's risk level exceeds the threshold, an approval record must be created and the query must wait for approval before returning results. This is specified in the PolicyGrant schema (section 12.13) but is not currently enforced.
+
+#### Visibility modes
+
+All four visibility modes must be enforced:
+
+- `private`: artifact is never returned in cross-agent queries (currently enforced)
+- `explicit_grants_only`: artifact is returned only when a matching grant exists (currently enforced)
+- `team_scope`: artifact is returned to any user on the same team without requiring an explicit per-user grant (requires team membership resolution from org graph — not yet implemented)
+- `manager_scope`: artifact is returned to the user's direct manager without requiring an explicit grant (requires manager relationship resolution from org graph — not yet implemented)
+
+#### Grant revocation
+
+Grants must be revocable via `DELETE /v1/policy-grants/:id` and the `revoke_permission` MCP tool. Once revoked, a grant must not match any subsequent query. The revocation must be audited.
+
+#### Grant expiry
+
+When `PolicyGrant.ExpiresAt` is set and the current time exceeds it, the grant must not match any query. Expiry must be checked at evaluation time, not only at creation time.
+
+#### Request/approval expiry
+
+Expired requests must not appear in `list_incoming_requests`. Expired approvals must not be resolvable. The `ExpiresAt` fields on requests and approvals must be checked at list time and at resolve time.
+
+#### Redaction
+
+Before returning artifacts in a query response, the policy engine must apply redaction rules. The `Redactions` field on `QueryResponse` must list what was redacted and why. At minimum, redaction must:
+
+- strip raw source text fragments that appear in artifact content
+- strip fields that exceed the grant's sensitivity ceiling
+- record each redaction action in the response metadata
+
+#### Capabilities enforcement
+
+If the `Agent.Capabilities` field is retained, it must be checked before allowing each operation. An agent registered with only `["publish_artifact"]` must not be able to create grants, send requests, or resolve approvals. If capability enforcement is not yet needed, the field should be removed from the Agent schema to avoid a false sense of restriction.
 
 ---
 
@@ -1418,24 +1492,24 @@ MCP is the public tool surface. Internally, the coordination server should also 
 ### 18.1 Suggested internal HTTP routes
 
 ```text
-POST   /v1/agents/register/challenge
-POST   /v1/agents/register
-POST   /v1/artifacts
-GET    /v1/artifacts/:id
-POST   /v1/queries
-GET    /v1/queries/:id
-POST   /v1/requests
-GET    /v1/requests/incoming
-POST   /v1/requests/:id/respond
-GET    /v1/approvals
-POST   /v1/approvals/:id/resolve
-POST   /v1/policy-grants
-DELETE /v1/policy-grants/:id
-GET    /v1/peers
-GET    /v1/audit/summary
-POST   /v1/connectors/:type/oauth/start
-GET    /v1/connectors/:type/oauth/callback
-POST   /v1/connectors/:type/webhook
+POST   /v1/agents/register/challenge   [implemented]
+POST   /v1/agents/register             [implemented]
+POST   /v1/artifacts                    [implemented]
+GET    /v1/artifacts/:id                [not implemented]
+POST   /v1/queries                      [implemented]
+GET    /v1/queries/:id                  [implemented]
+POST   /v1/requests                     [implemented]
+GET    /v1/requests/incoming            [implemented]
+POST   /v1/requests/:id/respond         [implemented]
+GET    /v1/approvals                    [implemented]
+POST   /v1/approvals/:id/resolve        [implemented]
+POST   /v1/policy-grants                [implemented]
+DELETE /v1/policy-grants/:id            [not implemented — required for grant revocation]
+GET    /v1/peers                        [implemented]
+GET    /v1/audit/summary                [implemented]
+POST   /v1/connectors/:type/oauth/start [not implemented]
+GET    /v1/connectors/:type/oauth/callback [not implemented]
+POST   /v1/connectors/:type/webhook     [not implemented — server-side; edge runtime has local webhook endpoints]
 ```
 
 ---
@@ -1801,6 +1875,10 @@ security:
 
 ### 24.2 Required logs
 
+All logging must use structured key-value output (e.g., `log/slog` with JSON format). The standard `log` package must not be used in production code paths. Log entries must include contextual fields such as `agent_id`, `org_id`, `request_id`, and `error` where available. Sensitive fields (tokens, keys, credentials, raw source content) must never appear in log output.
+
+Required log events:
+
 - auth success/failure
 - agent registration
 - connector auth/callback result
@@ -1825,14 +1903,20 @@ Trace across:
 
 ## 25. Testing requirements
 
+**Current state (2026-03-23):** All testing is integration-level in `internal/httpapi/`, `internal/mcp/`, and `internal/edge/`. No unit tests exist for any service or storage package. The edge runtime test suite is comprehensive (28 tests, ~3500 lines), but the server-side packages have zero `_test.go` files. Negative authorization tests, token/challenge expiration tests, and malformed-input tests do not exist.
+
 ### 25.1 Unit tests
 
-- policy engine
-- redaction rules
-- schema validation
-- connector normalization
-- sink gating
-- MCP handlers
+Required unit test coverage (must exist before MVP):
+
+- policy engine: grant matching, sensitivity ceiling, purpose filtering, artifact type filtering, project scope matching, risk-based approval threshold, grant expiry, cross-org denial
+- redaction rules: raw source text stripping, sensitivity-based field removal, redaction metadata recording
+- schema validation: all `core.Validate*` functions with both valid and invalid inputs, including missing required fields, invalid enum values, oversized content, and empty strings
+- connector normalization: event type mapping, provenance tagging, sensitivity classification
+- sink gating: typed output validation, risk level checking
+- MCP handlers: each tool with valid and invalid inputs
+- storage: behavioral parity between memory and PostgreSQL stores for duplicate IDs, email normalization, unique constraints, and FK-like relationships
+- ID generation: uniqueness, sortability, format conformance
 
 ### 25.2 Integration tests
 
@@ -1845,12 +1929,17 @@ Trace across:
 
 ### 25.3 Security tests
 
-- prompt injection fixtures
-- malformed content payloads
-- privilege escalation attempts
-- permission bypass attempts
-- raw log leakage tests
-- sink gate bypass attempts
+Required negative/adversarial tests (none currently exist):
+
+- prompt injection fixtures: PR body, Jira comment, and calendar description containing instruction-injection strings must not influence model outputs or policy decisions
+- malformed content payloads: oversized JSON, missing required fields, unexpected content types, and binary payloads must be rejected with appropriate HTTP error codes
+- privilege escalation attempts: Agent A querying Agent B's data without a grant; querying with a purpose not in the grant; querying for artifact types not in the grant; querying across org boundaries
+- permission bypass attempts: using an expired grant, using a revoked grant, querying with sensitivity above the grant ceiling, resolving an already-resolved approval
+- raw log leakage tests: artifacts must not contain raw source text; responses must not include fields above the sensitivity ceiling
+- sink gate bypass attempts: untrusted content must not produce direct tool invocations or sink writes
+- token/challenge expiration: expired bearer tokens must be rejected; expired registration challenges must not complete; expired requests and approvals must not be resolvable
+- cross-org isolation: agents in different orgs must not be able to grant, query, or send requests to each other
+- rate limiting: rapid unauthenticated requests must be throttled
 
 ### 25.4 End-to-end tests
 

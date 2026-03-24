@@ -4,7 +4,7 @@
 
 Active implementation guide  
 Audience: engineering, platform, future agent sessions  
-Last updated: 2026-03-19
+Last updated: 2026-03-23
 
 ---
 
@@ -64,6 +64,37 @@ These are implementation choices already present in the codebase and should be t
 - the edge runtime now supports both polling and initial push paths through signed local GitHub webhooks, shared-secret Jira webhooks, and shared-secret Google Calendar change notifications, persists webhook delivery receipts plus Google Calendar channel message numbers to suppress duplicate or replayed deliveries, live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, persists per-project signal state so blocker-resolution and commitment-completion transitions can supersede stale aggregate artifacts, and can now complete a local OAuth bootstrap with PKCE and callback-state validation, persist connector credentials in a dedicated local credential store with file-permission checks, optionally encrypt that store with a local key, refresh expired OAuth credentials when refresh tokens are available, and surface actionable re-auth guidance when refresh cannot proceed
 - edge-derived artifacts now carry stable derivation keys, the edge runtime persists the latest published artifact ID per derivation slot, updated logical artifacts supersede prior ones, and query evaluation skips superseded artifacts
 - richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
+
+### security gaps identified in code review (2026-03-23)
+
+The following gaps exist in the current implementation and should be treated as known-wrong defaults that the hardening steps below must correct:
+
+- the edge runtime state file (`internal/edge/state.go`) stores the Ed25519 private key and bearer token in plaintext JSON; the credential store already encrypts with AES-256-GCM but that protection does not extend to the state file; the state directory is created with `0755` permissions (should be `0700`)
+- `FindUserByEmail` is a global lookup not scoped to an organization; grant creation, query evaluation, and request routing never validate that both parties belong to the same org, so a multi-org deployment has no tenant isolation
+- no HTTP endpoint uses `http.MaxBytesReader` or equivalent; all JSON decoding reads from unbounded request bodies; the webhook handlers correctly use `io.LimitReader(req.Body, 1<<20)` but the same pattern is missing from every server-side POST route
+- the in-memory registration challenge flow has a TOCTOU race: the read-check-update for `used_at` is not atomic across method calls, allowing a concurrent `CompleteRegistration` with the same challenge to succeed twice; the PostgreSQL path is safe due to row-level locking
+- `X-Agent-Token` is accepted as an undocumented and untested alternate auth header alongside `Authorization: Bearer`
+- `Agent.Capabilities` is stored during registration but never checked by any service; any authenticated agent can perform any action
+- `ResolveApproval` in the SQL layer does not include `AND state = 'pending'`, so a concurrent race can re-resolve an already-resolved approval
+- no rate limiting exists on any endpoint, including unauthenticated registration routes
+- Jira JQL construction uses `fmt.Sprintf` with the project key from local config without validating the key matches `^[A-Z][A-Z0-9_]+$`
+- every PostgreSQL query uses `context.Background()` instead of accepting a caller-provided context; queries cannot be cancelled and have no application-level timeouts
+- no list endpoint has pagination; all return unbounded result sets
+- the migration system has no `schema_migrations` version tracking table; every migration is re-executed on every startup via `CREATE TABLE IF NOT EXISTS`, which will break on the first non-idempotent migration
+- no multi-step database operation uses explicit transactions
+- the HTTP server sets `ReadHeaderTimeout` (5s) but not `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, or `MaxHeaderBytes`
+- the codebase uses the standard `log` package everywhere; the spec calls for structured logging
+- no CORS, CSRF, or security response headers are set
+- grant revocation (`revoke_permission` / `DELETE /v1/policy-grants/:id`) is not implemented
+- `submit_correction` is not implemented
+- `team_scope` and `manager_scope` visibility modes pass through without team/manager relationship logic
+- `PolicyGrant.RequiresApprovalAboveRisk` is set but never checked during query evaluation
+- the `Redactions` field is always empty; no redaction logic exists
+- expired requests, approvals, and grants are not filtered during list/resolve operations (only expired artifacts are filtered during query evaluation)
+- no unit tests exist for any service or storage package; all testing is integration-level
+- no negative authorization tests exist (cross-agent access, sensitivity ceiling, purpose mismatch, cross-org)
+- no token/challenge expiration tests exist
+- no malformed-input tests exist
 
 ---
 
@@ -135,85 +166,294 @@ Not yet complete inside step 2:
 
 ## 4. next recommended steps
 
-The next session should work through these in order.
+The next session should address security and architectural hardening before adding new features. The steps below are ordered by priority — highest-impact security fixes first, then architectural correctness, then spec completeness.
 
-### step a: replace in-memory storage with PostgreSQL
+### step a: request body size limits on all HTTP endpoints
 
-Status: complete for the currently implemented HTTP surface
+Status: not started
 
-Implement:
-
-- `internal/storage/postgres/`
-- migrations for agents, users, grants, artifacts, queries, responses, and audit events
-- repository interfaces so services stop depending directly on the in-memory store
-
-Definition of done:
-
-- `make local` runs the server and database together
-- data survives server restarts
-- the existing query-flow test can run against a real DB-backed repository layer
-
-### step b: add real auth for agent registration and requests
-
-Status: complete for the current HTTP surface
+Every HTTP handler that reads a request body must wrap `req.Body` with `http.MaxBytesReader` before decoding. The webhook handlers already use `io.LimitReader(req.Body, 1<<20)` — the same 1 MiB ceiling is appropriate for all endpoints.
 
 Implement:
 
-- registration challenge flow
-- server-issued short-lived tokens
-- request authentication middleware
+- add a middleware or helper in `internal/httpapi/router.go` that wraps `req.Body` with `http.MaxBytesReader(w, req.Body, 1<<20)` before any `json.NewDecoder(req.Body).Decode` call
+- apply it to every POST route: `/v1/agents/register/challenge`, `/v1/agents/register`, `/v1/artifacts`, `/v1/policy-grants`, `/v1/queries`, `/v1/requests`, `/v1/requests/:id/respond`, `/v1/approvals/:id/resolve`
+- verify that a request exceeding 1 MiB returns HTTP 413 (Request Entity Too Large)
+- do NOT change the webhook handlers, which already limit reads correctly
 
 Definition of done:
 
-- `X-Agent-ID` is no longer sufficient by itself
-- agent registration results in a usable token or session credential
+- `curl` with a >1 MiB POST body against any endpoint returns 413
+- all existing tests still pass
 
-### step c: expose the MCP surface on top of the existing services
+### step b: encrypt state file and fix directory permissions
 
-Status: complete for the current Reporter tool subset
+Status: not started
 
-Implement at minimum:
-
-- `register_agent`
-- `publish_artifact`
-- `query_peer_status`
-- `get_query_result`
-- `grant_permission`
-- `list_allowed_peers`
-
-Definition of done:
-
-- the existing HTTP server logic is wrapped by an MCP-facing package or handler layer
-- at least one CLI-native agent client can call the MCP tools locally
-
-### step d: add Gatekeeper request and approval flows
-
-Status: complete for the current HTTP and local MCP surfaces
+The edge runtime state file contains the Ed25519 private key and bearer token in plaintext. The credential store already supports AES-256-GCM encryption with a key loaded from an env var or file.
 
 Implement:
 
-- requests
-- approvals
-- request inbox and response endpoints
-- audit coverage for request lifecycle events
+- change `ensureStateDir` in `internal/edge/state.go` to create the state directory with `0700` instead of `0755`
+- extend the state file to encrypt the `PrivateKey` and `AccessToken` fields using the same AES-256-GCM encryption that `internal/edge/credentials.go` already implements
+- when no encryption key is configured, write a warning to stderr and continue with plaintext (matching the credential store behavior)
+- ensure `loadState` / `saveState` handle both encrypted and plaintext formats for backward compatibility during migration
 
 Definition of done:
 
-- a requester can send a request to a peer agent
-- the peer can accept, defer, deny, or require approval
+- state directory is created with `0700`
+- when `ALICE_CREDENTIAL_KEY` (or the key-file equivalent) is set, the private key and token are encrypted at rest in the state file
+- the existing edge runtime tests still pass
+- a new test verifies the encrypted round-trip
 
-### step e: add the first edge runtime skeleton
+### step c: add cross-organization isolation
 
-Status: complete for the current local runtime skeleton
+Status: not started
+
+`FindUserByEmail` must accept an `orgID` parameter and all grant/query/request flows must validate org membership consistency.
 
 Implement:
 
-- local config loading
-- agent registration with the server
-- artifact publication path
-- query result polling or retrieval
+- change the `FindUserByEmail` signature in `internal/storage/repository.go` to `FindUserByEmail(ctx context.Context, orgID, email string) (*User, error)`
+- update both memory and PostgreSQL implementations to filter by org
+- in `internal/agents/service.go`, pass the registering agent's org ID to `FindUserByEmail`
+- in `internal/queries/service.go`, validate that the querying agent and target user belong to the same org before evaluating grants
+- in the grant creation handler, validate that grantor and grantee belong to the same org
+- in the request creation handler, validate that sender and recipient belong to the same org
 
-Use fixture-driven data first. Do not start with live GitHub/Jira/Calendar auth.
+Definition of done:
+
+- a test creates two agents in different orgs and confirms that Agent A cannot query, grant to, or send requests to Agent B
+- all existing tests still pass
+
+### step d: add migration version tracking
+
+Status: not started
+
+The current migration system re-runs every migration on every startup. This will break on the first non-idempotent migration.
+
+Implement:
+
+- add a `schema_migrations` table in `internal/storage/postgres/migrate.go` with columns: `version INTEGER PRIMARY KEY`, `applied_at TIMESTAMPTZ DEFAULT now()`
+- this table creation itself should use `CREATE TABLE IF NOT EXISTS` so it bootstraps cleanly
+- before running each migration, check if its version already exists in `schema_migrations`
+- after running a migration, insert its version
+- wrap the check-and-apply in a transaction
+- number existing migrations starting at 1
+
+Definition of done:
+
+- a fresh database runs all migrations and records their versions in `schema_migrations`
+- a second startup skips already-applied migrations
+- a test adds a dummy migration, restarts, and confirms it only runs once
+
+### step e: add context propagation through storage layer
+
+Status: not started
+
+All repository interface methods must accept `context.Context` as the first parameter, and all PostgreSQL queries must use that context.
+
+Implement:
+
+- update every method signature in `internal/storage/repository.go` to accept `context.Context` as the first parameter
+- update both memory and PostgreSQL implementations
+- pass `req.Context()` from HTTP handlers through the service layer to storage
+- replace all `context.Background()` calls in the PostgreSQL layer with the passed context
+
+Definition of done:
+
+- `grep -r 'context.Background()' internal/storage/` returns zero matches
+- all existing tests still pass
+- a cancelled context propagates through to the storage layer (verifiable by test)
+
+### step f: implement grant revocation
+
+Status: not started
+
+The spec defines `revoke_permission` (MCP tool 17.11) and `DELETE /v1/policy-grants/:id`. Neither is implemented. Once a grant is created, it cannot be revoked.
+
+Implement:
+
+- add `RevokeGrant(ctx context.Context, grantID, grantorUserID string) error` to the policy service in `internal/policy/service.go`
+- verify that the revoking user is the grantor (or an org admin, if roles exist later)
+- add `DELETE /v1/policy-grants/:id` to the HTTP router with auth middleware
+- add the `revoke_permission` MCP tool handler
+- update the storage layer: either hard-delete the grant row or mark it with a `revoked_at` timestamp and filter revoked grants during query evaluation
+
+Definition of done:
+
+- a test creates a grant, verifies a query succeeds through it, revokes the grant, and verifies the query is denied
+- the MCP tool and HTTP route both work
+- an audit event is recorded for the revocation
+
+### step g: add request body size limits, HTTP timeouts, and security headers
+
+Status: not started
+
+The HTTP server is missing production-safety settings.
+
+Implement:
+
+- in `internal/app/server.go`, set `ReadTimeout: 30s`, `WriteTimeout: 60s`, `IdleTimeout: 120s`, `MaxHeaderBytes: 1 << 20` on the `http.Server`
+- add a middleware in `internal/httpapi/router.go` that sets these response headers on every response:
+  - `X-Content-Type-Options: nosniff`
+  - `X-Frame-Options: DENY`
+  - `Cache-Control: no-store`
+
+Definition of done:
+
+- the server rejects requests with headers exceeding 1 MiB
+- all responses include the security headers
+- all existing tests still pass
+
+### step h: fix approval state guard and add expiry enforcement
+
+Status: not started
+
+Implement:
+
+- in `internal/storage/postgres/requests.go`, change the `ResolveApproval` SQL to include `AND state = 'pending'`; return a conflict error if zero rows are affected
+- do the same in the memory store
+- add expiry checks to `ListIncomingRequests`, `RespondToRequest`, `ListPendingApprovals`, and `ResolveApproval`: filter out expired records and reject operations on expired records
+- add expiry enforcement to grant queries: reject grants whose `ExpiresAt` has passed (this already works for artifacts but not grants)
+
+Definition of done:
+
+- a test resolves an approval, then attempts to re-resolve it and gets a conflict error
+- a test creates an expired request and verifies it does not appear in the incoming list
+- a test creates an expired approval and verifies it cannot be resolved
+- all existing tests still pass
+
+### step i: add rate limiting on unauthenticated endpoints
+
+Status: not started
+
+Implement:
+
+- add a simple in-memory rate limiter (e.g., per-IP token bucket) as middleware in `internal/httpapi/router.go`
+- apply it to `/v1/agents/register/challenge` and `/v1/agents/register`
+- suggested default: 10 requests per minute per IP
+- consider a separate per-agent rate limit on authenticated endpoints (lower priority)
+
+Definition of done:
+
+- a test sends 20 rapid registration challenges from the same IP and confirms the later ones are rejected with HTTP 429
+- all existing tests still pass (they stay under the limit)
+
+### step j: remove or document the X-Agent-Token header fallback
+
+Status: not started
+
+`accessTokenFromRequest` in `internal/httpapi/router.go` accepts tokens via `X-Agent-Token` as an undocumented alternate to `Authorization: Bearer`.
+
+Implement one of:
+
+- **option 1 (recommended):** remove the `X-Agent-Token` fallback entirely; the `Authorization: Bearer` header is the documented and standard approach
+- **option 2:** document it in the README and add a test that explicitly exercises `X-Agent-Token`
+
+Definition of done:
+
+- the fallback is either removed or documented and tested
+
+### step k: enforce capabilities or remove the field
+
+Status: not started
+
+`Agent.Capabilities` is stored but never checked. Any authenticated agent can perform any action.
+
+Implement one of:
+
+- **option 1 (recommended for now):** remove the `Capabilities` field from the Agent struct and registration flow; add it back when capability enforcement is implemented
+- **option 2:** add capability checks in the auth middleware or service layer (e.g., check `publish_artifact` capability before allowing artifact publication)
+
+Definition of done:
+
+- either the field is gone, or a test proves that an agent without `publish_artifact` capability cannot publish
+
+### step l: add unit tests for services, storage, and negative authorization
+
+Status: not started
+
+The entire test suite is integration-level. Unit tests are needed for:
+
+- **policy evaluation:** `internal/policy/service.go` — test grant matching, sensitivity ceiling, purpose filtering, artifact type filtering, project scope matching
+- **negative authorization:** test that queries are denied when: no grant exists, grant has wrong project scope, grant has lower sensitivity ceiling, grant has wrong purpose, grant has wrong artifact types, agents are in different orgs
+- **storage parity:** test that memory and PostgreSQL stores behave identically for edge cases (duplicate IDs, email normalization, FK-like constraints)
+- **token/challenge expiry:** test that expired tokens and challenges are rejected
+- **input validation:** test that malformed JSON, missing required fields, and oversized payloads are rejected with appropriate errors
+
+Definition of done:
+
+- at least one `_test.go` file exists in each of: `internal/agents/`, `internal/policy/`, `internal/queries/`, `internal/storage/memory/`, `internal/storage/postgres/`
+- `make test` passes
+- `make test-postgres` passes
+
+### step m: add structured logging
+
+Status: not started
+
+Replace `log.Printf` and `log.Fatalf` calls with `log/slog` (standard library since Go 1.21).
+
+Implement:
+
+- create a logger initialization helper that produces a JSON-formatted `slog.Logger`
+- replace all `log.Printf` / `log.Fatalf` calls across `cmd/` and `internal/` with `slog.Info`, `slog.Error`, `slog.Warn` using structured key-value pairs
+- include contextual fields: `agent_id`, `org_id`, `request_id`, `error` where available
+- ensure no sensitive fields (tokens, keys, credentials) appear in log output
+
+Definition of done:
+
+- `grep -r 'log\.' cmd/ internal/ | grep -v '_test.go' | grep -v 'slog'` returns zero matches (all logging uses slog)
+- log output is valid JSON with structured fields
+
+### step n: add explicit transaction handling for multi-step operations
+
+Status: not started
+
+Implement:
+
+- add a `BeginTx` / `CommitTx` / `RollbackTx` pattern (or a `WithTx(ctx, fn)` helper) to the PostgreSQL store
+- wrap `ResolveApproval` in a transaction (resolve approval + update linked request state)
+- wrap `RespondToRequest` in a transaction when it also creates an approval
+- consider wrapping `CompleteRegistration` in a transaction (mark challenge used + create token)
+
+Definition of done:
+
+- multi-step operations are atomic
+- a test verifies that a failure midway through a transaction rolls back all changes
+
+### step o: add pagination to list endpoints
+
+Status: not started
+
+Implement:
+
+- add `limit` and `cursor` (or `offset`) query parameters to all list endpoints: `/v1/peers`, `/v1/requests/incoming`, `/v1/approvals`, `/v1/audit/summary`
+- add corresponding pagination parameters to the storage interface methods
+- default limit: 50; maximum limit: 200
+- return a `next_cursor` field in the response when more results exist
+
+Definition of done:
+
+- a test creates >50 artifacts/requests/approvals and confirms that pagination returns the correct subsets
+- all existing tests still pass
+
+### step p: implement remaining spec features
+
+Status: not started
+
+Lower-priority spec features to implement after hardening:
+
+- **redaction logic:** add a redaction engine that applies rules from policy grants before returning artifacts in query responses; populate the `Redactions` field on `QueryResponse`
+- **`submit_correction`:** implement the MCP tool and HTTP route for correcting previously published artifacts
+- **risk-based approval:** check `PolicyGrant.RequiresApprovalAboveRisk` during query evaluation and create an approval record when the query's risk level exceeds the threshold
+- **visibility modes:** implement `team_scope` and `manager_scope` by resolving team membership and manager relationships from the org graph
+- **Jira JQL validation:** validate that the Jira project key from config matches `^[A-Z][A-Z0-9_]+$` before interpolating into JQL
+
+Definition of done:
+
+- each feature has tests
+- the technical spec's feature list matches the implementation
 
 ---
 
@@ -223,17 +463,40 @@ Use fixture-driven data first. Do not start with live GitHub/Jira/Calendar auth.
 - keep permission checks deny-by-default
 - do not let untrusted content control sinks
 - preserve the current conservative assumption that server-side querying is artifact-based until an ADR says otherwise
+- all HTTP endpoints that read a request body must enforce a size limit via `http.MaxBytesReader`
+- all storage methods must accept `context.Context` and pass it to database queries
+- all list endpoints must support pagination; unbounded result sets are not acceptable
+- every new migration must be tracked in a `schema_migrations` table; do not rely on `IF NOT EXISTS` for non-idempotent DDL
+- multi-step state changes must be wrapped in database transactions
+- cross-org isolation must be validated on every grant, query, and request path
+- no new fields should be stored but unenforced; either enforce the field or remove it
+- structured logging (`log/slog`) must be used for all new code; migrate existing `log` calls when touching a file
 - update this file, `README.md`, and `AGENTS.md` whenever the implementation status materially changes
 
 ---
 
 ## 6. suggested first task for the next session
 
-Build on the current paginated, replacement-aware edge runtime with operator hardening and deeper connector lifecycle management.
+Address steps a through e above in order: request body size limits, state file encryption, cross-org isolation, migration version tracking, and context propagation. These five changes fix the highest-impact security and correctness gaps with minimal risk to existing functionality.
 
 Concrete first changes:
 
-1. harden local operator workflows further with rotation tooling and safer credential-key management
-2. add connector lifecycle tooling around webhook/watch registration and local rotation workflows
-3. deepen derivation further with connector-native or model-assisted signals beyond the current rule-based transitions
-4. keep raw source content local and continue publishing only derived artifacts through the existing runtime client
+1. add `http.MaxBytesReader` wrapping to every POST handler in `internal/httpapi/router.go` (step a — ~30 minutes)
+2. change state directory permissions to `0700` and encrypt the private key and token fields in the state file using the existing AES-256-GCM mechanism (step b — ~1 hour)
+3. scope `FindUserByEmail` to an org and add org validation to grant/query/request flows (step c — ~1-2 hours)
+4. add a `schema_migrations` table and version tracking to `internal/storage/postgres/migrate.go` (step d — ~30 minutes)
+5. thread `context.Context` through the repository interfaces and replace `context.Background()` in the PostgreSQL layer (step e — ~1-2 hours)
+
+After those five, proceed to steps f through l (grant revocation, HTTP hardening, expiry enforcement, rate limiting, capability cleanup, and unit tests) as time allows.
+
+### previously completed steps (for reference)
+
+The following steps from earlier sessions are complete:
+
+- PostgreSQL storage layer with embedded migrations
+- signed registration challenge flow with bearer-token issuance
+- MCP surface for Reporter and Gatekeeper tools
+- Gatekeeper request and approval flows
+- edge runtime skeleton with fixture, polling, and webhook-based connector ingestion
+- OAuth bootstrap, encrypted credential storage, and token refresh for GitHub, Jira, and Google Calendar connectors
+- replacement-aware artifact derivation with project-level aggregation
