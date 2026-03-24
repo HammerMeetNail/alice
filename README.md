@@ -59,10 +59,10 @@ Run this from the repository root:
 ```sh
 claude mcp add alice \
   -e "ALICE_AUTH_TOKEN_TTL=24h" \
-  -- /path/to/alice/alice-mcp-server
+  -- "$(pwd)/alice-mcp-server"
 ```
 
-Replace `/path/to/alice` with the absolute path to this repository. `ALICE_AUTH_TOKEN_TTL=24h` prevents the session from expiring during a long working session (default is 15 minutes).
+`ALICE_AUTH_TOKEN_TTL=24h` prevents the session from expiring during a long working session (default is 15 minutes).
 
 Claude Code stores MCP server configuration in `~/.claude.json`. The `claude mcp add` command writes the correct format automatically. You can verify the server connected with `/mcp` inside a Claude Code session.
 
@@ -89,7 +89,7 @@ claude mcp remove alice
 claude mcp add alice \
   -e "ALICE_MCP_ACCESS_TOKEN=atok_..." \
   -e "ALICE_AUTH_TOKEN_TTL=24h" \
-  -- /path/to/alice/alice-mcp-server
+  -- "$(pwd)/alice-mcp-server"
 ```
 
 With in-memory storage the token is valid only for the lifetime of the process. For durable sessions across restarts, use PostgreSQL (see below).
@@ -125,13 +125,13 @@ Build the binary first if you haven't already:
 go build -o alice-mcp-server ./cmd/mcp-server
 ```
 
-Each user points their MCP server at the coordination server with `ALICE_SERVER_URL`. The user's machine needs no database access:
+Each user points their MCP server at the coordination server with `ALICE_SERVER_URL`. The user's machine needs no database access. Run this from the repository root:
 
 ```sh
 claude mcp add alice \
   -e "ALICE_SERVER_URL=http://127.0.0.1:8080" \
   -e "ALICE_AUTH_TOKEN_TTL=24h" \
-  -- /path/to/alice/alice-mcp-server
+  -- "$(pwd)/alice-mcp-server"
 ```
 
 Replace `http://127.0.0.1:8080` with the actual URL of your coordination server. For HTTPS with a self-signed or internal CA certificate, also pass `-e "ALICE_SERVER_TLS_CA=/path/to/ca.pem"`.
@@ -146,7 +146,7 @@ For local development where all users are on the same machine and a full hosted 
 claude mcp add alice \
   -e "ALICE_DATABASE_URL=postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable" \
   -e "ALICE_AUTH_TOKEN_TTL=24h" \
-  -- /path/to/alice/alice-mcp-server
+  -- "$(pwd)/alice-mcp-server"
 ```
 
 This is not representative of real use — it requires every user to have direct database access — but it is convenient for local testing without running a separate server process.
@@ -167,7 +167,7 @@ Add alice to OpenCode's MCP configuration. OpenCode stores its config at `~/.con
 {
   "mcpServers": {
     "alice": {
-      "command": "/path/to/alice/alice-mcp-server",
+      "command": "/absolute/path/to/alice/alice-mcp-server",
       "env": {
         "ALICE_DATABASE_URL": "postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable",
         "ALICE_AUTH_TOKEN_TTL": "24h"
@@ -333,13 +333,13 @@ Start the coordination server:
 make local
 ```
 
-Both Alice and Bob configure their MCP server with:
+Both Alice and Bob configure their MCP server (run from the repository root):
 
 ```sh
 claude mcp add alice \
   -e "ALICE_SERVER_URL=http://127.0.0.1:8080" \
   -e "ALICE_AUTH_TOKEN_TTL=24h" \
-  -- /path/to/alice/alice-mcp-server
+  -- "$(pwd)/alice-mcp-server"
 ```
 
 ### Step 1 — Alice registers and publishes
