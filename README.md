@@ -46,28 +46,27 @@ cd alice
 go build ./...
 ```
 
-### 2. Add alice to Claude Code
+### 2. Build the MCP server binary
 
-Create or edit `.claude/settings.json` in your project (or `~/.claude/settings.json` for user-wide access):
+```sh
+go build -o alice-mcp-server ./cmd/mcp-server
+```
 
-```json
-{
-  "mcpServers": {
-    "alice": {
-      "command": "go",
-      "args": ["run", "./cmd/mcp-server"],
-      "cwd": "/path/to/alice",
-      "env": {
-        "ALICE_AUTH_TOKEN_TTL": "24h"
-      }
-    }
-  }
-}
+### 3. Add alice to Claude Code
+
+Run this from the repository root:
+
+```sh
+claude mcp add alice \
+  -e "ALICE_AUTH_TOKEN_TTL=24h" \
+  -- /path/to/alice/alice-mcp-server
 ```
 
 Replace `/path/to/alice` with the absolute path to this repository. `ALICE_AUTH_TOKEN_TTL=24h` prevents the session from expiring during a long working session (default is 15 minutes).
 
-### 3. Start a Claude Code session
+Claude Code stores MCP server configuration in `~/.claude.json`. The `claude mcp add` command writes the correct format automatically. You can verify the server connected with `/mcp` inside a Claude Code session.
+
+### 4. Start a Claude Code session
 
 Open Claude Code in your project. The `alice` MCP tools will be available. Ask Claude to register you as an agent:
 
@@ -75,30 +74,22 @@ Open Claude Code in your project. The `alice` MCP tools will be available. Ask C
 
 Claude will call `register_agent` with your key material, complete the Ed25519 challenge flow automatically, and store the session token for subsequent tool calls.
 
-### 4. Publish an artifact
+### 5. Publish an artifact
 
 Ask Claude to publish a status summary on your behalf:
 
 > Use alice `publish_artifact` to publish a summary artifact with title "Working on auth refactor", content "Extracting JWT validation into a shared middleware layer. Two PRs open, one awaiting review.", sensitivity `low`, visibility mode `explicit_grants_only`, and confidence 0.9.
 
-### 5. Resume a session across restarts
+### 6. Resume a session across restarts
 
-The MCP server loses its in-memory state when it restarts. To resume without re-registering, set `ALICE_MCP_ACCESS_TOKEN` to the `access_token` value returned by your first `register_agent` call:
+The MCP server loses its in-memory state when it restarts. To resume without re-registering, pass `ALICE_MCP_ACCESS_TOKEN` set to the `access_token` value returned by your first `register_agent` call:
 
-```json
-{
-  "mcpServers": {
-    "alice": {
-      "command": "go",
-      "args": ["run", "./cmd/mcp-server"],
-      "cwd": "/path/to/alice",
-      "env": {
-        "ALICE_MCP_ACCESS_TOKEN": "atok_...",
-        "ALICE_AUTH_TOKEN_TTL": "24h"
-      }
-    }
-  }
-}
+```sh
+claude mcp remove alice
+claude mcp add alice \
+  -e "ALICE_MCP_ACCESS_TOKEN=atok_..." \
+  -e "ALICE_AUTH_TOKEN_TTL=24h" \
+  -- /path/to/alice/alice-mcp-server
 ```
 
 With in-memory storage the token is valid only for the lifetime of the process. For durable sessions across restarts, use PostgreSQL (see below).
@@ -127,40 +118,19 @@ export ALICE_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=d
 
 ### 2. Configure each user's MCP server
 
-Alice's `.claude/settings.json`:
+Build the binary first if you haven't already:
 
-```json
-{
-  "mcpServers": {
-    "alice": {
-      "command": "go",
-      "args": ["run", "./cmd/mcp-server"],
-      "cwd": "/path/to/alice",
-      "env": {
-        "ALICE_DATABASE_URL": "postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable",
-        "ALICE_AUTH_TOKEN_TTL": "24h"
-      }
-    }
-  }
-}
+```sh
+go build -o alice-mcp-server ./cmd/mcp-server
 ```
 
-Bob's `.claude/settings.json` (identical — same database URL):
+Each user runs `claude mcp add` once in the alice repository directory (the command is identical for all users):
 
-```json
-{
-  "mcpServers": {
-    "alice": {
-      "command": "go",
-      "args": ["run", "./cmd/mcp-server"],
-      "cwd": "/path/to/alice",
-      "env": {
-        "ALICE_DATABASE_URL": "postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable",
-        "ALICE_AUTH_TOKEN_TTL": "24h"
-      }
-    }
-  }
-}
+```sh
+claude mcp add alice \
+  -e "ALICE_DATABASE_URL=postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable" \
+  -e "ALICE_AUTH_TOKEN_TTL=24h" \
+  -- /path/to/alice/alice-mcp-server
 ```
 
 Both MCP servers share the same PostgreSQL database, so artifacts, grants, queries, and requests are visible across sessions and survive process restarts.
@@ -179,14 +149,19 @@ This starts both the coordination server (`http://127.0.0.1:8080`) and PostgreSQ
 
 ## Connecting with OpenCode
 
+Build the binary first if you haven't already:
+
+```sh
+go build -o alice-mcp-server ./cmd/mcp-server
+```
+
 Add alice to OpenCode's MCP configuration. OpenCode stores its config at `~/.config/opencode/config.json`:
 
 ```json
 {
   "mcpServers": {
     "alice": {
-      "command": "go",
-      "args": ["run", "./cmd/mcp-server"],
+      "command": "/path/to/alice/alice-mcp-server",
       "env": {
         "ALICE_DATABASE_URL": "postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable",
         "ALICE_AUTH_TOKEN_TTL": "24h"
@@ -721,10 +696,11 @@ Start the server with PostgreSQL (requires a running instance):
 ALICE_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable" go run ./cmd/server
 ```
 
-Start the MCP server standalone:
+Build and run the MCP server standalone (use the binary rather than `go run` when registering with Claude Code):
 
 ```sh
-go run ./cmd/mcp-server
+go build -o alice-mcp-server ./cmd/mcp-server
+./alice-mcp-server
 ```
 
 Run the edge agent with the fixture example:

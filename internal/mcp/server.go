@@ -9,12 +9,11 @@ import (
 	"io"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 )
 
-const protocolVersion = "2024-11-05"
+const protocolVersion = "2025-11-25"
 
 type Option func(*Server)
 
@@ -226,49 +225,28 @@ func errorResponse(id any, code int, message string) *response {
 }
 
 func readMessage(reader *bufio.Reader) (request, error) {
-	headers := map[string]string{}
-
 	for {
 		line, err := reader.ReadString('\n')
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed != "" {
+			var req request
+			if jsonErr := json.Unmarshal([]byte(trimmed), &req); jsonErr != nil {
+				if errors.Is(err, io.EOF) {
+					return request{}, io.EOF
+				}
+				return request{}, fmt.Errorf("unmarshal message: %w", jsonErr)
+			}
+			return req, nil
+		}
+
 		if err != nil {
-			if errors.Is(err, io.EOF) && len(headers) == 0 && line == "" {
+			if errors.Is(err, io.EOF) {
 				return request{}, io.EOF
 			}
 			return request{}, err
 		}
-
-		trimmed := strings.TrimRight(line, "\r\n")
-		if trimmed == "" {
-			break
-		}
-
-		key, value, ok := strings.Cut(trimmed, ":")
-		if !ok {
-			return request{}, fmt.Errorf("invalid header line %q", trimmed)
-		}
-		headers[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
 	}
-
-	rawLength, ok := headers["content-length"]
-	if !ok {
-		return request{}, fmt.Errorf("missing Content-Length header")
-	}
-
-	length, err := strconv.Atoi(rawLength)
-	if err != nil || length < 0 {
-		return request{}, fmt.Errorf("invalid Content-Length %q", rawLength)
-	}
-
-	body := make([]byte, length)
-	if _, err := io.ReadFull(reader, body); err != nil {
-		return request{}, err
-	}
-
-	var req request
-	if err := json.Unmarshal(body, &req); err != nil {
-		return request{}, err
-	}
-	return req, nil
 }
 
 func writeMessage(writer *bufio.Writer, payload any) error {
@@ -276,13 +254,10 @@ func writeMessage(writer *bufio.Writer, payload any) error {
 	if err != nil {
 		return err
 	}
-	if _, err := writer.WriteString(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))); err != nil {
-		return err
-	}
 	if _, err := writer.Write(body); err != nil {
 		return err
 	}
-	return nil
+	return writer.WriteByte('\n')
 }
 
 func (s *Server) setAccessToken(accessToken string) {
