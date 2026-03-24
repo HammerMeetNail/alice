@@ -37,6 +37,7 @@ type QueryService interface {
 type RequestService interface {
 	Send(ctx context.Context, request core.Request) (core.Request, error)
 	ListIncoming(ctx context.Context, agentID string, limit, offset int) ([]core.Request, error)
+	ListSent(ctx context.Context, agentID string, limit, offset int) ([]core.Request, error)
 	Respond(ctx context.Context, agent core.Agent, requestID string, action core.RequestResponseAction, message string) (core.Request, *core.Approval, error)
 }
 

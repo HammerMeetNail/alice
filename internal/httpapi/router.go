@@ -102,6 +102,7 @@ func (r *router) routes() {
 	r.mux.Handle("GET /v1/queries/", r.requireAuth(http.HandlerFunc(r.handleGetQueryResult)))
 	r.mux.Handle("POST /v1/requests", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleSendRequestToPeer))))
 	r.mux.Handle("GET /v1/requests/incoming", r.requireAuth(http.HandlerFunc(r.handleListIncomingRequests)))
+	r.mux.Handle("GET /v1/requests/sent", r.requireAuth(http.HandlerFunc(r.handleListSentRequests)))
 	r.mux.Handle("POST /v1/requests/", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleRespondToRequest))))
 	r.mux.Handle("GET /v1/approvals", r.requireAuth(http.HandlerFunc(r.handleListPendingApprovals)))
 	r.mux.Handle("POST /v1/approvals/", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleResolveApproval))))
@@ -643,6 +644,49 @@ func (r *router) handleListIncomingRequests(w http.ResponseWriter, req *http.Req
 			"state":           requestRecord.State,
 			"approval_state":  requestRecord.ApprovalState,
 			"created_at":      requestRecord.CreatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"requests":    items,
+		"next_cursor": nextCursor(len(requestsList), limit, offset),
+	})
+}
+
+func (r *router) handleListSentRequests(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	limit, offset := parsePagination(req)
+	requestsList, err := r.services.Requests.ListSent(req.Context(), agent.AgentID, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load sent requests")
+		return
+	}
+
+	items := make([]map[string]any, 0, len(requestsList))
+	for _, requestRecord := range requestsList {
+		recipient, exists, err := r.services.Agents.FindUserByID(req.Context(), requestRecord.ToUserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to resolve request recipient")
+			return
+		}
+		if !exists {
+			continue
+		}
+
+		items = append(items, map[string]any{
+			"request_id":    requestRecord.RequestID,
+			"to_user_email": recipient.Email,
+			"request_type":  requestRecord.RequestType,
+			"title":         requestRecord.Title,
+			"state":         requestRecord.State,
+			"approval_state": requestRecord.ApprovalState,
+			"response_message": requestRecord.ResponseMessage,
+			"created_at":    requestRecord.CreatedAt,
 		})
 	}
 

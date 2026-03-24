@@ -29,7 +29,8 @@ type Store struct {
 	queries          map[string]core.Query
 	responses        map[string]core.QueryResponse
 	requests         map[string]core.Request
-	requestsByAgent  map[string][]string
+	requestsByAgent     map[string][]string
+	requestsByFromAgent map[string][]string
 	approvals        map[string]core.Approval
 	approvalsByAgent map[string][]string
 	auditEvents      []core.AuditEvent
@@ -65,7 +66,8 @@ func New() *Store {
 		queries:          make(map[string]core.Query),
 		responses:        make(map[string]core.QueryResponse),
 		requests:         make(map[string]core.Request),
-		requestsByAgent:  make(map[string][]string),
+		requestsByAgent:     make(map[string][]string),
+		requestsByFromAgent: make(map[string][]string),
 		approvals:        make(map[string]core.Approval),
 		approvalsByAgent: make(map[string][]string),
 	}
@@ -382,11 +384,36 @@ func (s *Store) SaveRequest(_ context.Context, request core.Request) (core.Reque
 			s.requestsByAgent[existing.ToAgentID] = removeID(s.requestsByAgent[existing.ToAgentID], request.RequestID)
 			s.requestsByAgent[request.ToAgentID] = append(s.requestsByAgent[request.ToAgentID], request.RequestID)
 		}
+		if existing.FromAgentID != request.FromAgentID {
+			s.requestsByFromAgent[existing.FromAgentID] = removeID(s.requestsByFromAgent[existing.FromAgentID], request.RequestID)
+			s.requestsByFromAgent[request.FromAgentID] = append(s.requestsByFromAgent[request.FromAgentID], request.RequestID)
+		}
 	} else {
 		s.requestsByAgent[request.ToAgentID] = append(s.requestsByAgent[request.ToAgentID], request.RequestID)
+		s.requestsByFromAgent[request.FromAgentID] = append(s.requestsByFromAgent[request.FromAgentID], request.RequestID)
 	}
 	s.requests[request.RequestID] = request
 	return request, nil
+}
+
+func (s *Store) ListSentRequests(_ context.Context, fromAgentID string, limit, offset int) ([]core.Request, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ids := s.requestsByFromAgent[fromAgentID]
+	requests := make([]core.Request, 0, len(ids))
+	for _, requestID := range ids {
+		request, ok := s.requests[requestID]
+		if !ok {
+			continue
+		}
+		requests = append(requests, request)
+	}
+
+	sort.SliceStable(requests, func(i, j int) bool {
+		return requests[i].CreatedAt.Before(requests[j].CreatedAt)
+	})
+	return pageSlice(requests, limit, offset), nil
 }
 
 func (s *Store) FindRequest(_ context.Context, requestID string) (core.Request, bool, error) {

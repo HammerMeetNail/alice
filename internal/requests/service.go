@@ -48,6 +48,14 @@ func (s *Service) ListIncoming(ctx context.Context, agentID string, limit, offse
 	return requests, nil
 }
 
+func (s *Service) ListSent(ctx context.Context, agentID string, limit, offset int) ([]core.Request, error) {
+	requests, err := s.requests.ListSentRequests(ctx, agentID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list sent requests: %w", err)
+	}
+	return requests, nil
+}
+
 func (s *Service) Respond(ctx context.Context, agent core.Agent, requestID string, action core.RequestResponseAction, message string) (core.Request, *core.Approval, error) {
 	request, found, err := s.requests.FindRequest(ctx, requestID)
 	if err != nil {

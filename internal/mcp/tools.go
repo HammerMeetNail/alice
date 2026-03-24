@@ -125,6 +125,20 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			InputSchema: objectSchema(map[string]any{}),
 			Handler:     s.handleListIncomingRequests,
 		},
+		"list_sent_requests": {
+			Name:        "list_sent_requests",
+			Description: "List requests sent by the authenticated agent, including their current state.",
+			InputSchema: objectSchema(map[string]any{}),
+			Handler:     s.handleListSentRequests,
+		},
+		"get_audit_summary": {
+			Name:        "get_audit_summary",
+			Description: "Retrieve a summary of recent audit events for the authenticated agent.",
+			InputSchema: objectSchema(map[string]any{
+				"since": stringSchema("Optional RFC3339 timestamp to filter events after this time."),
+			}),
+			Handler: s.handleGetAuditSummary,
+		},
 		"respond_to_request": {
 			Name:        "respond_to_request",
 			Description: "Respond to an incoming request or require approval.",
@@ -265,6 +279,18 @@ func (s *Server) handleSendRequestToPeer(ctx context.Context, args map[string]an
 
 func (s *Server) handleListIncomingRequests(ctx context.Context, _ map[string]any) (any, error) {
 	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/requests/incoming", nil)
+}
+
+func (s *Server) handleListSentRequests(ctx context.Context, _ map[string]any) (any, error) {
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/requests/sent", nil)
+}
+
+func (s *Server) handleGetAuditSummary(ctx context.Context, args map[string]any) (any, error) {
+	path := "/v1/audit/summary"
+	if since := stringArg(args, "since"); since != "" {
+		path += "?since=" + since
+	}
+	return s.callAuthedJSON(ctx, http.MethodGet, path, nil)
 }
 
 func (s *Server) handleRespondToRequest(ctx context.Context, args map[string]any) (any, error) {

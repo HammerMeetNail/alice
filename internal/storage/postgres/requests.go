@@ -111,6 +111,36 @@ func (s *Store) ListIncomingRequests(ctx context.Context, toAgentID string, limi
 	return requests, nil
 }
 
+func (s *Store) ListSentRequests(ctx context.Context, fromAgentID string, limit, offset int) ([]core.Request, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT request_id, org_id, from_agent_id, from_user_id, to_agent_id, to_user_id, request_type, title, content,
+		        structured_payload, risk_level, state, approval_state, response_message, created_at, expires_at
+		FROM requests
+		WHERE from_agent_id = $1
+		ORDER BY created_at ASC
+		LIMIT $2 OFFSET $3`,
+		fromAgentID, limit, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query sent requests: %w", err)
+	}
+	defer rows.Close()
+
+	requests := make([]core.Request, 0)
+	for rows.Next() {
+		request, err := scanRequestRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sent requests: %w", err)
+	}
+	return requests, nil
+}
+
 func (s *Store) UpdateRequestState(ctx context.Context, requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error) {
 	request, err := scanRequestRow(s.db.QueryRowContext(
 		ctx,

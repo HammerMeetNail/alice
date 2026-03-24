@@ -66,6 +66,7 @@ type RequestRepository interface {
 	SaveRequest(ctx context.Context, request core.Request) (core.Request, error)
 	FindRequest(ctx context.Context, requestID string) (core.Request, bool, error)
 	ListIncomingRequests(ctx context.Context, toAgentID string, limit, offset int) ([]core.Request, error)
+	ListSentRequests(ctx context.Context, fromAgentID string, limit, offset int) ([]core.Request, error)
 	UpdateRequestState(ctx context.Context, requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error)
 }
 
