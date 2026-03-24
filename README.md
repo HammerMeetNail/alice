@@ -2,393 +2,756 @@
 
 Privacy-first coordination platform for personal AI agents.
 
-`alice` is a coordination layer for teams where each person has a personal AI agent that can:
-- observe approved work signals from connected systems
-- derive private working context locally
-- publish only policy-approved artifacts
-- communicate with other agents through a central server
-- answer status questions and relay requests within permission boundaries
+`alice` lets each person on a team run a personal agent that observes their approved work signals, derives a private working context, and shares only what they permit with other agents. Agents communicate through a central coordination server. All cross-agent access is permission-checked, auditable, and deny-by-default.
 
-The system starts as **Reporter + Gatekeeper** and later expands into **Operator**.
+## Contents
 
-## Why this exists
+- [How it works](#how-it-works)
+- [Quick start: single user with Claude Code](#quick-start-single-user-with-claude-code)
+- [Multi-user setup with PostgreSQL](#multi-user-setup-with-postgresql)
+- [Connecting with OpenCode](#connecting-with-opencode)
+- [Edge agent: connecting real data sources](#edge-agent-connecting-real-data-sources)
+- [Complete two-person workflow](#complete-two-person-workflow)
+- [MCP tool reference](#mcp-tool-reference)
+- [HTTP API reference](#http-api-reference)
+- [Server environment variables](#server-environment-variables)
+- [Edge agent config reference](#edge-agent-config-reference)
+- [Local development commands](#local-development-commands)
 
-Teams spend too much time:
-- writing manual status updates
-- asking each other for context
-- interrupting people for progress checks
-- digging across GitHub, Jira, calendars, docs, and chat
+---
 
-`alice` is designed to reduce that coordination overhead.
+## How it works
 
-Instead of asking a person directly, you ask their agent.
+There are three binaries:
 
-Examples:
-- “What has Sam been working on today?”
-- “Who is blocked on the payments project?”
-- “Ask Priya for a review on the retry PR.”
-- “What changed since yesterday?”
+| Binary | Purpose |
+|---|---|
+| `cmd/server` | Shared HTTP coordination server. Stores agents, artifacts, grants, queries, requests, and audit events. Backed by PostgreSQL or in-memory. |
+| `cmd/mcp-server` | Stdio MCP server for Claude Code / OpenCode. Wraps the full HTTP API as MCP tools. Can run standalone (in-memory) or share a PostgreSQL database with the coordination server so multiple users see the same state. |
+| `cmd/edge-agent` | Per-user runtime. Connects to GitHub, Jira, and Google Calendar, derives artifacts locally, and publishes them to the coordination server via HTTP. |
 
-The key design constraint is that agents should share **summaries, commitments, blockers, requests, and status deltas** — **never raw logs**.
+For single-user testing, `cmd/mcp-server` alone is enough — it runs entirely in memory. For two or more users communicating, both MCP server instances point at the same PostgreSQL database, or each user runs an edge agent against the shared coordination server.
+
+---
+
+## Quick start: single user with Claude Code
+
+This requires only Go 1.21+ and no database.
+
+### 1. Clone and build
+
+```sh
+git clone https://github.com/HammerMeetNail/alice
+cd alice
+go build ./...
+```
+
+### 2. Add alice to Claude Code
+
+Create or edit `.claude/settings.json` in your project (or `~/.claude/settings.json` for user-wide access):
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "go",
+      "args": ["run", "./cmd/mcp-server"],
+      "cwd": "/path/to/alice",
+      "env": {
+        "ALICE_AUTH_TOKEN_TTL": "24h"
+      }
+    }
+  }
+}
+```
+
+Replace `/path/to/alice` with the absolute path to this repository. `ALICE_AUTH_TOKEN_TTL=24h` prevents the session from expiring during a long working session (default is 15 minutes).
+
+### 3. Start a Claude Code session
+
+Open Claude Code in your project. The `alice` MCP tools will be available. Ask Claude to register you as an agent:
+
+> Use the alice `register_agent` tool to register me. Use org slug `my-org`, email `me@example.com`, agent name `my-agent`, and client type `mcp`.
+
+Claude will call `register_agent` with your key material, complete the Ed25519 challenge flow automatically, and store the session token for subsequent tool calls.
+
+### 4. Publish an artifact
+
+Ask Claude to publish a status summary on your behalf:
+
+> Use alice `publish_artifact` to publish a summary artifact with title "Working on auth refactor", content "Extracting JWT validation into a shared middleware layer. Two PRs open, one awaiting review.", sensitivity `low`, visibility mode `explicit_grants_only`, and confidence 0.9.
+
+### 5. Resume a session across restarts
+
+The MCP server loses its in-memory state when it restarts. To resume without re-registering, set `ALICE_MCP_ACCESS_TOKEN` to the `access_token` value returned by your first `register_agent` call:
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "go",
+      "args": ["run", "./cmd/mcp-server"],
+      "cwd": "/path/to/alice",
+      "env": {
+        "ALICE_MCP_ACCESS_TOKEN": "atok_...",
+        "ALICE_AUTH_TOKEN_TTL": "24h"
+      }
+    }
+  }
+}
+```
+
+With in-memory storage the token is valid only for the lifetime of the process. For durable sessions across restarts, use PostgreSQL (see below).
+
+---
+
+## Multi-user setup with PostgreSQL
+
+To have two or more agents communicate, they must share the same storage. The simplest way is to run PostgreSQL locally and point all MCP server instances at it.
+
+### 1. Start PostgreSQL
+
+If you have Podman installed:
+
+```sh
+make postgres-up
+```
+
+This starts a PostgreSQL container at `127.0.0.1:5432` with database `alice`, user `alice`, password `alice`.
+
+Alternatively, start any PostgreSQL instance and export the connection URL:
+
+```sh
+export ALICE_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable"
+```
+
+### 2. Configure each user's MCP server
+
+Alice's `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "go",
+      "args": ["run", "./cmd/mcp-server"],
+      "cwd": "/path/to/alice",
+      "env": {
+        "ALICE_DATABASE_URL": "postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable",
+        "ALICE_AUTH_TOKEN_TTL": "24h"
+      }
+    }
+  }
+}
+```
+
+Bob's `.claude/settings.json` (identical — same database URL):
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "go",
+      "args": ["run", "./cmd/mcp-server"],
+      "cwd": "/path/to/alice",
+      "env": {
+        "ALICE_DATABASE_URL": "postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable",
+        "ALICE_AUTH_TOKEN_TTL": "24h"
+      }
+    }
+  }
+}
+```
+
+Both MCP servers share the same PostgreSQL database, so artifacts, grants, queries, and requests are visible across sessions and survive process restarts.
+
+### 3. Start the full stack (optional)
+
+If you also want the HTTP coordination server running alongside the database (useful for edge agent connections):
+
+```sh
+make local
+```
+
+This starts both the coordination server (`http://127.0.0.1:8080`) and PostgreSQL using Podman Compose.
+
+---
+
+## Connecting with OpenCode
+
+Add alice to OpenCode's MCP configuration. OpenCode stores its config at `~/.config/opencode/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "go",
+      "args": ["run", "./cmd/mcp-server"],
+      "env": {
+        "ALICE_DATABASE_URL": "postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable",
+        "ALICE_AUTH_TOKEN_TTL": "24h"
+      }
+    }
+  }
+}
+```
+
+After restarting OpenCode, the alice tools appear in the tool list. The registration and usage flow is identical to Claude Code — ask the assistant to call `register_agent` with your details to begin.
+
+---
+
+## Edge agent: connecting real data sources
+
+The edge agent runs locally per user, connects to GitHub, Jira, and Google Calendar, derives artifacts from your activity, and publishes them to the shared coordination server. This is how alice learns about your actual work without sending raw data to the server.
+
+### Prerequisites
+
+- The coordination server must be running and reachable (e.g. `make local` or a standalone `go run ./cmd/server`)
+- Go 1.21+
+
+### 1. Create a config file
+
+Copy the fixture example and adapt it:
+
+```sh
+cp examples/edge-agent-config.json my-edge-config.json
+```
+
+Edit `my-edge-config.json`:
+
+```json
+{
+  "agent": {
+    "org_slug": "my-org",
+    "owner_email": "alice@example.com",
+    "agent_name": "alice-agent",
+    "client_type": "edge_agent"
+  },
+  "server": {
+    "base_url": "http://127.0.0.1:8080"
+  },
+  "connectors": {
+    "github": {
+      "fixture_file": "examples/github-fixtures.json"
+    },
+    "jira": {
+      "fixture_file": "examples/jira-fixtures.json"
+    },
+    "gcal": {
+      "fixture_file": "examples/gcal-fixtures.json"
+    }
+  },
+  "runtime": {
+    "state_file": ".alice/alice-state.json",
+    "poll_incoming_requests": true
+  }
+}
+```
+
+### 2. Run the edge agent
+
+```sh
+go run ./cmd/edge-agent -config my-edge-config.json
+```
+
+On first run the edge agent:
+1. Registers with the coordination server using an Ed25519 keypair (generated and saved to `state_file`)
+2. Reads the connector fixture files
+3. Derives summary, blocker, and commitment artifacts from the fixture data
+4. Publishes those artifacts to the coordination server
+5. Polls for incoming requests if `poll_incoming_requests` is true
+
+Subsequent runs reuse the saved keypair and token, skipping re-registration.
+
+### 3. Connect a live GitHub source
+
+Instead of fixtures, point the edge agent at your actual GitHub repositories:
+
+```sh
+export ALICE_GITHUB_TOKEN="ghp_your_personal_access_token"
+go run ./cmd/edge-agent -config examples/edge-agent-github-live-config.json
+```
+
+Edit `examples/edge-agent-github-live-config.json` to set your org slug, email, actor login, and the repositories you want to observe:
+
+```json
+{
+  "agent": {
+    "org_slug": "my-org",
+    "owner_email": "alice@example.com",
+    "agent_name": "alice-agent",
+    "client_type": "edge_agent"
+  },
+  "server": { "base_url": "http://127.0.0.1:8080" },
+  "connectors": {
+    "github": {
+      "enabled": true,
+      "token_env_var": "ALICE_GITHUB_TOKEN",
+      "actor_login": "alice",
+      "repositories": [
+        { "name": "my-org/payments-api", "project_refs": ["payments-api"] }
+      ]
+    }
+  },
+  "runtime": {
+    "state_file": ".alice/alice-live-state.json",
+    "poll_incoming_requests": true
+  }
+}
+```
+
+### 4. Connect Jira and Google Calendar
+
+Set the corresponding env vars and use the live config examples:
+
+```sh
+# Jira (API token auth)
+export ALICE_JIRA_TOKEN="your_jira_api_token"
+go run ./cmd/edge-agent -config examples/edge-agent-jira-live-config.json
+
+# Google Calendar (OAuth — run bootstrap first)
+go run ./cmd/edge-agent -config examples/edge-agent-gcal-oauth-config.json -bootstrap-connector gcal
+# Then poll:
+go run ./cmd/edge-agent -config examples/edge-agent-gcal-live-config.json
+```
+
+### 5. OAuth bootstrap
+
+For connectors that use OAuth (GitHub, Jira, Google Calendar), run the bootstrap once to authorize and persist credentials:
+
+```sh
+go run ./cmd/edge-agent -config examples/edge-agent-github-oauth-config.json -bootstrap-connector github
+```
+
+The bootstrap mode:
+1. Prints a browser authorization URL
+2. Starts a local loopback callback server
+3. Exchanges the authorization code with PKCE
+4. Saves the resulting tokens to the credentials file (derived from `state_file` path)
+
+On subsequent runs the edge agent loads the saved credentials automatically and refreshes them when expired.
+
+To encrypt the credentials file at rest, set `ALICE_EDGE_CREDENTIAL_KEY`:
+
+```sh
+export ALICE_EDGE_CREDENTIAL_KEY="a-long-random-secret-key"
+go run ./cmd/edge-agent -config my-edge-config.json
+```
+
+---
+
+## Complete two-person workflow
+
+This example shows Alice and Bob communicating through alice. Both are on the same machine using the shared PostgreSQL database.
+
+### Setup
+
+Start the database:
+
+```sh
+make postgres-up
+```
+
+Both Alice and Bob have their MCP server configured with:
+
+```json
+"env": {
+  "ALICE_DATABASE_URL": "postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable",
+  "ALICE_AUTH_TOKEN_TTL": "24h"
+}
+```
+
+### Step 1 — Alice registers and publishes
+
+In Alice's Claude Code session:
+
+> Register me as an alice agent. Org slug: `example-corp`, email: `alice@example.com`, agent name: `alice-agent`, client type: `mcp`.
+
+> Publish a summary artifact: title "Finishing payments retry PR", content "PR #128 is in review. Unblocked and targeting merge by EOD. Project: payments-api.", sensitivity `low`, visibility mode `explicit_grants_only`, confidence 0.9. Include a project_refs structured payload with value `["payments-api"]`.
+
+### Step 2 — Bob registers and grants Alice access
+
+In Bob's Claude Code session:
+
+> Register me. Org: `example-corp`, email: `bob@example.com`, agent name: `bob-agent`, client type: `mcp`.
+
+> Publish a summary artifact: title "Reviewing auth middleware", content "Reviewing Alice's JWT extraction PR. Should have feedback by tomorrow.", sensitivity `low`, visibility mode `explicit_grants_only`, confidence 0.85.
+
+> Grant alice@example.com permission to query my status. Use scope type `project`, scope ref `payments-api`, allowed artifact types `["summary", "blocker"]`, max sensitivity `medium`, allowed purposes `["status_check"]`.
+
+### Step 3 — Alice queries Bob's status
+
+In Alice's Claude Code session:
+
+> Query bob@example.com's peer status. Purpose: `status_check`, question: "What is Bob working on today?", requested types: `["summary"]`, project scope: `["payments-api"]`, time window: last 24 hours.
+
+> Get the result of that query.
+
+The response includes Bob's summary artifact. If the grant's `requires_approval_above_risk` threshold is exceeded, the response includes an `approval_state: pending` field and Bob receives an approval request.
+
+### Step 4 — Alice sends Bob a request
+
+In Alice's Claude Code session:
+
+> Send bob@example.com a request. Type: `ask_for_review`, title: "Review needed on PR #128", content: "Can you finish your review of the payments retry PR today? It's blocking the sprint."
+
+### Step 5 — Bob responds
+
+In Bob's Claude Code session:
+
+> List my incoming requests.
+
+> Respond to that request with `accepted` and message "Will review this afternoon."
+
+### Step 6 — Check the audit trail
+
+Either user can inspect the audit log:
+
+> Show my alice audit summary.
+
+---
+
+## MCP tool reference
+
+All tools are available through the MCP stdio server. Call `register_agent` first to establish a session.
+
+### `register_agent`
+
+Register an agent and start an authenticated session.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `org_slug` | yes | Organization slug (e.g. `example-corp`) |
+| `owner_email` | yes | Agent owner email |
+| `agent_name` | yes | Human-readable agent name |
+| `client_type` | yes | Client type (e.g. `mcp`, `edge_agent`) |
+| `public_key` | yes* | Base64-encoded Ed25519 public key |
+| `private_key` | no | Base64-encoded Ed25519 private key for one-shot local bootstrap |
+| `challenge_id` | no | Challenge ID for two-step completion |
+| `challenge_signature` | no | Base64-encoded signature for two-step completion |
+
+*When `private_key` is provided alongside `public_key`, registration completes in one call. When only `public_key` is provided, the tool returns a challenge string that must be signed and submitted in a second call with `challenge_id` and `challenge_signature`.
+
+### `publish_artifact`
+
+Publish a shareable artifact for the authenticated agent.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `artifact` | yes | Artifact object (see artifact schema below) |
+
+**Artifact fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | `summary`, `blocker`, `commitment`, or `status_delta` |
+| `title` | string | Short human-readable title |
+| `content` | string | Artifact content text |
+| `sensitivity` | string | `low`, `medium`, or `high` |
+| `visibility_mode` | string | `explicit_grants_only` (only value currently enforced) |
+| `confidence` | number | Confidence score 0.0–1.0 |
+| `source_refs` | array | Source references (see below) |
+| `structured_payload` | object | Optional. Include `project_refs: [...]` to scope to projects |
+
+**Source reference fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `source_system` | string | `github`, `jira`, `gcal`, `manual`, etc. |
+| `source_type` | string | `pull_request`, `issue`, `event`, `manual`, etc. |
+| `source_id` | string | Unique identifier within the source system |
+| `observed_at` | string | RFC3339 timestamp of when the signal was observed |
+| `trust_class` | string | `structured_system`, `unstructured_user`, etc. |
+| `sensitivity` | string | Sensitivity of this specific source signal |
+
+### `submit_correction`
+
+Publish a corrected version of a previously published artifact. Only the original owner can correct an artifact. Creates a new artifact that supersedes the original.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `artifact_id` | yes | ID of the artifact being corrected |
+| `artifact` | yes | Corrected artifact payload |
+
+### `grant_permission`
+
+Grant another user permission to query your artifacts.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `grantee_user_email` | yes | Email of the user being granted access |
+| `scope_type` | yes | `project` or `global` |
+| `scope_ref` | no | Project key when `scope_type` is `project` |
+| `allowed_artifact_types` | yes | Array of types: `summary`, `blocker`, `commitment`, `status_delta` |
+| `max_sensitivity` | yes | Maximum sensitivity the grantee can see: `low`, `medium`, or `high` |
+| `allowed_purposes` | yes | Array of purposes: `status_check`, `dependency_check`, `planning` |
+
+### `revoke_permission`
+
+Revoke a grant you previously created. Only the grantor can revoke.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `policy_grant_id` | yes | Grant ID returned by `grant_permission` |
+
+### `list_allowed_peers`
+
+List peers that have granted the authenticated agent access to their artifacts. Returns each peer's email, allowed purposes, and allowed artifact types.
+
+### `query_peer_status`
+
+Submit a permission-checked status query to another agent. The query is evaluated immediately and the response is returned synchronously.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `to_user_email` | yes | Target user email |
+| `purpose` | yes | `status_check`, `dependency_check`, or `planning` |
+| `question` | yes | Natural-language question |
+| `requested_types` | yes | Array of artifact types to retrieve |
+| `project_scope` | no | Array of project refs to narrow scope |
+| `time_window` | yes | Object with `start` and `end` (RFC3339 strings) |
+
+Returns a `query_id`. If a grant requires approval above a risk threshold, the response includes `approval_state: pending`.
+
+### `get_query_result`
+
+Retrieve the current result for a previously submitted query.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `query_id` | yes | Query ID from `query_peer_status` |
+
+Returns the query state and `response.artifacts` array when the query is complete.
+
+### `send_request_to_peer`
+
+Send a Gatekeeper request to another agent.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `to_user_email` | yes | Recipient user email |
+| `request_type` | yes | e.g. `ask_for_review`, `ask_for_update`, `ask_for_decision` |
+| `title` | yes | Request title |
+| `content` | yes | Request body |
+| `structured_payload` | no | Optional object (e.g. `{"project_refs": ["payments-api"]}`) |
+
+### `list_incoming_requests`
+
+List pending requests directed to the authenticated agent. Returns requests that have not expired and have not been responded to.
+
+### `respond_to_request`
+
+Respond to an incoming request.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `request_id` | yes | Request ID from `list_incoming_requests` |
+| `response` | yes | `accepted`, `deferred`, `denied`, `completed`, or `require_approval` |
+| `message` | no | Optional response message |
+
+When `response` is `require_approval`, an approval record is created and returned with an `approval_id`.
+
+### `list_pending_approvals`
+
+List approvals waiting for the authenticated agent to resolve.
+
+### `resolve_approval`
+
+Resolve a pending approval.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `approval_id` | yes | Approval ID |
+| `decision` | yes | `approved` or `denied` |
+
+---
+
+## HTTP API reference
+
+The coordination server (`cmd/server`) exposes these endpoints at `http://127.0.0.1:8080` by default. All authenticated routes require `Authorization: Bearer <token>`.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/healthz` | none | Health check |
+| `POST` | `/v1/agents/register/challenge` | none | Begin registration — returns a challenge to sign |
+| `POST` | `/v1/agents/register` | none | Complete registration — returns a bearer token |
+| `POST` | `/v1/artifacts` | required | Publish an artifact |
+| `POST` | `/v1/artifacts/:id/correct` | required | Publish a correction superseding a prior artifact |
+| `POST` | `/v1/policy-grants` | required | Create a permission grant |
+| `DELETE` | `/v1/policy-grants/:id` | required | Revoke a permission grant |
+| `GET` | `/v1/peers` | required | List allowed peers |
+| `POST` | `/v1/queries` | required | Submit a peer status query |
+| `GET` | `/v1/queries/:id` | required | Retrieve a query result |
+| `POST` | `/v1/requests` | required | Send a request to a peer |
+| `GET` | `/v1/requests/incoming` | required | List incoming requests |
+| `POST` | `/v1/requests/:id/respond` | required | Respond to a request |
+| `GET` | `/v1/approvals` | required | List pending approvals |
+| `POST` | `/v1/approvals/:id/resolve` | required | Resolve an approval |
+| `GET` | `/v1/audit/summary` | required | List audit events |
+
+List endpoints accept `?limit=N&cursor=<opaque>` for pagination. Default limit is 50, maximum is 200.
+
+---
+
+## Server environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALICE_DATABASE_URL` | _(none — uses in-memory)_ | PostgreSQL connection string. When unset the server uses an in-memory store that resets on restart. |
+| `ALICE_LISTEN_ADDR` | `:8080` | TCP address the HTTP server binds to |
+| `ALICE_DEFAULT_ORG_NAME` | `Alice Development Org` | Display name used when auto-creating an org on first registration |
+| `ALICE_AUTH_CHALLENGE_TTL` | `5m` | How long a registration challenge is valid before it expires |
+| `ALICE_AUTH_TOKEN_TTL` | `15m` | How long a bearer token is valid after issuance |
+| `ALICE_MCP_ACCESS_TOKEN` | _(none)_ | Pre-load an existing bearer token into the MCP server on startup, skipping the registration step |
+
+---
+
+## Edge agent config reference
+
+The edge agent reads a JSON config file passed via `-config`. All paths in the config are resolved relative to the config file's directory unless they are absolute.
+
+### `agent`
+
+| Field | Description |
+|---|---|
+| `org_slug` | Organization slug. Must match the slug used when registering via MCP or the HTTP API. |
+| `owner_email` | Agent owner email. |
+| `agent_name` | Human-readable agent name. |
+| `client_type` | Client type identifier (e.g. `edge_agent`). |
+
+### `server`
+
+| Field | Description |
+|---|---|
+| `base_url` | Base URL of the coordination server (e.g. `http://127.0.0.1:8080`). |
+
+### `runtime`
+
+| Field | Description |
+|---|---|
+| `state_file` | Path to the persisted edge state file (keypair, token, connector cursors). Created automatically on first run. |
+| `credentials_file` | Optional. Path to the connector credentials file. Defaults to `<state_file_stem>.credentials.json`. |
+| `credentials_key_env_var` | Env var holding the AES-GCM encryption key for the credentials file. Defaults to `ALICE_EDGE_CREDENTIAL_KEY`. |
+| `credentials_key_file` | Optional path to a file containing the encryption key. |
+| `artifact_fixture_file` | Optional path to a JSON file with manually authored artifacts to publish on each run. |
+| `query_watch_ids` | Array of query IDs to check for results on each run. |
+| `poll_incoming_requests` | If `true`, the agent polls for and logs incoming requests on each run. |
+
+### `connectors.github`
+
+| Field | Description |
+|---|---|
+| `enabled` | Set `true` to enable live polling. |
+| `fixture_file` | Path to a GitHub fixture file for offline testing. |
+| `api_base_url` | GitHub API base URL. Defaults to `https://api.github.com`. |
+| `token_env_var` | Env var holding a GitHub personal access token. Defaults to `ALICE_GITHUB_TOKEN`. |
+| `token_file` | Optional path to a file containing the token. |
+| `actor_login` | GitHub username of the agent owner. Only PRs authored or reviewed by this user are ingested. |
+| `repositories` | Array of `{name, project_refs}` objects specifying which repositories to observe. |
+| `oauth` | OAuth config block for GitHub OAuth App bootstrap (client_id, scopes, callback_url, etc.). |
+| `webhook.enabled` | Set `true` to enable the local GitHub webhook intake server. |
+| `webhook.listen_addr` | Address for the webhook listener. Defaults to `127.0.0.1:8788`. |
+| `webhook.secret_env_var` | Env var holding the HMAC webhook secret. Defaults to `ALICE_GITHUB_WEBHOOK_SECRET`. |
+
+### `connectors.jira`
+
+| Field | Description |
+|---|---|
+| `enabled` | Set `true` to enable live polling. |
+| `fixture_file` | Path to a Jira fixture file. |
+| `api_base_url` | Jira instance base URL (required for live polling). |
+| `token_env_var` | Env var holding a Jira API token. Defaults to `ALICE_JIRA_TOKEN`. |
+| `actor_email` | Jira account email of the agent owner. Only issues assigned to this user are ingested. |
+| `projects` | Array of `{key, project_refs}` objects. Project keys must match `^[A-Z][A-Z0-9_]+$`. |
+| `webhook.enabled` | Set `true` to enable the local Jira webhook intake server. |
+| `webhook.listen_addr` | Address for the webhook listener. Defaults to `127.0.0.1:8789`. |
+| `webhook.secret_env_var` | Env var holding the shared secret. Defaults to `ALICE_JIRA_WEBHOOK_SECRET`. |
+
+### `connectors.gcal`
+
+| Field | Description |
+|---|---|
+| `enabled` | Set `true` to enable live polling. |
+| `fixture_file` | Path to a Google Calendar fixture file. |
+| `api_base_url` | Calendar API base URL. Defaults to `https://www.googleapis.com/calendar/v3`. |
+| `token_env_var` | Env var holding a Google OAuth access token. Defaults to `ALICE_GCAL_TOKEN`. |
+| `calendars` | Array of `{id, project_refs, category}` objects identifying which calendars to observe. |
+| `oauth` | OAuth config block for Google OAuth bootstrap. |
+| `webhook.enabled` | Set `true` to enable the local Google Calendar webhook intake server. |
+| `webhook.listen_addr` | Address for the webhook listener. Defaults to `127.0.0.1:8790`. |
+| `webhook.secret_env_var` | Env var holding the channel token secret. Defaults to `ALICE_GCAL_WEBHOOK_SECRET`. |
+| `webhook.callback_url` | Public URL that Google will deliver change notifications to. |
+| `webhook.channel_id_prefix` | Prefix for generated channel IDs. Defaults to `alice-edge-gcal`. |
+| `webhook.requested_ttl_seconds` | Requested channel lifetime in seconds. Google may return a shorter TTL. |
+
+To register provider-side push watches for Google Calendar (so Google pushes changes rather than you polling):
+
+```sh
+go run ./cmd/edge-agent -config my-gcal-config.json -register-watches gcal
+```
+
+---
+
+## Local development commands
+
+Run from the repository root. Requires Podman and `podman-compose` (or `podman compose`).
+
+| Command | Description |
+|---|---|
+| `make local` | Build and start the full stack (server + PostgreSQL) with Podman Compose |
+| `make down` | Stop the full stack |
+| `make postgres-up` | Start only PostgreSQL, reusing an existing container when present |
+| `make postgres-down` | Stop only the PostgreSQL container |
+| `make status` | Show container status |
+| `make logs` | Tail coordination server logs |
+| `make test` | Run the full Go test suite (in-memory storage) |
+| `make test-postgres` | Start PostgreSQL and run the test suite with `ALICE_TEST_DATABASE_URL` set |
+
+### Running without containers
+
+Start the server with in-memory storage:
+
+```sh
+go run ./cmd/server
+```
+
+Start the server with PostgreSQL (requires a running instance):
+
+```sh
+ALICE_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable" go run ./cmd/server
+```
+
+Start the MCP server standalone:
+
+```sh
+go run ./cmd/mcp-server
+```
+
+Run the edge agent with the fixture example:
+
+```sh
+go run ./cmd/edge-agent -config examples/edge-agent-config.json
+```
+
+Run tests:
+
+```sh
+go test ./...
+```
+
+Run tests against PostgreSQL:
+
+```sh
+ALICE_TEST_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable" go test ./...
+```
+
+---
 
 ## Core principles
 
-1. **Raw source data stays local whenever possible**
-2. **Only derived, shareable artifacts move through the server**
-3. **Untrusted content is treated as data, not policy**
-4. **The model may propose; deterministic code decides**
-5. **All cross-agent communication is permission-checked**
-6. **The system is auditable end to end**
-7. **Reporter and Gatekeeper ship before Operator**
-8. **The server starts dumb: routing, policy, audit, transport**
-9. **A missing permission means deny by default**
-10. **No raw logs are shared across agents**
-
-## Product shape
-
-Each user has a personal agent runtime connected to approved sources such as:
-- GitHub
-- Jira
-- Google Calendar
-
-That agent derives local private context, then publishes only approved artifacts such as:
-- summaries
-- commitments
-- blockers
-- status deltas
-- requests
-
-Agents communicate through a central coordination server written in Go.
-
-## Phases
-
-### Phase 1: Reporter
-Agents can:
-- observe source events
-- derive shareable artifacts
-- answer questions about what a user has been doing
-- expose only permitted information to allowed peers and managers
-
-### Phase 2: Gatekeeper
-Agents can:
-- receive requests from other agents
-- triage interruptions
-- accept, defer, deny, or escalate requests
-- require user approval when needed
-
-### Phase 3: Operator
-Agents can:
-- safely perform low-risk approved actions
-- draft updates
-- create tickets or comments
-- propose calendar actions
-
-High-risk actions should remain gated by deterministic policy and, where required, user approval.
-
-## Architecture overview
-
-`alice` has two primary runtime surfaces:
-
-### 1. Edge Agent Runtime
-A per-user runtime that:
-- connects to source systems
-- normalizes source events
-- tags provenance and sensitivity
-- derives local private state
-- generates shareable artifacts
-- answers incoming queries
-- enforces local policy
-- requests human approval where required
-
-### 2. Coordination Server
-A central Go service that:
-- registers agents and identities
-- stores org graph and permission grants
-- routes queries and requests
-- stores shared artifacts
-- records audit events
-- exposes MCP tools for agent clients
-- enforces org-level and recipient-level policy
-
-## Security posture
-
-`alice` treats prompt injection as an architectural problem, not a prompt-writing problem.
-
-Key security rules:
-- external text is always treated as untrusted content
-- trusted policy is kept separate from source content
-- the model may generate typed proposals, not final authority
-- deterministic code controls sensitive sinks
-- all cross-agent publication is permission-checked
-- all meaningful actions are auditable
-- raw logs are not shared
-
-Where practical, edge runtimes can be sandboxed with technologies such as OpenShell to reduce blast radius through:
-- restricted network egress
-- limited filesystem access
-- controlled process execution
-- policy-governed runtime boundaries
-
-## Interoperability
-
-`alice` is designed to expose an MCP-native tool surface so that different agent clients can interact with the same coordination layer.
-
-Target clients include:
-- Claude Code
-- Codex
-- Gemini CLI
-- OpenCode
-
-## Initial connectors
-
-The first supported sources are:
-- GitHub
-- Jira
-- Google Calendar
-
-The connector model is intentionally modular so additional sources can be added over time.
-
-Future candidates may include:
-- Slack
-- Linear
-- Google Docs
-- Notion
-- email metadata
-- internal task systems
-
-## What the server stores
-
-The coordination server is designed to store:
-- agent identities
-- org relationships
-- permission grants
-- shared artifacts
-- requests and responses
-- approvals
-- audit events
-
-The server is **not** intended to be the long-term home of raw GitHub, Jira, or calendar exhaust.
-
-## What gets shared
-
-Allowed shared units:
-- summary
-- commitment
-- blocker
-- status delta
-- request
-
-Not allowed:
-- raw logs
-- raw PR comment dumps
-- raw Jira issue histories
-- unrestricted calendar details
-- unrestricted source text copied directly across agents
-
-## Repository status
-
-This repository is in early implementation. The current codebase includes an initial Go coordination server scaffold alongside the design documents and a containerized local development workflow.
-
-The initial implementation target is:
-- a modular monolith
-- Go coordination server
-- edge agent runtime
-- MCP tool surface
-- PostgreSQL storage
-- GitHub/Jira/Google Calendar connectors
-- Reporter and Gatekeeper flows
-
-## Current implementation
-
-Implemented now:
-
-- Go coordination server entrypoint and HTTP health endpoint
-- MCP stdio server entrypoint in `cmd/mcp-server` for local CLI-native tool access
-- edge runtime skeleton entrypoint in `cmd/edge-agent` for local runtime bootstrap, polling, and webhook intake
-- domain models for agents, artifacts, grants, queries, requests, approvals, and audit events
-- registration challenge and short-lived bearer-token auth for agent registration and authenticated requests
-- JSON schemas for artifact, query, and policy-grant payloads
-- repository interfaces plus PostgreSQL-backed storage with embedded startup migrations, including auth, request, and approval tables
-- in-memory storage fallback when `ALICE_DATABASE_URL` is not set
-- HTTP routes for registration challenge, registration completion, artifact publish, permission grants, peer listing, query submit/result, request submit/inbox/respond, approval list/resolve, and audit summary
-- MCP tools for Reporter and the first Gatekeeper slice, including request send/respond and approval list/resolve
-- local edge runtime support for:
-  - JSON config loading
-  - persisted Ed25519 keypair and bearer-token state
-  - persisted connector cursor state for live pollers
-  - a dedicated local connector credential store with 0600 permission enforcement
-  - optional AES-GCM encryption for the connector credential store from an env var or local key file
-  - local OAuth-style connector bootstrap with PKCE, loopback callbacks, and persisted connector credentials
-  - automatic refresh-token exchange for expired stored OAuth credentials when refresh tokens are available
-  - connector secret loading from env vars, local token files, or the dedicated credential store
-  - a normalized connector event pipeline shared by fixture and live ingestion
-  - fixture-driven artifact publication
-  - fixture-driven GitHub, Jira, and calendar ingestion with deterministic derived artifacts
-  - live GitHub polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus repository-to-project mapping
-  - signed local GitHub webhook intake for `pull_request` events through `cmd/edge-agent -serve-webhooks`
-  - live Jira polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus project scoping and assignee filtering
-  - shared-secret local Jira webhook intake for issue events through `cmd/edge-agent -serve-webhooks`
-  - live Google Calendar polling with env-backed token auth, token-file auth, or bootstrapped state tokens plus calendar-scoped event ingestion
-  - shared-secret local Google Calendar webhook intake that verifies `X-Goog-Channel-Token`, parses the calendar resource URI, and fetches incremental event changes through the saved cursor
-  - persisted replay and duplicate-delivery suppression across GitHub, Jira, and Google Calendar webhook inputs
-  - live connector pagination across GitHub, Jira, and Google Calendar API pages
-  - transient connector retry/backoff for 429, 502, 503, and 504 responses
-  - project-level aggregate status deltas, blockers, and commitments derived from cross-source signals
-  - transition-aware project derivation that emits blocker-resolved and commitment-completed status deltas while superseding stale blocker and commitment artifacts
-  - stable derivation keys plus persisted latest-artifact tracking for replacement-aware edge publication of connector-derived artifacts
-  - watched query-result retrieval
-  - incoming-request polling
-- end-to-end MCP test coverage for registration, artifact publish, grant creation, peer listing, query submission/result retrieval, request send/respond, and approval resolution
-- targeted edge runtime test coverage for local registration reuse, fixture publication, fixture-derived artifacts, replacement-aware edge publication, live GitHub/Jira/Calendar polling, signed GitHub webhook intake, shared-secret Jira webhook intake, shared-secret Google Calendar webhook intake, webhook duplicate/replay handling, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store round trips, credential-store permission checks, refresh-token renewal, actionable re-auth errors, query-result retrieval, and request polling against the current server
-- targeted HTTP test coverage for the permissioned query flow and request/approval flow in memory and, when configured, against PostgreSQL
-- Podman-based container workflow for local execution with both the server and PostgreSQL
-
-Current implementation assumptions:
-
-- agent registration is a signed Ed25519 challenge flow that returns a short-lived bearer token
-- access control is explicit-grant-only
-- queries are answered from centrally stored derived artifacts
-- the MCP surface is currently a local stdio wrapper around the existing HTTP routes and auth flow
-- the first Gatekeeper request and approval flow exists, but approval policy is still explicit/manual rather than risk-engine driven
-- query time windows use source observation timestamps when artifacts carry source refs
-- the edge runtime uses JSON config plus local fixture files, with live polling now available for GitHub, Jira, and Google Calendar via env vars, token files, or locally bootstrapped OAuth credentials
-- the edge runtime now supports both polling and initial push paths through signed local GitHub webhooks, shared-secret Jira webhooks, and shared-secret Google Calendar change notifications, persists webhook delivery receipts and Calendar channel message numbers to suppress replayed or duplicate deliveries, live connector pollers persist local cursor state, page through multi-response APIs, retry transient 429/5xx failures with short backoff, stores per-project signal state locally so blocker-resolution and commitment-completion transitions can supersede stale aggregate artifacts, and stores bootstrapped connector credentials in a dedicated local credential file with strict permission checks, optional AES-GCM encryption, and automatic refresh-token renewal when refresh tokens are available
-- edge-derived artifacts now carry stable derivation keys, the edge runtime persists the latest published artifact ID per derivation slot, updated summaries, blockers, commitments, and status deltas supersede older logical artifacts, and superseded artifacts are hidden from query results
-- richer project-level derivation now exists, but it is still heuristic and rule-based rather than connector-native or model-assisted
-- local container runs use PostgreSQL; tests and ad hoc runs can still fall back to in-memory storage when no database URL is set
-
-The current implementation handoff plan lives in `docs/implementation-plan.md`.
-
-## Local development
-
-Run these commands from the repository root:
-
-- prerequisites: `podman` and `podman-compose`
-- `make local`: build and start the local stack with Podman Compose, including PostgreSQL
-- `make down`: stop the local stack
-- `make postgres-up`: start only the PostgreSQL container, reusing an existing `alice-db` container when present, and wait for it to become ready
-- `make postgres-down`: stop only the PostgreSQL container
-- `make status`: show container status
-- `make logs`: tail server logs
-- `make test`: run the Go test suite
-- `make test-postgres`: start or reuse the PostgreSQL container, wait for health, and run the Go test suite with `ALICE_TEST_DATABASE_URL` set
-
-The server reads `ALICE_DATABASE_URL` to decide whether to use PostgreSQL or the in-memory fallback.
-
-For local MCP use, run `go run ./cmd/mcp-server`. The server speaks MCP over stdio, can bootstrap registration through the `register_agent` tool, and also accepts `ALICE_MCP_ACCESS_TOKEN` to start with an existing authenticated session.
-
-For local edge runtime use, run `go run ./cmd/edge-agent -config examples/edge-agent-config.json`. The current runtime reads JSON config, persists local auth state under `.alice/`, publishes configured artifact fixtures plus deterministic artifacts derived from GitHub/Jira/calendar fixture files, and polls watched query IDs plus incoming requests.
-
-For local connector bootstrap use, run `go run ./cmd/edge-agent -config examples/edge-agent-github-oauth-config.json -bootstrap-connector github` or the equivalent Jira/Google Calendar OAuth example. The bootstrap mode prints a provider authorization URL, waits on a localhost callback, exchanges the code with PKCE, and persists the resulting connector credential into a dedicated local credentials file derived from the state path or set explicitly through `runtime.credentials_file`.
-
-If you also set `ALICE_EDGE_CREDENTIAL_KEY` or configure `runtime.credentials_key_file`, that dedicated credentials file is AES-GCM encrypted at rest. If the runtime later encounters an expired stored connector credential that cannot be refreshed, the CLI now prints the exact `-bootstrap-connector` command to rerun for that connector.
-
-For live connector use:
-
-- set `ALICE_GITHUB_TOKEN` or bootstrap GitHub OAuth first, then run `go run ./cmd/edge-agent -config examples/edge-agent-github-live-config.json` for GitHub repository polling
-- set `ALICE_JIRA_TOKEN` or bootstrap Jira OAuth first, then run `go run ./cmd/edge-agent -config examples/edge-agent-jira-live-config.json` for Jira project polling
-- set `ALICE_GCAL_TOKEN` or bootstrap Google Calendar OAuth first, then run `go run ./cmd/edge-agent -config examples/edge-agent-gcal-live-config.json` for Google Calendar polling
-
-Each live connector path persists a local last-seen cursor in the edge state file so subsequent runs can narrow polling and avoid republishing stale events. The live connector configs also accept `token_file` as a local-file alternative to env vars, and the OAuth bootstrap path stores connector credentials in a separate `0600` credentials file so later polls can reuse them without process env injection. When a stored OAuth credential expires and includes a refresh token, the runtime now refreshes it automatically before polling. If the credential store is encrypted, the same key must be present on later runs through `ALICE_EDGE_CREDENTIAL_KEY` or `runtime.credentials_key_file`.
-
-For local GitHub webhook intake, set `ALICE_GITHUB_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-github-webhook-config.json -serve-webhooks`, and configure GitHub to deliver `pull_request` events to `http://127.0.0.1:8788/webhooks/github`. The current webhook path verifies `X-Hub-Signature-256`, records delivery IDs to ignore replayed deliveries, maps repositories to project refs, ignores unrelated pull requests, and publishes derived artifacts directly without polling the GitHub API.
-
-For local Jira webhook intake, set `ALICE_JIRA_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-jira-webhook-config.json -serve-webhooks`, and deliver issue webhooks to `http://127.0.0.1:8789/webhooks/jira` with `Authorization: Bearer $ALICE_JIRA_WEBHOOK_SECRET`. The current Jira path accepts `jira:issue_created` and `jira:issue_updated`, records delivery identifiers or payload hashes to ignore duplicate deliveries, maps issue keys to configured projects, ignores unrelated assignees, and publishes derived artifacts directly without polling the Jira API.
-
-For local Google Calendar webhook intake, set both `ALICE_GCAL_TOKEN` and `ALICE_GCAL_WEBHOOK_SECRET`, run `go run ./cmd/edge-agent -config examples/edge-agent-gcal-webhook-config.json -serve-webhooks`, and point the Calendar watch callback at `http://127.0.0.1:8790/webhooks/gcal`. The current Calendar path verifies `X-Goog-Channel-Token`, tracks channel message numbers to ignore duplicate or out-of-order notifications, parses `X-Goog-Resource-URI` to identify the configured calendar, ignores unconfigured calendars and initial `sync` notifications, and performs an incremental events fetch through the saved calendar cursor before publishing derived artifacts.
-
-The server is exposed on `http://127.0.0.1:8080`, and the local PostgreSQL instance is exposed on `127.0.0.1:5432`.
-
-## Next steps
-
-The next recommended implementation steps are:
-
-1. harden local operator workflows further with rotation tooling and safer credential-key management
-2. add better connector lifecycle tooling around webhook/watch registration and local rotation workflows
-3. deepen derivation further with connector-native or model-assisted signals beyond the current rule-based transitions
-
-Use `docs/implementation-plan.md` as the source of truth for the current step-by-step handoff.
-
-## Planned repository layout
-
-```text
-alice/
-├── cmd/
-│   ├── server/
-│   ├── edge-agent/
-│   └── cli/
-├── docs/
-│   ├── technical-spec.md
-│   ├── threat-model.md
-│   └── adr/
-├── internal/
-│   ├── auth/
-│   ├── orggraph/
-│   ├── policy/
-│   ├── artifacts/
-│   ├── queries/
-│   ├── requests/
-│   ├── approvals/
-│   ├── audit/
-│   ├── delivery/
-│   ├── mcp/
-│   ├── connectors/
-│   ├── normalize/
-│   ├── derive/
-│   ├── promptguard/
-│   ├── models/
-│   ├── storage/
-│   ├── httpapi/
-│   ├── crypto/
-│   ├── config/
-│   └── telemetry/
-├── api/
-│   ├── openapi/
-│   ├── jsonschema/
-│   └── mcp/
-├── deploy/
-├── scripts/
-└── test/
-```
-
-## MVP goals
-
-The MVP is successful when:
-1. a user can register a personal agent
-2. a user can connect GitHub, Jira, and Google Calendar
-3. the edge runtime can derive summaries, blockers, commitments, and status deltas
-4. the coordination server stores only derived artifacts centrally
-5. a user can grant another user permission to query approved artifact types
-6. a query returns only permitted artifacts
-7. every query and response is auditable
-8. a user can send a request to another user’s agent
-9. the recipient agent can accept, defer, deny, or require approval
-10. prompt injection protections enforce content/policy separation and deterministic sink control
-
-## Non-goals for the first version
-
-- no broad enterprise UI
-- no high-risk autonomous actions
-- no raw source log sharing
-- no unrestricted cross-agent querying
-- no policy decisions delegated entirely to the model
-- no “manager spyware” posture
-
-## Development priorities
-
-1. domain schemas
-2. Go coordination server
-3. MCP tool surface
-4. edge runtime
-5. GitHub/Jira/Google Calendar connectors
-6. Gatekeeper request flows
-7. sandboxing and security policy
-8. prompt injection and policy test fixtures
-
-## Project vision
-
-`alice` aims to become a trusted coordination layer where every person has a personal agent that:
-- understands their work through approved sources
-- shares only what they permit
-- helps teammates coordinate without constant interruption
-- maintains security, privacy, and auditability by default
+1. Raw source data stays local — edge runtimes derive summaries, not raw logs
+2. Only derived artifacts move through the server
+3. All cross-agent access is permission-checked and deny-by-default
+4. Every query, grant, and request is auditable
+5. The model may propose; deterministic code decides
+6. Untrusted content is treated as data, never as policy
