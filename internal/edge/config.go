@@ -7,8 +7,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// jiraProjectKeyRe matches valid Jira project keys: one uppercase letter followed by
+// one or more uppercase letters, digits, or underscores (e.g. "PROJ", "MY_PROJECT2").
+var jiraProjectKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
 
 type Config struct {
 	Agent      AgentConfig      `json:"agent"`
@@ -292,13 +297,21 @@ func (c Config) Validate() error {
 			}
 		}
 		for i, project := range c.Connectors.Jira.Projects {
-			if strings.TrimSpace(project.Key) == "" {
+			key := strings.TrimSpace(project.Key)
+			if key == "" {
 				return fmt.Errorf("connectors.jira.projects[%d].key is required", i)
+			}
+			if !jiraProjectKeyRe.MatchString(key) {
+				return fmt.Errorf("connectors.jira.projects[%d].key %q is invalid: must match ^[A-Z][A-Z0-9_]+$", i, key)
 			}
 		}
 		for i, project := range c.Connectors.Jira.Webhook.Projects {
-			if strings.TrimSpace(project.Key) == "" {
+			key := strings.TrimSpace(project.Key)
+			if key == "" {
 				return fmt.Errorf("connectors.jira.webhook.projects[%d].key is required", i)
+			}
+			if !jiraProjectKeyRe.MatchString(key) {
+				return fmt.Errorf("connectors.jira.webhook.projects[%d].key %q is invalid: must match ^[A-Z][A-Z0-9_]+$", i, key)
 			}
 		}
 		if c.JiraLiveEnabled() {

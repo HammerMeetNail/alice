@@ -79,7 +79,7 @@ The following gaps exist in the current implementation. Items marked **fixed** h
 - ~~`Agent.Capabilities` is stored during registration but never checked by any service; any authenticated agent can perform any action~~ **fixed (step k, 2026-03-23)** (field removed)
 - ~~`ResolveApproval` in the SQL layer does not include `AND state = 'pending'`, so a concurrent race can re-resolve an already-resolved approval~~ **fixed (step h, 2026-03-23)**
 - ~~no rate limiting exists on any endpoint, including unauthenticated registration routes~~ **fixed (step i, 2026-03-23)**
-- Jira JQL construction uses `fmt.Sprintf` with the project key from local config without validating the key matches `^[A-Z][A-Z0-9_]+$`
+- ~~Jira JQL construction uses `fmt.Sprintf` with the project key from local config without validating the key matches `^[A-Z][A-Z0-9_]+$`~~ **fixed (step p, 2026-03-23)**
 - ~~every PostgreSQL query uses `context.Background()` instead of accepting a caller-provided context; queries cannot be cancelled and have no application-level timeouts~~ (duplicate — fixed step e)
 - ~~no list endpoint has pagination; all return unbounded result sets~~ **fixed (step o, 2026-03-23)**
 - ~~the migration system has no `schema_migrations` version tracking table; every migration is re-executed on every startup via `CREATE TABLE IF NOT EXISTS`, which will break on the first non-idempotent migration~~ (duplicate — fixed step d)
@@ -88,10 +88,10 @@ The following gaps exist in the current implementation. Items marked **fixed** h
 - ~~the codebase uses the standard `log` package everywhere; the spec calls for structured logging~~ **fixed (step m, 2026-03-23)**
 - no CORS, CSRF, or security response headers are set
 - ~~grant revocation (`revoke_permission` / `DELETE /v1/policy-grants/:id`) is not implemented~~ **fixed (step f, 2026-03-23)**
-- `submit_correction` is not implemented
+- ~~`submit_correction` is not implemented~~ **fixed (step p, 2026-03-23)**
 - `team_scope` and `manager_scope` visibility modes pass through without team/manager relationship logic
-- `PolicyGrant.RequiresApprovalAboveRisk` is set but never checked during query evaluation
-- the `Redactions` field is always empty; no redaction logic exists
+- ~~`PolicyGrant.RequiresApprovalAboveRisk` is set but never checked during query evaluation~~ **fixed (step p, 2026-03-23)**
+- ~~the `Redactions` field is always empty; no redaction logic exists~~ **fixed (step p, 2026-03-23)**
 - expired requests, approvals, and grants are not filtered during list/resolve operations (only expired artifacts are filtered during query evaluation)
 - no unit tests exist for any service or storage package; all testing is integration-level
 - no negative authorization tests exist (cross-agent access, sensitivity ceiling, purpose mismatch, cross-org)
@@ -298,20 +298,23 @@ All existing tests pass.
 
 ### step p: implement remaining spec features
 
-Status: not started
+Status: **partial** (2026-03-23)
 
-Lower-priority spec features to implement after hardening:
+Completed items:
 
-- **redaction logic:** add a redaction engine that applies rules from policy grants before returning artifacts in query responses; populate the `Redactions` field on `QueryResponse`
-- **`submit_correction`:** implement the MCP tool and HTTP route for correcting previously published artifacts
-- **risk-based approval:** check `PolicyGrant.RequiresApprovalAboveRisk` during query evaluation and create an approval record when the query's risk level exceeds the threshold
-- **visibility modes:** implement `team_scope` and `manager_scope` by resolving team membership and manager relationships from the org graph
-- **Jira JQL validation:** validate that the Jira project key from config matches `^[A-Z][A-Z0-9_]+$` before interpolating into JQL
+- **Jira JQL validation (2026-03-23):** `jiraProjectKeyRe = regexp.MustCompile("^[A-Z][A-Z0-9_]+$")` added to `internal/edge/config.go`. Both `connectors.jira.projects[].key` and `connectors.jira.webhook.projects[].key` are validated against this regex during `Validate()`. `webhook.go` webhook-path also validates the project key extracted from incoming issue keys before constructing JQL.
 
-Definition of done:
+- **`submit_correction` (2026-03-23):** `FindArtifactByID` added to `ArtifactRepository` interface (both storage implementations). `artifacts.Service.CorrectArtifact` publishes a new artifact with `supersedes_artifact_id` set to the original, after verifying the caller owns the original artifact. `POST /v1/artifacts/:id/correct` HTTP route and `submit_correction` MCP tool added.
 
-- each feature has tests
-- the technical spec's feature list matches the implementation
+- **risk-based approval (2026-03-23):** `core.RiskLevelExceeds(actual, threshold RiskLevel) bool` helper added to `internal/core/validate.go`. `queries.Service` now accepts `storage.ApprovalRepository` and `storage.Transactor`. During `Evaluate`, if a matched grant's `RequiresApprovalAboveRisk` threshold is exceeded by the query's risk level, an `Approval` record is created (subject_type="query", subject_id=query_id) and the response is returned with `approval_state="pending"`. `approvals.Service.Resolve` dispatches on `subject_type`: for "query" subjects it calls `UpdateQueryResponseApprovalState` + `UpdateQueryState` inside the transaction instead of `UpdateRequestState`.
+
+- **redaction logic (2026-03-23):** `Redactions` field on `QueryResponse` is now populated during `Evaluate`. Two types of redaction are reported:
+  - Artifacts excluded because their sensitivity exceeds the grant's `MaxSensitivity` ceiling: `"artifact:<id>: sensitivity <s> exceeds grant ceiling <c>"`
+  - Artifacts withheld because the query's risk level exceeds the grant threshold (approval pending): `"artifact:<id>: withheld pending approval (risk level <r> exceeds grant threshold <t>)"`
+
+Remaining:
+
+- **visibility modes:** `team_scope` and `manager_scope` pass through without team/manager relationship logic; implementing these requires an org graph not yet in scope
 
 ---
 

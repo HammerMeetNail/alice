@@ -19,6 +19,7 @@ type AgentService interface {
 
 type ArtifactService interface {
 	PublishArtifact(ctx context.Context, agent core.Agent, user core.User, artifact core.Artifact) (core.Artifact, error)
+	CorrectArtifact(ctx context.Context, agent core.Agent, user core.User, originalArtifactID string, correction core.Artifact) (core.Artifact, error)
 	ListArtifactsByOwner(ctx context.Context, userID string) ([]core.Artifact, error)
 }
 

@@ -100,7 +100,7 @@ func TestQueryEvaluate_NoGrant(t *testing.T) {
 	fromAgent, _, _ := store.FindAgentByUserID(ctx, fromUserID)
 	toAgent, _, _ := store.FindAgentByUserID(ctx, toUserID)
 
-	svc := queries.NewService(store, store, store)
+	svc := queries.NewService(store, store, store, store, store)
 	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
 		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
 
@@ -122,7 +122,7 @@ func TestQueryEvaluate_WithMatchingGrant(t *testing.T) {
 		[]core.QueryPurpose{core.QueryPurposeStatusCheck}, "")
 	store.SaveGrant(ctx, grant)
 
-	svc := queries.NewService(store, store, store)
+	svc := queries.NewService(store, store, store, store, store)
 	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
 		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
 
@@ -150,7 +150,7 @@ func TestQueryEvaluate_WrongPurpose(t *testing.T) {
 		[]core.QueryPurpose{core.QueryPurposeDependencyCheck}, "") // grant allows DependencyCheck only
 	store.SaveGrant(ctx, grant)
 
-	svc := queries.NewService(store, store, store)
+	svc := queries.NewService(store, store, store, store, store)
 	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
 		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck) // query uses StatusCheck
 
@@ -175,7 +175,7 @@ func TestQueryEvaluate_WrongArtifactType(t *testing.T) {
 		[]core.QueryPurpose{core.QueryPurposeStatusCheck}, "") // grant allows Blocker only
 	store.SaveGrant(ctx, grant)
 
-	svc := queries.NewService(store, store, store)
+	svc := queries.NewService(store, store, store, store, store)
 	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
 		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck) // query requests Summary
 
@@ -216,7 +216,7 @@ func TestQueryEvaluate_SensitivityCeilingExceeded(t *testing.T) {
 		[]core.QueryPurpose{core.QueryPurposeStatusCheck}, "")
 	store.SaveGrant(context.Background(), grant)
 
-	svc := queries.NewService(store, store, store)
+	svc := queries.NewService(store, store, store, store, store)
 	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
 		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
 
@@ -245,7 +245,7 @@ func TestQueryEvaluate_RevokedGrant(t *testing.T) {
 	saved, _ := store.SaveGrant(ctx, grant)
 
 	// Verify grant works before revocation
-	svc := queries.NewService(store, store, store)
+	svc := queries.NewService(store, store, store, store, store)
 	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
 		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
 
@@ -279,7 +279,7 @@ func TestQueryEvaluate_ExpiredGrant(t *testing.T) {
 	grant.ExpiresAt = &past
 	store.SaveGrant(ctx, grant)
 
-	svc := queries.NewService(store, store, store)
+	svc := queries.NewService(store, store, store, store, store)
 	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
 		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
 
@@ -325,7 +325,7 @@ func TestQueryEvaluate_ProjectScope_Match(t *testing.T) {
 		[]core.QueryPurpose{core.QueryPurposeStatusCheck}, "myproject")
 	store.SaveGrant(ctx, grant)
 
-	svc := queries.NewService(store, store, store)
+	svc := queries.NewService(store, store, store, store, store)
 	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
 		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
 	query.ProjectScope = []string{"myproject"}

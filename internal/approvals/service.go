@@ -12,13 +12,15 @@ import (
 type Service struct {
 	approvals storage.ApprovalRepository
 	requests  storage.RequestRepository
+	queries   storage.QueryRepository
 	tx        storage.Transactor
 }
 
-func NewService(approvals storage.ApprovalRepository, requests storage.RequestRepository, tx storage.Transactor) *Service {
+func NewService(approvals storage.ApprovalRepository, requests storage.RequestRepository, queries storage.QueryRepository, tx storage.Transactor) *Service {
 	return &Service{
 		approvals: approvals,
 		requests:  requests,
+		queries:   queries,
 		tx:        tx,
 	}
 }
@@ -49,13 +51,47 @@ func (s *Service) Resolve(ctx context.Context, agent core.Agent, approvalID stri
 		return core.Approval{}, core.Request{}, ErrExpiredApproval
 	}
 
+	var resolvedApproval core.Approval
+	var updatedRequest core.Request
+
+	if approval.SubjectType == "query" {
+		// Risk-based approval: update the query response approval state.
+		queryApprovalState := decision // approved or denied maps directly to ApprovalState
+		if err := s.tx.WithTx(ctx, func(tx storage.StoreTx) error {
+			var ok bool
+			var txErr error
+			resolvedApproval, ok, txErr = tx.ResolveApproval(ctx, approval.ApprovalID, decision, time.Now().UTC())
+			if txErr != nil {
+				return fmt.Errorf("resolve approval: %w", txErr)
+			}
+			if !ok {
+				return ErrUnknownApproval
+			}
+			queryState := core.QueryStateCompleted
+			if decision == core.ApprovalStateDenied {
+				queryState = core.QueryStateDenied
+			}
+			if _, ok, txErr = tx.UpdateQueryResponseApprovalState(ctx, approval.SubjectID, queryApprovalState); txErr != nil {
+				return fmt.Errorf("update query response after approval: %w", txErr)
+			} else if !ok {
+				return ErrUnknownRequest
+			}
+			if _, ok, txErr = tx.UpdateQueryState(ctx, approval.SubjectID, queryState); txErr != nil {
+				return fmt.Errorf("update query state after approval: %w", txErr)
+			} else if !ok {
+				return ErrUnknownRequest
+			}
+			return nil
+		}); err != nil {
+			return core.Approval{}, core.Request{}, err
+		}
+		return resolvedApproval, core.Request{}, nil
+	}
+
 	requestState := core.RequestStateAccepted
 	if decision == core.ApprovalStateDenied {
 		requestState = core.RequestStateDenied
 	}
-
-	var resolvedApproval core.Approval
-	var updatedRequest core.Request
 
 	if err := s.tx.WithTx(ctx, func(tx storage.StoreTx) error {
 		var ok bool

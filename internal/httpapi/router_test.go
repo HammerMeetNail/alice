@@ -172,9 +172,9 @@ func buildTestHandler(cfg config.Config, repos testRepositories) http.Handler {
 	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg, repos)
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
-	queryService := queries.NewService(repos, artifactService, policyService)
+	queryService := queries.NewService(repos, artifactService, policyService, repos, repos)
 	requestService := requests.NewService(repos, repos, repos)
-	approvalService := approvals.NewService(repos, repos, repos)
+	approvalService := approvals.NewService(repos, repos, repos, repos)
 	auditService := audit.NewService(repos)
 
 	return NewRouter(services.Container{

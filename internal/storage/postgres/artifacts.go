@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"alice/internal/core"
@@ -48,6 +49,25 @@ func (s *Store) SaveArtifact(ctx context.Context, artifact core.Artifact) (core.
 		return core.Artifact{}, fmt.Errorf("insert artifact: %w", err)
 	}
 	return artifact, nil
+}
+
+func (s *Store) FindArtifactByID(ctx context.Context, artifactID string) (core.Artifact, bool, error) {
+	row := s.db.QueryRowContext(
+		ctx,
+		`SELECT artifact_id, org_id, owner_agent_id, owner_user_id, type, title, content, structured_payload,
+		        source_refs, visibility_mode, sensitivity, confidence, approval_state, created_at, expires_at, supersedes_artifact_id
+		FROM artifacts
+		WHERE artifact_id = $1`,
+		artifactID,
+	)
+	artifact, err := scanArtifact(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Artifact{}, false, nil
+		}
+		return core.Artifact{}, false, fmt.Errorf("find artifact by id: %w", err)
+	}
+	return artifact, true, nil
 }
 
 func (s *Store) ListArtifactsByOwner(ctx context.Context, userID string) ([]core.Artifact, error) {

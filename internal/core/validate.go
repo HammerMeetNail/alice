@@ -226,3 +226,20 @@ var sensitivityOrder = map[Sensitivity]int{
 func SensitivityAllowed(actual, ceiling Sensitivity) bool {
 	return sensitivityOrder[actual] <= sensitivityOrder[ceiling]
 }
+
+var riskLevelOrder = map[RiskLevel]int{
+	RiskLevelL0: 0,
+	RiskLevelL1: 1,
+	RiskLevelL2: 2,
+	RiskLevelL3: 3,
+	RiskLevelL4: 4,
+}
+
+// RiskLevelExceeds returns true if actual is strictly greater than threshold.
+// An empty threshold means approval is never required.
+func RiskLevelExceeds(actual, threshold RiskLevel) bool {
+	if threshold == "" {
+		return false
+	}
+	return riskLevelOrder[actual] > riskLevelOrder[threshold]
+}

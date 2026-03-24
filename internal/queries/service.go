@@ -27,13 +27,17 @@ type Service struct {
 	store     storage.QueryRepository
 	artifacts ArtifactSource
 	policies  PolicySource
+	approvals storage.ApprovalRepository
+	tx        storage.Transactor
 }
 
-func NewService(store storage.QueryRepository, artifacts ArtifactSource, policies PolicySource) *Service {
+func NewService(store storage.QueryRepository, artifacts ArtifactSource, policies PolicySource, approvals storage.ApprovalRepository, tx storage.Transactor) *Service {
 	return &Service{
 		store:     store,
 		artifacts: artifacts,
 		policies:  policies,
+		approvals: approvals,
+		tx:        tx,
 	}
 }
 
@@ -61,6 +65,10 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 	filtered := make([]core.QueryArtifact, 0)
 	policyBasis := make([]string, 0)
 
+	// Track which grant (if any) requires approval for this query's risk level.
+	var approvalRequiredByGrant *core.PolicyGrant
+	redactions := make([]string, 0)
+
 	for _, artifact := range allArtifacts {
 		if _, ok := supersededArtifacts[artifact.ArtifactID]; ok {
 			continue
@@ -81,6 +89,19 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 
 		matchedGrant := matchingGrant(grants, query, artifact)
 		if matchedGrant == nil {
+			// Check if the artifact was excluded solely because of sensitivity ceiling.
+			sensitivityGrant := matchingGrantIgnoreSensitivity(grants, query, artifact)
+			if sensitivityGrant != nil {
+				redactions = append(redactions, fmt.Sprintf("artifact:%s: sensitivity %q exceeds grant ceiling %q", artifact.ArtifactID, artifact.Sensitivity, sensitivityGrant.MaxSensitivity))
+			}
+			continue
+		}
+
+		if core.RiskLevelExceeds(query.RiskLevel, matchedGrant.RequiresApprovalAboveRisk) {
+			if approvalRequiredByGrant == nil {
+				approvalRequiredByGrant = matchedGrant
+			}
+			redactions = append(redactions, fmt.Sprintf("artifact:%s: withheld pending approval (risk level %q exceeds grant threshold %q)", artifact.ArtifactID, query.RiskLevel, matchedGrant.RequiresApprovalAboveRisk))
 			continue
 		}
 
@@ -95,15 +116,20 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 		policyBasis = append(policyBasis, "grant:"+matchedGrant.PolicyGrantID)
 	}
 
+	approvalState := core.ApprovalStateNotRequired
+	if approvalRequiredByGrant != nil {
+		approvalState = core.ApprovalStatePending
+	}
+
 	response := core.QueryResponse{
 		ResponseID:    id.New("response"),
 		QueryID:       query.QueryID,
 		FromAgentID:   query.FromAgentID,
 		ToAgentID:     query.ToAgentID,
 		Artifacts:     filtered,
-		Redactions:    []string{},
+		Redactions:    redactions,
 		PolicyBasis:   dedupe(policyBasis),
-		ApprovalState: core.ApprovalStateNotRequired,
+		ApprovalState: approvalState,
 		Confidence:    aggregateConfidence(filtered),
 		CreatedAt:     time.Now().UTC(),
 	}
@@ -111,6 +137,27 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 	if _, err := s.store.SaveQueryResponse(ctx, response); err != nil {
 		return core.QueryResponse{}, fmt.Errorf("save query response: %w", err)
 	}
+
+	// If approval is required, create an approval record and leave the query queued.
+	if approvalRequiredByGrant != nil {
+		approval := core.Approval{
+			ApprovalID:  id.New("approval"),
+			OrgID:       query.OrgID,
+			AgentID:     query.ToAgentID,
+			OwnerUserID: query.ToUserID,
+			SubjectType: "query",
+			SubjectID:   query.QueryID,
+			Reason:      fmt.Sprintf("query risk level %s exceeds grant threshold", query.RiskLevel),
+			State:       core.ApprovalStatePending,
+			CreatedAt:   time.Now().UTC(),
+			ExpiresAt:   query.ExpiresAt,
+		}
+		if _, err := s.approvals.SaveApproval(ctx, approval); err != nil {
+			return core.QueryResponse{}, fmt.Errorf("save risk-based approval: %w", err)
+		}
+		return response, nil
+	}
+
 	if _, _, err := s.store.UpdateQueryState(ctx, query.QueryID, core.QueryStateCompleted); err != nil {
 		return core.QueryResponse{}, fmt.Errorf("update query state to completed: %w", err)
 	}
@@ -133,6 +180,42 @@ func (s *Service) FindResult(ctx context.Context, queryID string) (core.Query, c
 		return query, core.QueryResponse{}, false, nil
 	}
 	return query, response, true, nil
+}
+
+// matchingGrantIgnoreSensitivity returns the first grant that matches all criteria
+// except the sensitivity ceiling. Used to detect redactions due to sensitivity.
+func matchingGrantIgnoreSensitivity(grants []core.PolicyGrant, query core.Query, artifact core.Artifact) *core.PolicyGrant {
+	for i := range grants {
+		grant := grants[i]
+		if grant.ExpiresAt != nil && grant.ExpiresAt.Before(time.Now().UTC()) {
+			continue
+		}
+		if grant.RevokedAt != nil {
+			continue
+		}
+		if !slices.Contains(grant.AllowedPurposes, query.Purpose) {
+			continue
+		}
+		if !slices.Contains(grant.AllowedArtifactTypes, artifact.Type) {
+			continue
+		}
+		// Skipping sensitivity check intentionally — caller wants to know if
+		// sensitivity is the only reason the artifact was excluded.
+		if grant.ScopeRef != "" && len(query.ProjectScope) > 0 && !slices.Contains(query.ProjectScope, grant.ScopeRef) {
+			continue
+		}
+		if grant.ScopeRef != "" {
+			projectRefs := projectRefsFromPayload(artifact.StructuredPayload)
+			if len(projectRefs) == 0 && len(query.ProjectScope) > 0 {
+				continue
+			}
+			if len(projectRefs) > 0 && !slices.Contains(projectRefs, grant.ScopeRef) {
+				continue
+			}
+		}
+		return &grant
+	}
+	return nil
 }
 
 func matchingGrant(grants []core.PolicyGrant, query core.Query, artifact core.Artifact) *core.PolicyGrant {

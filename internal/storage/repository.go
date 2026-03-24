@@ -36,6 +36,7 @@ type AgentTokenRepository interface {
 
 type ArtifactRepository interface {
 	SaveArtifact(ctx context.Context, artifact core.Artifact) (core.Artifact, error)
+	FindArtifactByID(ctx context.Context, artifactID string) (core.Artifact, bool, error)
 	ListArtifactsByOwner(ctx context.Context, userID string) ([]core.Artifact, error)
 }
 
@@ -51,6 +52,7 @@ type QueryRepository interface {
 	SaveQuery(ctx context.Context, query core.Query) (core.Query, error)
 	SaveQueryResponse(ctx context.Context, response core.QueryResponse) (core.QueryResponse, error)
 	UpdateQueryState(ctx context.Context, queryID string, state core.QueryState) (core.Query, bool, error)
+	UpdateQueryResponseApprovalState(ctx context.Context, queryID string, state core.ApprovalState) (core.QueryResponse, bool, error)
 	FindQuery(ctx context.Context, queryID string) (core.Query, bool, error)
 	FindQueryResponse(ctx context.Context, queryID string) (core.QueryResponse, bool, error)
 }

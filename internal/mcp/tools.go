@@ -40,6 +40,18 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			}),
 			Handler: s.handlePublishArtifact,
 		},
+		"submit_correction": {
+			Name:        "submit_correction",
+			Description: "Publish a corrected version of a previously published artifact. The caller must own the original artifact.",
+			InputSchema: objectSchema(map[string]any{
+				"artifact_id": stringSchema("ID of the artifact being corrected."),
+				"artifact": map[string]any{
+					"type":        "object",
+					"description": "Corrected artifact payload.",
+				},
+			}),
+			Handler: s.handleSubmitCorrection,
+		},
 		"query_peer_status": {
 			Name:        "query_peer_status",
 			Description: "Submit a permission-checked status query to another agent.",
@@ -205,6 +217,17 @@ func (s *Server) handleRegisterAgent(ctx context.Context, args map[string]any) (
 
 func (s *Server) handlePublishArtifact(ctx context.Context, args map[string]any) (any, error) {
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/artifacts", args)
+}
+
+func (s *Server) handleSubmitCorrection(ctx context.Context, args map[string]any) (any, error) {
+	artifactID := stringArg(args, "artifact_id")
+	if artifactID == "" {
+		return nil, fmt.Errorf("artifact_id is required")
+	}
+	body := map[string]any{
+		"artifact": args["artifact"],
+	}
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/artifacts/"+artifactID+"/correct", body)
 }
 
 func (s *Server) handleQueryPeerStatus(ctx context.Context, args map[string]any) (any, error) {

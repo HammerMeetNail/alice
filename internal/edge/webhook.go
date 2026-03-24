@@ -516,12 +516,18 @@ func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSo
 	project, ok := findJiraProjectForIssue(projects, issueKey)
 	if !ok {
 		projectKey, _, found := strings.Cut(issueKey, "-")
-		if !found || strings.TrimSpace(projectKey) == "" {
+		projectKey = strings.TrimSpace(projectKey)
+		if !found || projectKey == "" {
 			parseErr := &webhookBadRequestError{reason: "jira webhook payload requires an issue key with a project prefix"}
 			result.Message = parseErr.Error()
 			return result, parseErr
 		}
-		project = JiraProjectConfig{Key: strings.TrimSpace(projectKey)}
+		if !jiraProjectKeyRe.MatchString(projectKey) {
+			parseErr := &webhookBadRequestError{reason: fmt.Sprintf("jira issue key %q has an invalid project prefix", issueKey)}
+			result.Message = parseErr.Error()
+			return result, parseErr
+		}
+		project = JiraProjectConfig{Key: projectKey}
 	}
 
 	if !source.isRelevantIssue(payload.Issue) {

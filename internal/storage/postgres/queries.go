@@ -118,6 +118,25 @@ func (s *Store) UpdateQueryState(ctx context.Context, queryID string, state core
 	return query, true, nil
 }
 
+func (s *Store) UpdateQueryResponseApprovalState(ctx context.Context, queryID string, state core.ApprovalState) (core.QueryResponse, bool, error) {
+	response, err := scanQueryResponseRow(s.db.QueryRowContext(
+		ctx,
+		`UPDATE query_responses
+		SET approval_state = $2
+		WHERE query_id = $1
+		RETURNING response_id, query_id, from_agent_id, to_agent_id, artifacts, redactions, policy_basis, approval_state, confidence, created_at`,
+		queryID,
+		state,
+	))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return core.QueryResponse{}, false, nil
+		}
+		return core.QueryResponse{}, false, fmt.Errorf("update query response approval state: %w", err)
+	}
+	return response, true, nil
+}
+
 func (s *Store) FindQuery(ctx context.Context, queryID string) (core.Query, bool, error) {
 	query, err := scanQueryRow(s.db.QueryRowContext(
 		ctx,

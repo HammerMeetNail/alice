@@ -199,6 +199,14 @@ func (s *Store) SaveArtifact(_ context.Context, artifact core.Artifact) (core.Ar
 	return artifact, nil
 }
 
+func (s *Store) FindArtifactByID(_ context.Context, artifactID string) (core.Artifact, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	artifact, ok := s.artifacts[artifactID]
+	return artifact, ok, nil
+}
+
 func (s *Store) ListArtifactsByOwner(_ context.Context, userID string) ([]core.Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -329,6 +337,19 @@ func (s *Store) FindQueryResponse(_ context.Context, queryID string) (core.Query
 
 	response, ok := s.responses[queryID]
 	return response, ok, nil
+}
+
+func (s *Store) UpdateQueryResponseApprovalState(_ context.Context, queryID string, state core.ApprovalState) (core.QueryResponse, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	response, ok := s.responses[queryID]
+	if !ok {
+		return core.QueryResponse{}, false, nil
+	}
+	response.ApprovalState = state
+	s.responses[queryID] = response
+	return response, true, nil
 }
 
 func (s *Store) SaveRequest(_ context.Context, request core.Request) (core.Request, error) {

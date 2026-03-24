@@ -94,6 +94,7 @@ func (r *router) routes() {
 	r.mux.Handle("POST /v1/agents/register/challenge", r.rateLimit(r.limitBody(http.HandlerFunc(r.handleBeginRegisterAgent))))
 	r.mux.Handle("POST /v1/agents/register", r.rateLimit(r.limitBody(http.HandlerFunc(r.handleRegisterAgent))))
 	r.mux.Handle("POST /v1/artifacts", r.limitBody(r.requireAuth(http.HandlerFunc(r.handlePublishArtifact))))
+	r.mux.Handle("POST /v1/artifacts/", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleCorrectArtifact))))
 	r.mux.Handle("POST /v1/policy-grants", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleGrantPermission))))
 	r.mux.Handle("DELETE /v1/policy-grants/", r.requireAuth(http.HandlerFunc(r.handleRevokePermission)))
 	r.mux.Handle("GET /v1/peers", r.requireAuth(http.HandlerFunc(r.handleListAllowedPeers)))
@@ -219,6 +220,49 @@ func (r *router) handlePublishArtifact(w http.ResponseWriter, req *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"artifact_id": artifact.ArtifactID,
 		"stored":      true,
+	})
+}
+
+type correctArtifactRequest struct {
+	Artifact core.Artifact `json:"artifact"`
+}
+
+func (r *router) handleCorrectArtifact(w http.ResponseWriter, req *http.Request) {
+	agent, user, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	artifactID, ok := trimActionPath(req.URL.Path, "/v1/artifacts/", "/correct")
+	if !ok {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	var input correctArtifactRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeDecodeError(w, err)
+		return
+	}
+
+	corrected, err := r.services.Artifacts.CorrectArtifact(req.Context(), agent, user, artifactID, input.Artifact)
+	if err != nil {
+		writeServiceError(w, err, "artifact correction failed")
+		return
+	}
+
+	if _, err := r.services.Audit.Record(req.Context(), "artifact.corrected", "artifact", corrected.ArtifactID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
+		"artifact_type":        corrected.Type,
+		"supersedes_artifact_id": artifactID,
+	}); err != nil {
+		slog.Error("audit record failed", "op", "artifact_correct", "err", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"artifact_id":            corrected.ArtifactID,
+		"supersedes_artifact_id": artifactID,
+		"stored":                 true,
 	})
 }
 
