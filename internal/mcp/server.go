@@ -3,14 +3,19 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const protocolVersion = "2025-11-25"
@@ -18,7 +23,9 @@ const protocolVersion = "2025-11-25"
 type Option func(*Server)
 
 type Server struct {
-	handler http.Handler
+	handler    http.Handler
+	baseURL    string
+	httpClient *http.Client
 
 	mu          sync.RWMutex
 	accessToken string
@@ -70,6 +77,37 @@ func NewServer(handler http.Handler, options ...Option) *Server {
 func WithAccessToken(accessToken string) Option {
 	return func(server *Server) {
 		server.accessToken = strings.TrimSpace(accessToken)
+	}
+}
+
+// WithServerURL configures the MCP server to forward all HTTP calls to a
+// remote coordination server at serverURL instead of calling an embedded
+// handler. tlsCAFile is an optional path to a PEM file containing additional
+// CA certificates to trust (e.g. for self-signed or internal CAs); pass an
+// empty string to use the system root pool.
+func WithServerURL(serverURL, tlsCAFile string) Option {
+	return func(s *Server) {
+		s.baseURL = strings.TrimSuffix(strings.TrimSpace(serverURL), "/")
+
+		tlsConfig := &tls.Config{}
+		if tlsCAFile != "" {
+			caCert, err := os.ReadFile(tlsCAFile)
+			if err != nil {
+				slog.Warn("could not read TLS CA file; using system roots", "file", tlsCAFile, "err", err)
+			} else {
+				pool := x509.NewCertPool()
+				if !pool.AppendCertsFromPEM(caCert) {
+					slog.Warn("no valid certificates in TLS CA file; using system roots", "file", tlsCAFile)
+				} else {
+					tlsConfig.RootCAs = pool
+				}
+			}
+		}
+
+		s.httpClient = &http.Client{
+			Transport: &http.Transport{TLSClientConfig: tlsConfig},
+			Timeout:   30 * time.Second,
+		}
 	}
 }
 

@@ -8,7 +8,7 @@ Privacy-first coordination platform for personal AI agents.
 
 - [How it works](#how-it-works)
 - [Quick start: single user with Claude Code](#quick-start-single-user-with-claude-code)
-- [Multi-user setup with PostgreSQL](#multi-user-setup-with-postgresql)
+- [Multi-user setup](#multi-user-setup)
 - [Connecting with OpenCode](#connecting-with-opencode)
 - [Edge agent: connecting real data sources](#edge-agent-connecting-real-data-sources)
 - [Complete two-person workflow](#complete-two-person-workflow)
@@ -96,24 +96,25 @@ With in-memory storage the token is valid only for the lifetime of the process. 
 
 ---
 
-## Multi-user setup with PostgreSQL
+## Multi-user setup
 
-To have two or more agents communicate, they must share the same storage. The simplest way is to run PostgreSQL locally and point all MCP server instances at it.
+For two or more agents to communicate, each user's MCP server must connect to a shared coordination server. The coordination server is the single source of truth; each user's machine only runs the MCP client.
 
-### 1. Start PostgreSQL
+### 1. Start the coordination server
 
-If you have Podman installed:
+If you have Podman installed, start the full stack (coordination server + PostgreSQL) with one command:
+
+```sh
+make local
+```
+
+This starts the coordination server at `http://127.0.0.1:8080` and PostgreSQL at `127.0.0.1:5432`.
+
+Alternatively, start PostgreSQL separately and run the server manually:
 
 ```sh
 make postgres-up
-```
-
-This starts a PostgreSQL container at `127.0.0.1:5432` with database `alice`, user `alice`, password `alice`.
-
-Alternatively, start any PostgreSQL instance and export the connection URL:
-
-```sh
-export ALICE_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable"
+ALICE_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable" go run ./cmd/server
 ```
 
 ### 2. Configure each user's MCP server
@@ -124,7 +125,22 @@ Build the binary first if you haven't already:
 go build -o alice-mcp-server ./cmd/mcp-server
 ```
 
-Each user runs `claude mcp add` once in the alice repository directory (the command is identical for all users):
+Each user points their MCP server at the coordination server with `ALICE_SERVER_URL`. The user's machine needs no database access:
+
+```sh
+claude mcp add alice \
+  -e "ALICE_SERVER_URL=http://127.0.0.1:8080" \
+  -e "ALICE_AUTH_TOKEN_TTL=24h" \
+  -- /path/to/alice/alice-mcp-server
+```
+
+Replace `http://127.0.0.1:8080` with the actual URL of your coordination server. For HTTPS with a self-signed or internal CA certificate, also pass `-e "ALICE_SERVER_TLS_CA=/path/to/ca.pem"`.
+
+Both users' MCP servers talk to the same coordination server, so artifacts, grants, queries, and requests are visible across sessions and survive process restarts.
+
+### Local testing shortcut (single machine only)
+
+For local development where all users are on the same machine and a full hosted setup is not needed, you can skip `cmd/server` and point MCP server instances directly at a shared PostgreSQL database:
 
 ```sh
 claude mcp add alice \
@@ -133,17 +149,7 @@ claude mcp add alice \
   -- /path/to/alice/alice-mcp-server
 ```
 
-Both MCP servers share the same PostgreSQL database, so artifacts, grants, queries, and requests are visible across sessions and survive process restarts.
-
-### 3. Start the full stack (optional)
-
-If you also want the HTTP coordination server running alongside the database (useful for edge agent connections):
-
-```sh
-make local
-```
-
-This starts both the coordination server (`http://127.0.0.1:8080`) and PostgreSQL using Podman Compose.
+This is not representative of real use — it requires every user to have direct database access — but it is convenient for local testing without running a separate server process.
 
 ---
 
@@ -317,23 +323,23 @@ go run ./cmd/edge-agent -config my-edge-config.json
 
 ## Complete two-person workflow
 
-This example shows Alice and Bob communicating through alice. Both are on the same machine using the shared PostgreSQL database.
+This example shows Alice and Bob communicating through alice. One coordination server runs (with PostgreSQL) and each user's MCP server connects to it over HTTP.
 
 ### Setup
 
-Start the database:
+Start the coordination server:
 
 ```sh
-make postgres-up
+make local
 ```
 
-Both Alice and Bob have their MCP server configured with:
+Both Alice and Bob configure their MCP server with:
 
-```json
-"env": {
-  "ALICE_DATABASE_URL": "postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable",
-  "ALICE_AUTH_TOKEN_TTL": "24h"
-}
+```sh
+claude mcp add alice \
+  -e "ALICE_SERVER_URL=http://127.0.0.1:8080" \
+  -e "ALICE_AUTH_TOKEN_TTL=24h" \
+  -- /path/to/alice/alice-mcp-server
 ```
 
 ### Step 1 — Alice registers and publishes
@@ -578,6 +584,8 @@ List endpoints accept `?limit=N&cursor=<opaque>` for pagination. Default limit i
 | `ALICE_AUTH_CHALLENGE_TTL` | `5m` | How long a registration challenge is valid before it expires |
 | `ALICE_AUTH_TOKEN_TTL` | `15m` | How long a bearer token is valid after issuance |
 | `ALICE_MCP_ACCESS_TOKEN` | _(none)_ | Pre-load an existing bearer token into the MCP server on startup, skipping the registration step |
+| `ALICE_SERVER_URL` | _(none — uses embedded mode)_ | URL of a remote coordination server (e.g. `https://alice.example.com`). When set the MCP server forwards all calls over HTTP instead of running an embedded stack. No local database access is required. |
+| `ALICE_SERVER_TLS_CA` | _(none — uses system roots)_ | Path to a PEM file containing additional CA certificates to trust when connecting to `ALICE_SERVER_URL`. Use this for self-signed or internal CA certificates. |
 
 ---
 

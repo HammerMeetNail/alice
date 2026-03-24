@@ -319,6 +319,37 @@ Remaining:
 
 - **visibility modes:** `team_scope` and `manager_scope` pass through without team/manager relationship logic; implementing these requires an org graph not yet in scope
 
+### step q: refactor MCP server to HTTP client mode
+
+Status: **not started**
+
+**Problem:** `cmd/mcp-server` currently embeds the full application stack (`app.NewContainer` → `httpapi.NewRouter`) and connects directly to PostgreSQL. This means two users can only share state if they both have raw database access to the same PostgreSQL instance. That is the opposite of the intended deployment model, where each user's agent runs locally and communicates through a shared coordination server over the network.
+
+**Target architecture:**
+
+```
+[User A: mcp-server] ─┐
+                       ├─ HTTPS → [cmd/server (hosted)] → PostgreSQL
+[User B: mcp-server] ─┘
+```
+
+**Required changes:**
+
+1. Add `ALICE_SERVER_URL` environment variable to `internal/config/config.go`. When set, `cmd/mcp-server` operates in HTTP client mode. When unset, it falls back to the current embedded behavior (for local single-user development).
+
+2. Implement an HTTP client service layer (`internal/httpclient/`) that satisfies the existing `services.Container` interface. Each method translates a service call into an authenticated HTTP request to `cmd/server`, includes the bearer token in `Authorization: Bearer`, and maps HTTP error responses back to the appropriate service errors. HTTPS is supported natively through Go's `http.Client`; the client must respect the standard TLS certificate chain by default and allow an optional `ALICE_SERVER_TLS_CA` env var pointing to a PEM file for self-signed or internal CA certs.
+
+3. Update `cmd/mcp-server/main.go` to branch on `ALICE_SERVER_URL`: when set, construct the HTTP client container (skipping `app.NewContainer` and its database connection entirely) and pass it to `mcp.NewServer`. The registration flow remains identical from the MCP layer's perspective — `register_agent` calls `BeginRegistration`/`CompleteRegistration` on whatever container is active; in HTTP client mode those calls hit `POST /v1/agents/register/challenge` and `POST /v1/agents/register` on the remote server and store the returned bearer token locally in memory (or via `ALICE_MCP_ACCESS_TOKEN` for persistence across restarts).
+
+4. Update `README.md` and `AGENTS.md` to document `ALICE_SERVER_URL` and `ALICE_SERVER_TLS_CA`, update the multi-user setup section to use this mode as the primary path, and demote the direct-PostgreSQL approach to a "local testing only" footnote.
+
+5. Update the multi-user test path in the README to reflect the correct topology: `cmd/server` runs once (backed by PostgreSQL), all user MCP servers point at it via `ALICE_SERVER_URL`.
+
+**Constraints:**
+- The embedded (no `ALICE_SERVER_URL`) path must continue to work for single-user local development
+- No raw database credentials should ever be required on a user's machine in the HTTP client path
+- All existing tests must continue to pass; the HTTP client path requires integration tests against a running `cmd/server` instance (use `httptest.NewServer` to avoid a live dependency)
+
 ---
 
 ## 5. immediate constraints for future sessions
@@ -341,14 +372,19 @@ Remaining:
 
 ## 6. suggested first task for the next session
 
-Steps a through p are largely complete. The remaining open security gaps and spec items are:
+**Step q is the highest priority.** The app cannot be meaningfully tested end-to-end in its intended deployment model until the MCP server can connect to a remote coordination server over HTTP(S). All multi-user testing currently requires shared PostgreSQL access, which is not representative of real use.
 
-1. **CORS/CSRF** — no CORS headers or CSRF protection; requires knowing the intended browser-facing origin before implementing
-2. **`team_scope` / `manager_scope` visibility modes** — require an org graph not yet in scope
-3. **`RegisterConnectorWatch` CLI command** — `watch.go` and the supporting config/state types are implemented but no `edge-agent watch` subcommand wires them up yet
-4. **cross-org negative authorization HTTP tests** — the service-level tests cover cross-org user lookup isolation; an HTTP-level cross-org registration + query attempt would further harden the test surface
+Implement step q in this order:
 
-All current items are complete. Remaining open spec items:
+1. Add `ALICE_SERVER_URL` and `ALICE_SERVER_TLS_CA` to `internal/config/config.go`
+2. Implement `internal/httpclient/` satisfying `services.Container` via HTTP calls
+3. Branch `cmd/mcp-server/main.go` on `ALICE_SERVER_URL`
+4. Add integration tests using `httptest.NewServer`
+5. Update `README.md` and `AGENTS.md`
+
+Once step q is complete, the two-person workflow in the README can be tested as designed: one `cmd/server` instance, two separate MCP server processes each configured with `ALICE_SERVER_URL`, no shared database access required on the client side.
+
+Remaining open items after step q:
 
 1. **CORS/CSRF** — requires a known browser-facing origin; not applicable to the current API-only surface
 2. **`team_scope` / `manager_scope` visibility modes** — require an org graph not yet in scope

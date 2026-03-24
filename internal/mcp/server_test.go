@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -193,6 +194,112 @@ func TestToolDiscoveryAndQueryFlow(t *testing.T) {
 	}))
 	if resolveResult["state"] != "approved" {
 		t.Fatalf("expected approval to resolve as approved, got %#v", resolveResult["state"])
+	}
+}
+
+func TestToolFlowRemoteServer(t *testing.T) {
+	cfg := config.Config{
+		DefaultOrgName:   "Alice Development Org",
+		AuthChallengeTTL: 5 * time.Minute,
+		AuthTokenTTL:     15 * time.Minute,
+	}
+	container, closeFn, err := app.NewContainer(cfg)
+	if err != nil {
+		t.Fatalf("build app container: %v", err)
+	}
+	if closeFn != nil {
+		t.Cleanup(func() { _ = closeFn() })
+	}
+
+	ts := httptest.NewServer(httpapi.NewRouter(container))
+	t.Cleanup(ts.Close)
+
+	fixture := newFixture(t)
+	aliceKeys := generateKeys(t)
+	bobKeys := generateKeys(t)
+
+	aliceServer := NewServer(nil, WithServerURL(ts.URL, ""))
+	bobServer := NewServer(nil, WithServerURL(ts.URL, ""))
+
+	aliceReg := mustStructuredContent(t, callTool(t, aliceServer, "register_agent", map[string]any{
+		"org_slug":    fixture.OrgSlug,
+		"owner_email": fixture.AliceEmail,
+		"agent_name":  "alice-agent",
+		"client_type": "mcp",
+		"public_key":  aliceKeys.PublicKey,
+		"private_key": aliceKeys.PrivateKey,
+	}))
+	if strings.TrimSpace(aliceReg["access_token"].(string)) == "" {
+		t.Fatalf("alice registration did not return an access token")
+	}
+
+	bobReg := mustStructuredContent(t, callTool(t, bobServer, "register_agent", map[string]any{
+		"org_slug":    fixture.OrgSlug,
+		"owner_email": fixture.BobEmail,
+		"agent_name":  "bob-agent",
+		"client_type": "mcp",
+		"public_key":  bobKeys.PublicKey,
+		"private_key": bobKeys.PrivateKey,
+	}))
+	if strings.TrimSpace(bobReg["access_token"].(string)) == "" {
+		t.Fatalf("bob registration did not return an access token")
+	}
+
+	mustStructuredContent(t, callTool(t, bobServer, "publish_artifact", map[string]any{
+		"artifact": map[string]any{
+			"type":            "summary",
+			"title":           "Working on payments retry",
+			"content":         "PR #128 in review.",
+			"sensitivity":     "low",
+			"visibility_mode": "explicit_grants_only",
+			"confidence":      0.9,
+			"structured_payload": map[string]any{
+				"project_refs": []string{fixture.ProjectScope},
+			},
+			"source_refs": []map[string]any{
+				{
+					"source_system": "github",
+					"source_type":   "pull_request",
+					"source_id":     "org/payments:pr:128",
+					"observed_at":   time.Now().UTC().Format(time.RFC3339),
+					"trust_class":   "structured_system",
+					"sensitivity":   "low",
+				},
+			},
+		},
+	}))
+
+	mustStructuredContent(t, callTool(t, bobServer, "grant_permission", map[string]any{
+		"grantee_user_email":     fixture.AliceEmail,
+		"scope_type":             "project",
+		"scope_ref":              fixture.ProjectScope,
+		"allowed_artifact_types": []string{"summary"},
+		"max_sensitivity":        "low",
+		"allowed_purposes":       []string{"status_check"},
+	}))
+
+	queryResp := mustStructuredContent(t, callTool(t, aliceServer, "query_peer_status", map[string]any{
+		"to_user_email":   fixture.BobEmail,
+		"purpose":         "status_check",
+		"question":        "What is Bob working on?",
+		"requested_types": []string{"summary"},
+		"project_scope":   []string{fixture.ProjectScope},
+		"time_window": map[string]any{
+			"start": time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   time.Now().UTC().Add(1 * time.Hour).Format(time.RFC3339),
+		},
+	}))
+
+	queryID := queryResp["query_id"].(string)
+	result := mustStructuredContent(t, callTool(t, aliceServer, "get_query_result", map[string]any{
+		"query_id": queryID,
+	}))
+
+	responsePayload := result["response"].(map[string]any)
+	var artifacts []map[string]any
+	mustDecodeInto(t, responsePayload["artifacts"], &artifacts)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected one artifact in query result, got %d", len(artifacts))
 	}
 }
 

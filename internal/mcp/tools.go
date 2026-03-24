@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -303,31 +304,62 @@ func (s *Server) callAuthedJSON(ctx context.Context, method, path string, body a
 }
 
 func (s *Server) callJSON(ctx context.Context, method, path string, body any, accessToken string) (map[string]any, error) {
-	var requestBody *bytes.Reader
-	if body == nil {
-		requestBody = bytes.NewReader(nil)
-	} else {
-		data, err := json.Marshal(body)
+	var bodyBytes []byte
+	if body != nil {
+		var err error
+		bodyBytes, err = json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("marshal request: %w", err)
 		}
-		requestBody = bytes.NewReader(data)
 	}
 
-	req := httptest.NewRequest(method, path, requestBody).WithContext(ctx)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if strings.TrimSpace(accessToken) != "" {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
-	}
+	token := strings.TrimSpace(accessToken)
 
-	rec := httptest.NewRecorder()
-	s.handler.ServeHTTP(rec, req)
+	var statusCode int
+	var responseBytes []byte
+
+	if s.baseURL != "" {
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, s.baseURL+path, bodyReader)
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		if bodyBytes != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("HTTP request: %w", err)
+		}
+		defer resp.Body.Close()
+		responseBytes, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read response body: %w", err)
+		}
+		statusCode = resp.StatusCode
+	} else {
+		req := httptest.NewRequest(method, path, bytes.NewReader(bodyBytes)).WithContext(ctx)
+		if bodyBytes != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		s.handler.ServeHTTP(rec, req)
+		statusCode = rec.Code
+		responseBytes = rec.Body.Bytes()
+	}
 
 	var payload map[string]any
-	if rec.Body.Len() > 0 {
-		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+	if len(responseBytes) > 0 {
+		if err := json.Unmarshal(responseBytes, &payload); err != nil {
 			return nil, fmt.Errorf("decode HTTP response: %w", err)
 		}
 	}
@@ -335,11 +367,11 @@ func (s *Server) callJSON(ctx context.Context, method, path string, body any, ac
 		payload = map[string]any{}
 	}
 
-	if rec.Code >= http.StatusBadRequest {
+	if statusCode >= http.StatusBadRequest {
 		if message := stringArg(payload, "error"); message != "" {
 			return nil, fmt.Errorf("%s", message)
 		}
-		return nil, fmt.Errorf("HTTP %d", rec.Code)
+		return nil, fmt.Errorf("HTTP %d", statusCode)
 	}
 
 	return payload, nil
