@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 
 	"alice/internal/app"
@@ -15,12 +15,13 @@ func main() {
 	cfg := config.FromEnv()
 	container, closeFn, err := app.NewContainer(cfg)
 	if err != nil {
-		log.Fatalf("mcp bootstrap failed: %v", err)
+		slog.Error("mcp bootstrap failed", "err", err)
+		os.Exit(1)
 	}
 	if closeFn != nil {
 		defer func() {
 			if err := closeFn(); err != nil {
-				log.Printf("mcp shutdown error: %v", err)
+				slog.Error("mcp shutdown error", "err", err)
 			}
 		}()
 	}
@@ -31,6 +32,7 @@ func main() {
 	)
 
 	if err := server.ServeStdio(context.Background(), os.Stdin, os.Stdout); err != nil {
-		log.Fatalf("mcp server exited: %v", err)
+		slog.Error("mcp server exited", "err", err)
+		os.Exit(1)
 	}
 }

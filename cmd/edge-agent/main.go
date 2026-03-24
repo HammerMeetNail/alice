@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,12 +22,14 @@ func main() {
 	flag.Parse()
 
 	if *configPath == "" {
-		log.Fatal("edge agent requires -config")
+		slog.Error("edge agent requires -config")
+		os.Exit(1)
 	}
 
 	cfg, err := edge.LoadConfig(*configPath)
 	if err != nil {
-		log.Fatalf("load edge config: %v", err)
+		slog.Error("load edge config", "err", err)
+		os.Exit(1)
 	}
 
 	encoder := json.NewEncoder(os.Stdout)
@@ -41,38 +43,41 @@ func main() {
 		defer cancel()
 
 		result, err := runtime.BootstrapConnector(ctx, *bootstrapConnector, func(prompt edge.ConnectorBootstrapPrompt) error {
-			log.Printf("Open this URL to authorize %s: %s", prompt.ConnectorType, prompt.AuthorizationURL)
-			log.Printf("Waiting for callback at %s", prompt.CallbackURL)
+			slog.Info("open this URL to authorize connector", "connector", prompt.ConnectorType, "url", prompt.AuthorizationURL)
+			slog.Info("waiting for callback", "url", prompt.CallbackURL)
 			return nil
 		})
 		if err != nil {
 			var keyErr *edge.CredentialStoreKeyRequiredError
 			if errors.As(err, &keyErr) {
-				log.Printf("edge connector bootstrap failed: %v", err)
-				log.Fatalf("Set %s or runtime.credentials_key_file before retrying.", cfg.CredentialsKeyEnvVar())
+				slog.Error("edge connector bootstrap failed", "err", err, "hint", "Set "+cfg.CredentialsKeyEnvVar()+" or runtime.credentials_key_file before retrying.")
+				os.Exit(1)
 			}
 			var decryptErr *edge.CredentialStoreDecryptError
 			if errors.As(err, &decryptErr) {
-				log.Printf("edge connector bootstrap failed: %v", err)
-				log.Fatalf("Check %s or runtime.credentials_key_file and retry.", cfg.CredentialsKeyEnvVar())
+				slog.Error("edge connector bootstrap failed", "err", err, "hint", "Check "+cfg.CredentialsKeyEnvVar()+" or runtime.credentials_key_file and retry.")
+				os.Exit(1)
 			}
-			log.Fatalf("edge connector bootstrap failed: %v", err)
+			slog.Error("edge connector bootstrap failed", "err", err)
+			os.Exit(1)
 		}
 		if err := encoder.Encode(result); err != nil {
-			log.Fatalf("encode bootstrap report: %v", err)
+			slog.Error("encode bootstrap report", "err", err)
+			os.Exit(1)
 		}
 		return
 	}
 
 	if *serveWebhooks {
 		if cfg.GitHubWebhookEnabled() {
-			log.Printf("Serving GitHub webhooks on http://%s%s", cfg.GitHubWebhookListenAddr(), edge.GitHubWebhookPath)
+			slog.Info("serving GitHub webhooks", "addr", "http://"+cfg.GitHubWebhookListenAddr()+edge.GitHubWebhookPath)
 		}
 		if cfg.JiraWebhookEnabled() {
-			log.Printf("Serving Jira webhooks on http://%s%s", cfg.JiraWebhookListenAddr(), edge.JiraWebhookPath)
+			slog.Info("serving Jira webhooks", "addr", "http://"+cfg.JiraWebhookListenAddr()+edge.JiraWebhookPath)
 		}
 		if err := runtime.ServeWebhooks(rootCtx); err != nil {
-			log.Fatalf("edge webhook server failed: %v", err)
+			slog.Error("edge webhook server failed", "err", err)
+			os.Exit(1)
 		}
 		return
 	}
@@ -81,24 +86,26 @@ func main() {
 	if err != nil {
 		var reauthErr *edge.ConnectorReauthRequiredError
 		if errors.As(err, &reauthErr) {
-			log.Printf("edge runtime failed: %v", err)
-			log.Fatalf("Re-authorize with: go run ./cmd/edge-agent -config %s -bootstrap-connector %s", *configPath, reauthErr.ConnectorType)
+			slog.Error("edge runtime failed", "err", err, "hint", "Re-authorize with: go run ./cmd/edge-agent -config "+*configPath+" -bootstrap-connector "+reauthErr.ConnectorType)
+			os.Exit(1)
 		}
 
 		var keyErr *edge.CredentialStoreKeyRequiredError
 		if errors.As(err, &keyErr) {
-			log.Printf("edge runtime failed: %v", err)
-			log.Fatalf("Set %s or runtime.credentials_key_file before retrying.", cfg.CredentialsKeyEnvVar())
+			slog.Error("edge runtime failed", "err", err, "hint", "Set "+cfg.CredentialsKeyEnvVar()+" or runtime.credentials_key_file before retrying.")
+			os.Exit(1)
 		}
 		var decryptErr *edge.CredentialStoreDecryptError
 		if errors.As(err, &decryptErr) {
-			log.Printf("edge runtime failed: %v", err)
-			log.Fatalf("Check %s or runtime.credentials_key_file and retry.", cfg.CredentialsKeyEnvVar())
+			slog.Error("edge runtime failed", "err", err, "hint", "Check "+cfg.CredentialsKeyEnvVar()+" or runtime.credentials_key_file and retry.")
+			os.Exit(1)
 		}
 
-		log.Fatalf("edge runtime failed: %v", err)
+		slog.Error("edge runtime failed", "err", err)
+		os.Exit(1)
 	}
 	if err := encoder.Encode(report); err != nil {
-		log.Fatalf("encode runtime report: %v", err)
+		slog.Error("encode runtime report", "err", err)
+		os.Exit(1)
 	}
 }

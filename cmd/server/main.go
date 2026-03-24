@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -15,7 +16,8 @@ func main() {
 	cfg := config.FromEnv()
 	server, err := app.NewServer(cfg)
 	if err != nil {
-		log.Fatalf("server bootstrap failed: %v", err)
+		slog.Error("server bootstrap failed", "err", err)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -27,12 +29,13 @@ func main() {
 		defer cancel()
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("shutdown error: %v", err)
+			slog.Error("shutdown error", "err", err)
 		}
 	}()
 
-	log.Printf("alice coordination server listening on %s", cfg.ListenAddr)
+	slog.Info("alice coordination server listening", "addr", cfg.ListenAddr)
 	if err := server.Start(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server exited: %v", err)
+		slog.Error("server exited", "err", err)
+		os.Exit(1)
 	}
 }

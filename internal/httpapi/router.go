@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -172,7 +172,7 @@ func (r *router) handleRegisterAgent(w http.ResponseWriter, req *http.Request) {
 		"auth_method":      "ed25519_challenge",
 		"token_expires_at": expiresAt,
 	}); err != nil {
-		log.Printf("audit record failed for agent registration: %v", err)
+		slog.Error("audit record failed", "op", "agent_registration", "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -211,7 +211,7 @@ func (r *router) handlePublishArtifact(w http.ResponseWriter, req *http.Request)
 	if _, err := r.services.Audit.Record(req.Context(), "artifact.published", "artifact", artifact.ArtifactID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
 		"artifact_type": artifact.Type,
 	}); err != nil {
-		log.Printf("audit record failed for artifact publish: %v", err)
+		slog.Error("audit record failed", "op", "artifact_publish", "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -262,7 +262,7 @@ func (r *router) handleGrantPermission(w http.ResponseWriter, req *http.Request)
 		"grantee_email": granteeUser.Email,
 		"scope_ref":     grant.ScopeRef,
 	}); err != nil {
-		log.Printf("audit record failed for grant creation: %v", err)
+		slog.Error("audit record failed", "op", "grant_create", "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -292,7 +292,7 @@ func (r *router) handleRevokePermission(w http.ResponseWriter, req *http.Request
 	if _, err := r.services.Audit.Record(req.Context(), "policy.grant.revoked", "policy_grant", grant.PolicyGrantID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, []string{"grant:" + grant.PolicyGrantID}, map[string]any{
 		"scope_ref": grant.ScopeRef,
 	}); err != nil {
-		log.Printf("audit record failed for grant revocation: %v", err)
+		slog.Error("audit record failed", "op", "grant_revoke", "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -332,7 +332,7 @@ func (r *router) handleListAllowedPeers(w http.ResponseWriter, req *http.Request
 	}
 
 	if _, err := r.services.Audit.Record(req.Context(), "policy.allowed_peers.listed", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL0, nil, nil); err != nil {
-		log.Printf("audit record failed for allowed peers listing: %v", err)
+		slog.Error("audit record failed", "op", "list_peers", "err", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
 }
@@ -407,7 +407,7 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 			if _, auditErr := r.services.Audit.Record(req.Context(), "query.denied", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "deny", core.RiskLevelL1, nil, map[string]any{
 				"to_user_email": targetUser.Email,
 			}); auditErr != nil {
-				log.Printf("audit record failed for denied query: %v", auditErr)
+				slog.Error("audit record failed", "op", "query_denied", "err", auditErr)
 			}
 			writeError(w, http.StatusForbidden, "query is not allowed")
 			return
@@ -419,7 +419,7 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 	if _, err := r.services.Audit.Record(req.Context(), "query.completed", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", core.RiskLevelL1, response.PolicyBasis, map[string]any{
 		"artifact_count": len(response.Artifacts),
 	}); err != nil {
-		log.Printf("audit record failed for completed query: %v", err)
+		slog.Error("audit record failed", "op", "query_complete", "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -547,7 +547,7 @@ func (r *router) handleSendRequestToPeer(w http.ResponseWriter, req *http.Reques
 		"request_type":  input.RequestType,
 		"to_user_email": targetUser.Email,
 	}); err != nil {
-		log.Printf("audit record failed for request creation: %v", err)
+		slog.Error("audit record failed", "op", "request_create", "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -652,7 +652,7 @@ func (r *router) handleRespondToRequest(w http.ResponseWriter, req *http.Request
 		metadata["approval_id"] = approval.ApprovalID
 	}
 	if _, err := r.services.Audit.Record(req.Context(), eventKind, "request", requestRecord.RequestID, requestRecord.OrgID, agent.AgentID, requestRecord.FromAgentID, "allow", requestRecord.RiskLevel, nil, metadata); err != nil {
-		log.Printf("audit record failed for request response: %v", err)
+		slog.Error("audit record failed", "op", "request_respond", "err", err)
 	}
 
 	payload := map[string]any{
@@ -745,7 +745,7 @@ func (r *router) handleResolveApproval(w http.ResponseWriter, req *http.Request)
 		"request_id":    requestRecord.RequestID,
 		"request_state": requestRecord.State,
 	}); err != nil {
-		log.Printf("audit record failed for approval resolution: %v", err)
+		slog.Error("audit record failed", "op", "approval_resolve", "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
