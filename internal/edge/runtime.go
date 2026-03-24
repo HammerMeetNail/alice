@@ -48,8 +48,32 @@ func NewRuntime(cfg Config) *Runtime {
 	}
 }
 
+func (r *Runtime) stateOptions() (StateOptions, error) {
+	secret, err := loadOptionalSecret("edge state encryption key", r.cfg.CredentialsKeyEnvVar(), r.cfg.CredentialsKeyFile())
+	if err != nil {
+		return StateOptions{}, err
+	}
+	return StateOptions{EncryptionSecret: secret}, nil
+}
+
+func (r *Runtime) loadState() (State, error) {
+	opts, err := r.stateOptions()
+	if err != nil {
+		return State{}, err
+	}
+	return LoadStateWithOptions(r.cfg.StatePath(), opts)
+}
+
+func (r *Runtime) saveState(state State) error {
+	opts, err := r.stateOptions()
+	if err != nil {
+		return err
+	}
+	return SaveStateWithOptions(r.cfg.StatePath(), state, opts)
+}
+
 func (r *Runtime) RunOnce(ctx context.Context) (Report, error) {
-	state, err := LoadState(r.cfg.StatePath())
+	state, err := r.loadState()
 	if err != nil {
 		return Report{}, err
 	}
@@ -92,7 +116,7 @@ func (r *Runtime) RunOnce(ctx context.Context) (Report, error) {
 		report.IncomingRequests = incoming
 	}
 
-	if err := SaveState(r.cfg.StatePath(), state); err != nil {
+	if err := r.saveState(state); err != nil {
 		return Report{}, err
 	}
 	return report, nil

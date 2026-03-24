@@ -8,7 +8,7 @@ import (
 	"alice/internal/core"
 )
 
-func (s *Store) SaveGrant(grant core.PolicyGrant) (core.PolicyGrant, error) {
+func (s *Store) SaveGrant(ctx context.Context, grant core.PolicyGrant) (core.PolicyGrant, error) {
 	artifactTypes, err := marshalArtifactTypes(grant.AllowedArtifactTypes)
 	if err != nil {
 		return core.PolicyGrant{}, fmt.Errorf("marshal grant artifact types: %w", err)
@@ -19,7 +19,7 @@ func (s *Store) SaveGrant(grant core.PolicyGrant) (core.PolicyGrant, error) {
 	}
 
 	_, err = s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO policy_grants (
 			policy_grant_id, org_id, grantor_user_id, grantee_user_id, scope_type, scope_ref, allowed_artifact_types,
 			max_sensitivity, allowed_purposes, visibility_mode, requires_approval_above_risk, created_at, expires_at
@@ -47,9 +47,9 @@ func (s *Store) SaveGrant(grant core.PolicyGrant) (core.PolicyGrant, error) {
 	return grant, nil
 }
 
-func (s *Store) ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
+func (s *Store) ListGrantsForPair(ctx context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
 	rows, err := s.db.QueryContext(
-		context.Background(),
+		ctx,
 		`SELECT policy_grant_id, org_id, grantor_user_id, grantee_user_id, scope_type, scope_ref, allowed_artifact_types,
 		        max_sensitivity, allowed_purposes, visibility_mode, requires_approval_above_risk, created_at, expires_at
 		FROM policy_grants
@@ -78,9 +78,9 @@ func (s *Store) ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.P
 	return grants, nil
 }
 
-func (s *Store) ListIncomingGrantsForUser(granteeUserID string) ([]core.PolicyGrant, error) {
+func (s *Store) ListIncomingGrantsForUser(ctx context.Context, granteeUserID string) ([]core.PolicyGrant, error) {
 	rows, err := s.db.QueryContext(
-		context.Background(),
+		ctx,
 		`SELECT policy_grant_id, org_id, grantor_user_id, grantee_user_id, scope_type, scope_ref, allowed_artifact_types,
 		        max_sensitivity, allowed_purposes, visibility_mode, requires_approval_above_risk, created_at, expires_at
 		FROM policy_grants

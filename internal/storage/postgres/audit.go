@@ -9,7 +9,7 @@ import (
 	"alice/internal/core"
 )
 
-func (s *Store) AppendAuditEvent(event core.AuditEvent) (core.AuditEvent, error) {
+func (s *Store) AppendAuditEvent(ctx context.Context, event core.AuditEvent) (core.AuditEvent, error) {
 	policyBasis, err := marshalStringSlice(event.PolicyBasis)
 	if err != nil {
 		return core.AuditEvent{}, fmt.Errorf("marshal audit policy basis: %w", err)
@@ -20,7 +20,7 @@ func (s *Store) AppendAuditEvent(event core.AuditEvent) (core.AuditEvent, error)
 	}
 
 	_, err = s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO audit_events (
 			audit_event_id, org_id, event_kind, actor_agent_id, target_agent_id, subject_type, subject_id,
 			policy_basis, decision, risk_level, created_at, metadata
@@ -47,14 +47,14 @@ func (s *Store) AppendAuditEvent(event core.AuditEvent) (core.AuditEvent, error)
 	return event, nil
 }
 
-func (s *Store) ListAuditEvents(agentID string, since time.Time) ([]core.AuditEvent, error) {
+func (s *Store) ListAuditEvents(ctx context.Context, agentID string, since time.Time) ([]core.AuditEvent, error) {
 	var sinceArg any
 	if !since.IsZero() {
 		sinceArg = since
 	}
 
 	rows, err := s.db.QueryContext(
-		context.Background(),
+		ctx,
 		`SELECT audit_event_id, org_id, event_kind, actor_agent_id, target_agent_id, subject_type, subject_id,
 		        policy_basis, decision, risk_level, created_at, metadata
 		FROM audit_events

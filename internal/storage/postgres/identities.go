@@ -9,9 +9,9 @@ import (
 	"alice/internal/core"
 )
 
-func (s *Store) UpsertOrganization(org core.Organization) (core.Organization, error) {
+func (s *Store) UpsertOrganization(ctx context.Context, org core.Organization) (core.Organization, error) {
 	_, err := s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO organizations (org_id, name, slug, created_at, status)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (org_id) DO UPDATE
@@ -31,10 +31,10 @@ func (s *Store) UpsertOrganization(org core.Organization) (core.Organization, er
 	return org, nil
 }
 
-func (s *Store) FindOrganizationBySlug(slug string) (core.Organization, bool, error) {
+func (s *Store) FindOrganizationBySlug(ctx context.Context, slug string) (core.Organization, bool, error) {
 	var org core.Organization
 	err := s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT org_id, name, slug, created_at, status
 		FROM organizations
 		WHERE slug = $1`,
@@ -49,14 +49,14 @@ func (s *Store) FindOrganizationBySlug(slug string) (core.Organization, bool, er
 	return org, true, nil
 }
 
-func (s *Store) UpsertUser(user core.User) (core.User, error) {
+func (s *Store) UpsertUser(ctx context.Context, user core.User) (core.User, error) {
 	roleTitles, err := marshalStringSlice(user.RoleTitles)
 	if err != nil {
 		return core.User{}, fmt.Errorf("marshal user role titles: %w", err)
 	}
 
 	_, err = s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO users (user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status)
 		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
 		ON CONFLICT (user_id) DO UPDATE
@@ -83,7 +83,7 @@ func (s *Store) UpsertUser(user core.User) (core.User, error) {
 	return user, nil
 }
 
-func (s *Store) FindUserByEmail(email string) (core.User, bool, error) {
+func (s *Store) FindUserByEmail(ctx context.Context, orgID, email string) (core.User, bool, error) {
 	var (
 		user        core.User
 		roleTitles  []byte
@@ -91,10 +91,11 @@ func (s *Store) FindUserByEmail(email string) (core.User, bool, error) {
 	)
 
 	err := s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status
 		FROM users
-		WHERE email = $1`,
+		WHERE org_id = $1 AND email = $2`,
+		orgID,
 		normalizeEmail(email),
 	).Scan(&user.UserID, &user.OrgID, &user.Email, &user.DisplayName, &roleTitles, &managerUser, &user.CreatedAt, &user.Status)
 	if err != nil {
@@ -111,7 +112,7 @@ func (s *Store) FindUserByEmail(email string) (core.User, bool, error) {
 	return user, true, nil
 }
 
-func (s *Store) FindUserByID(userID string) (core.User, bool, error) {
+func (s *Store) FindUserByID(ctx context.Context, userID string) (core.User, bool, error) {
 	var (
 		user        core.User
 		roleTitles  []byte
@@ -119,7 +120,7 @@ func (s *Store) FindUserByID(userID string) (core.User, bool, error) {
 	)
 
 	err := s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status
 		FROM users
 		WHERE user_id = $1`,
@@ -139,14 +140,14 @@ func (s *Store) FindUserByID(userID string) (core.User, bool, error) {
 	return user, true, nil
 }
 
-func (s *Store) UpsertAgent(agent core.Agent) (core.Agent, error) {
+func (s *Store) UpsertAgent(ctx context.Context, agent core.Agent) (core.Agent, error) {
 	capabilities, err := marshalStringSlice(agent.Capabilities)
 	if err != nil {
 		return core.Agent{}, fmt.Errorf("marshal agent capabilities: %w", err)
 	}
 
 	_, err = s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO agents (agent_id, org_id, owner_user_id, agent_name, runtime_kind, client_type, public_key, capabilities, status, last_seen_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
 		ON CONFLICT (agent_id) DO UPDATE
@@ -176,14 +177,14 @@ func (s *Store) UpsertAgent(agent core.Agent) (core.Agent, error) {
 	return agent, nil
 }
 
-func (s *Store) FindAgentByID(agentID string) (core.Agent, bool, error) {
+func (s *Store) FindAgentByID(ctx context.Context, agentID string) (core.Agent, bool, error) {
 	var (
 		agent        core.Agent
 		capabilities []byte
 	)
 
 	err := s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT agent_id, org_id, owner_user_id, agent_name, runtime_kind, client_type, public_key, capabilities, status, last_seen_at
 		FROM agents
 		WHERE agent_id = $1`,
@@ -202,14 +203,14 @@ func (s *Store) FindAgentByID(agentID string) (core.Agent, bool, error) {
 	return agent, true, nil
 }
 
-func (s *Store) FindAgentByUserID(userID string) (core.Agent, bool, error) {
+func (s *Store) FindAgentByUserID(ctx context.Context, userID string) (core.Agent, bool, error) {
 	var (
 		agent        core.Agent
 		capabilities []byte
 	)
 
 	err := s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT agent_id, org_id, owner_user_id, agent_name, runtime_kind, client_type, public_key, capabilities, status, last_seen_at
 		FROM agents
 		WHERE owner_user_id = $1`,

@@ -9,14 +9,14 @@ import (
 	"alice/internal/core"
 )
 
-func (s *Store) SaveRequest(request core.Request) (core.Request, error) {
+func (s *Store) SaveRequest(ctx context.Context, request core.Request) (core.Request, error) {
 	structuredPayload, err := marshalJSONObject(request.StructuredPayload)
 	if err != nil {
 		return core.Request{}, fmt.Errorf("marshal request structured payload: %w", err)
 	}
 
 	_, err = s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO requests (
 			request_id, org_id, from_agent_id, from_user_id, to_agent_id, to_user_id, request_type, title, content,
 			structured_payload, risk_level, state, approval_state, response_message, created_at, expires_at
@@ -63,9 +63,9 @@ func (s *Store) SaveRequest(request core.Request) (core.Request, error) {
 	return request, nil
 }
 
-func (s *Store) FindRequest(requestID string) (core.Request, bool, error) {
+func (s *Store) FindRequest(ctx context.Context, requestID string) (core.Request, bool, error) {
 	request, err := scanRequestRow(s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT request_id, org_id, from_agent_id, from_user_id, to_agent_id, to_user_id, request_type, title, content,
 		        structured_payload, risk_level, state, approval_state, response_message, created_at, expires_at
 		FROM requests
@@ -81,9 +81,9 @@ func (s *Store) FindRequest(requestID string) (core.Request, bool, error) {
 	return request, true, nil
 }
 
-func (s *Store) ListIncomingRequests(toAgentID string) ([]core.Request, error) {
+func (s *Store) ListIncomingRequests(ctx context.Context, toAgentID string) ([]core.Request, error) {
 	rows, err := s.db.QueryContext(
-		context.Background(),
+		ctx,
 		`SELECT request_id, org_id, from_agent_id, from_user_id, to_agent_id, to_user_id, request_type, title, content,
 		        structured_payload, risk_level, state, approval_state, response_message, created_at, expires_at
 		FROM requests
@@ -110,9 +110,9 @@ func (s *Store) ListIncomingRequests(toAgentID string) ([]core.Request, error) {
 	return requests, nil
 }
 
-func (s *Store) UpdateRequestState(requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error) {
+func (s *Store) UpdateRequestState(ctx context.Context, requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error) {
 	request, err := scanRequestRow(s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`UPDATE requests
 		SET state = $2,
 		    approval_state = $3,
@@ -134,9 +134,9 @@ func (s *Store) UpdateRequestState(requestID string, state core.RequestState, ap
 	return request, true, nil
 }
 
-func (s *Store) SaveApproval(approval core.Approval) (core.Approval, error) {
+func (s *Store) SaveApproval(ctx context.Context, approval core.Approval) (core.Approval, error) {
 	_, err := s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO approvals (
 			approval_id, org_id, agent_id, owner_user_id, subject_type, subject_id, reason, state, created_at, expires_at, resolved_at
 		) VALUES (
@@ -171,9 +171,9 @@ func (s *Store) SaveApproval(approval core.Approval) (core.Approval, error) {
 	return approval, nil
 }
 
-func (s *Store) FindApproval(approvalID string) (core.Approval, bool, error) {
+func (s *Store) FindApproval(ctx context.Context, approvalID string) (core.Approval, bool, error) {
 	approval, err := scanApprovalRow(s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT approval_id, org_id, agent_id, owner_user_id, subject_type, subject_id, reason, state, created_at, expires_at, resolved_at
 		FROM approvals
 		WHERE approval_id = $1`,
@@ -188,9 +188,9 @@ func (s *Store) FindApproval(approvalID string) (core.Approval, bool, error) {
 	return approval, true, nil
 }
 
-func (s *Store) ListPendingApprovals(agentID string) ([]core.Approval, error) {
+func (s *Store) ListPendingApprovals(ctx context.Context, agentID string) ([]core.Approval, error) {
 	rows, err := s.db.QueryContext(
-		context.Background(),
+		ctx,
 		`SELECT approval_id, org_id, agent_id, owner_user_id, subject_type, subject_id, reason, state, created_at, expires_at, resolved_at
 		FROM approvals
 		WHERE agent_id = $1 AND state = $2
@@ -217,9 +217,9 @@ func (s *Store) ListPendingApprovals(agentID string) ([]core.Approval, error) {
 	return approvals, nil
 }
 
-func (s *Store) ResolveApproval(approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error) {
+func (s *Store) ResolveApproval(ctx context.Context, approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error) {
 	approval, err := scanApprovalRow(s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`UPDATE approvals
 		SET state = $2,
 		    resolved_at = $3

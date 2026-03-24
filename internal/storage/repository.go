@@ -1,72 +1,73 @@
 package storage
 
 import (
+	"context"
 	"time"
 
 	"alice/internal/core"
 )
 
 type OrganizationRepository interface {
-	UpsertOrganization(org core.Organization) (core.Organization, error)
-	FindOrganizationBySlug(slug string) (core.Organization, bool, error)
+	UpsertOrganization(ctx context.Context, org core.Organization) (core.Organization, error)
+	FindOrganizationBySlug(ctx context.Context, slug string) (core.Organization, bool, error)
 }
 
 type UserRepository interface {
-	UpsertUser(user core.User) (core.User, error)
-	FindUserByEmail(email string) (core.User, bool, error)
-	FindUserByID(userID string) (core.User, bool, error)
+	UpsertUser(ctx context.Context, user core.User) (core.User, error)
+	FindUserByEmail(ctx context.Context, orgID, email string) (core.User, bool, error)
+	FindUserByID(ctx context.Context, userID string) (core.User, bool, error)
 }
 
 type AgentRepository interface {
-	UpsertAgent(agent core.Agent) (core.Agent, error)
-	FindAgentByID(agentID string) (core.Agent, bool, error)
-	FindAgentByUserID(userID string) (core.Agent, bool, error)
+	UpsertAgent(ctx context.Context, agent core.Agent) (core.Agent, error)
+	FindAgentByID(ctx context.Context, agentID string) (core.Agent, bool, error)
+	FindAgentByUserID(ctx context.Context, userID string) (core.Agent, bool, error)
 }
 
 type AgentRegistrationChallengeRepository interface {
-	SaveAgentRegistrationChallenge(challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error)
-	FindAgentRegistrationChallenge(challengeID string) (core.AgentRegistrationChallenge, bool, error)
+	SaveAgentRegistrationChallenge(ctx context.Context, challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error)
+	FindAgentRegistrationChallenge(ctx context.Context, challengeID string) (core.AgentRegistrationChallenge, bool, error)
 }
 
 type AgentTokenRepository interface {
-	SaveAgentToken(token core.AgentToken) (core.AgentToken, error)
-	FindAgentTokenByID(tokenID string) (core.AgentToken, bool, error)
+	SaveAgentToken(ctx context.Context, token core.AgentToken) (core.AgentToken, error)
+	FindAgentTokenByID(ctx context.Context, tokenID string) (core.AgentToken, bool, error)
 }
 
 type ArtifactRepository interface {
-	SaveArtifact(artifact core.Artifact) (core.Artifact, error)
-	ListArtifactsByOwner(userID string) ([]core.Artifact, error)
+	SaveArtifact(ctx context.Context, artifact core.Artifact) (core.Artifact, error)
+	ListArtifactsByOwner(ctx context.Context, userID string) ([]core.Artifact, error)
 }
 
 type PolicyGrantRepository interface {
-	SaveGrant(grant core.PolicyGrant) (core.PolicyGrant, error)
-	ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.PolicyGrant, error)
-	ListIncomingGrantsForUser(granteeUserID string) ([]core.PolicyGrant, error)
+	SaveGrant(ctx context.Context, grant core.PolicyGrant) (core.PolicyGrant, error)
+	ListGrantsForPair(ctx context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error)
+	ListIncomingGrantsForUser(ctx context.Context, granteeUserID string) ([]core.PolicyGrant, error)
 }
 
 type QueryRepository interface {
-	SaveQuery(query core.Query) (core.Query, error)
-	SaveQueryResponse(response core.QueryResponse) (core.QueryResponse, error)
-	UpdateQueryState(queryID string, state core.QueryState) (core.Query, bool, error)
-	FindQuery(queryID string) (core.Query, bool, error)
-	FindQueryResponse(queryID string) (core.QueryResponse, bool, error)
+	SaveQuery(ctx context.Context, query core.Query) (core.Query, error)
+	SaveQueryResponse(ctx context.Context, response core.QueryResponse) (core.QueryResponse, error)
+	UpdateQueryState(ctx context.Context, queryID string, state core.QueryState) (core.Query, bool, error)
+	FindQuery(ctx context.Context, queryID string) (core.Query, bool, error)
+	FindQueryResponse(ctx context.Context, queryID string) (core.QueryResponse, bool, error)
 }
 
 type RequestRepository interface {
-	SaveRequest(request core.Request) (core.Request, error)
-	FindRequest(requestID string) (core.Request, bool, error)
-	ListIncomingRequests(toAgentID string) ([]core.Request, error)
-	UpdateRequestState(requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error)
+	SaveRequest(ctx context.Context, request core.Request) (core.Request, error)
+	FindRequest(ctx context.Context, requestID string) (core.Request, bool, error)
+	ListIncomingRequests(ctx context.Context, toAgentID string) ([]core.Request, error)
+	UpdateRequestState(ctx context.Context, requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error)
 }
 
 type ApprovalRepository interface {
-	SaveApproval(approval core.Approval) (core.Approval, error)
-	FindApproval(approvalID string) (core.Approval, bool, error)
-	ListPendingApprovals(agentID string) ([]core.Approval, error)
-	ResolveApproval(approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error)
+	SaveApproval(ctx context.Context, approval core.Approval) (core.Approval, error)
+	FindApproval(ctx context.Context, approvalID string) (core.Approval, bool, error)
+	ListPendingApprovals(ctx context.Context, agentID string) ([]core.Approval, error)
+	ResolveApproval(ctx context.Context, approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error)
 }
 
 type AuditRepository interface {
-	AppendAuditEvent(event core.AuditEvent) (core.AuditEvent, error)
-	ListAuditEvents(agentID string, since time.Time) ([]core.AuditEvent, error)
+	AppendAuditEvent(ctx context.Context, event core.AuditEvent) (core.AuditEvent, error)
+	ListAuditEvents(ctx context.Context, agentID string, since time.Time) ([]core.AuditEvent, error)
 }

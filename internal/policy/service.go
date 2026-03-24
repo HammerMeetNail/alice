@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -18,7 +19,7 @@ func NewService(repo storage.PolicyGrantRepository) *Service {
 	return &Service{repo: repo}
 }
 
-func (s *Service) Grant(orgID string, grantorUser core.User, granteeUser core.User, scopeType, scopeRef string, artifactTypes []core.ArtifactType, maxSensitivity core.Sensitivity, purposes []core.QueryPurpose) (core.PolicyGrant, error) {
+func (s *Service) Grant(ctx context.Context, orgID string, grantorUser core.User, granteeUser core.User, scopeType, scopeRef string, artifactTypes []core.ArtifactType, maxSensitivity core.Sensitivity, purposes []core.QueryPurpose) (core.PolicyGrant, error) {
 	if err := core.ValidateGrantInput(granteeUser.Email, scopeType, scopeRef, artifactTypes, maxSensitivity, purposes); err != nil {
 		return core.PolicyGrant{}, err
 	}
@@ -38,17 +39,17 @@ func (s *Service) Grant(orgID string, grantorUser core.User, granteeUser core.Us
 		CreatedAt:                 time.Now().UTC(),
 	}
 
-	saved, err := s.repo.SaveGrant(grant)
+	saved, err := s.repo.SaveGrant(ctx, grant)
 	if err != nil {
 		return core.PolicyGrant{}, fmt.Errorf("save grant: %w", err)
 	}
 	return saved, nil
 }
 
-func (s *Service) ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
-	return s.repo.ListGrantsForPair(grantorUserID, granteeUserID)
+func (s *Service) ListGrantsForPair(ctx context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
+	return s.repo.ListGrantsForPair(ctx, grantorUserID, granteeUserID)
 }
 
-func (s *Service) ListAllowedPeers(granteeUserID string) ([]core.PolicyGrant, error) {
-	return s.repo.ListIncomingGrantsForUser(granteeUserID)
+func (s *Service) ListAllowedPeers(ctx context.Context, granteeUserID string) ([]core.PolicyGrant, error) {
+	return s.repo.ListIncomingGrantsForUser(ctx, granteeUserID)
 }

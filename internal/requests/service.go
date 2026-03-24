@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -21,7 +22,7 @@ func NewService(requests storage.RequestRepository, approvals storage.ApprovalRe
 	}
 }
 
-func (s *Service) Send(request core.Request) (core.Request, error) {
+func (s *Service) Send(ctx context.Context, request core.Request) (core.Request, error) {
 	request.RequestID = id.New("request")
 	request.State = core.RequestStatePending
 	request.ApprovalState = core.ApprovalStateNotRequired
@@ -30,23 +31,23 @@ func (s *Service) Send(request core.Request) (core.Request, error) {
 		request.ExpiresAt = request.CreatedAt.Add(24 * time.Hour)
 	}
 
-	saved, err := s.requests.SaveRequest(request)
+	saved, err := s.requests.SaveRequest(ctx, request)
 	if err != nil {
 		return core.Request{}, fmt.Errorf("save request: %w", err)
 	}
 	return saved, nil
 }
 
-func (s *Service) ListIncoming(agentID string) ([]core.Request, error) {
-	requests, err := s.requests.ListIncomingRequests(agentID)
+func (s *Service) ListIncoming(ctx context.Context, agentID string) ([]core.Request, error) {
+	requests, err := s.requests.ListIncomingRequests(ctx, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("list incoming requests: %w", err)
 	}
 	return requests, nil
 }
 
-func (s *Service) Respond(agent core.Agent, requestID string, action core.RequestResponseAction, message string) (core.Request, *core.Approval, error) {
-	request, found, err := s.requests.FindRequest(requestID)
+func (s *Service) Respond(ctx context.Context, agent core.Agent, requestID string, action core.RequestResponseAction, message string) (core.Request, *core.Approval, error) {
+	request, found, err := s.requests.FindRequest(ctx, requestID)
 	if err != nil {
 		return core.Request{}, nil, fmt.Errorf("find request: %w", err)
 	}
@@ -73,11 +74,11 @@ func (s *Service) Respond(agent core.Agent, requestID string, action core.Reques
 			CreatedAt:   time.Now().UTC(),
 			ExpiresAt:   time.Now().UTC().Add(2 * time.Hour),
 		}
-		savedApproval, err := s.approvals.SaveApproval(approval)
+		savedApproval, err := s.approvals.SaveApproval(ctx, approval)
 		if err != nil {
 			return core.Request{}, nil, fmt.Errorf("save approval: %w", err)
 		}
-		updated, found, err := s.requests.UpdateRequestState(request.RequestID, request.State, core.ApprovalStatePending, message)
+		updated, found, err := s.requests.UpdateRequestState(ctx, request.RequestID, request.State, core.ApprovalStatePending, message)
 		if err != nil {
 			return core.Request{}, nil, fmt.Errorf("mark request approval pending: %w", err)
 		}
@@ -88,7 +89,7 @@ func (s *Service) Respond(agent core.Agent, requestID string, action core.Reques
 	}
 
 	nextState := actionToState(action)
-	updated, found, err := s.requests.UpdateRequestState(request.RequestID, nextState, request.ApprovalState, message)
+	updated, found, err := s.requests.UpdateRequestState(ctx, request.RequestID, nextState, request.ApprovalState, message)
 	if err != nil {
 		return core.Request{}, nil, fmt.Errorf("update request state: %w", err)
 	}

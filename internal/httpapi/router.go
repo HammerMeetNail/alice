@@ -37,18 +37,18 @@ func NewRouter(services services.Container) http.Handler {
 
 func (r *router) routes() {
 	r.mux.HandleFunc("GET /healthz", r.handleHealthz)
-	r.mux.HandleFunc("POST /v1/agents/register/challenge", r.handleBeginRegisterAgent)
-	r.mux.HandleFunc("POST /v1/agents/register", r.handleRegisterAgent)
-	r.mux.Handle("POST /v1/artifacts", r.requireAuth(http.HandlerFunc(r.handlePublishArtifact)))
-	r.mux.Handle("POST /v1/policy-grants", r.requireAuth(http.HandlerFunc(r.handleGrantPermission)))
+	r.mux.Handle("POST /v1/agents/register/challenge", r.limitBody(http.HandlerFunc(r.handleBeginRegisterAgent)))
+	r.mux.Handle("POST /v1/agents/register", r.limitBody(http.HandlerFunc(r.handleRegisterAgent)))
+	r.mux.Handle("POST /v1/artifacts", r.limitBody(r.requireAuth(http.HandlerFunc(r.handlePublishArtifact))))
+	r.mux.Handle("POST /v1/policy-grants", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleGrantPermission))))
 	r.mux.Handle("GET /v1/peers", r.requireAuth(http.HandlerFunc(r.handleListAllowedPeers)))
-	r.mux.Handle("POST /v1/queries", r.requireAuth(http.HandlerFunc(r.handleQueryPeerStatus)))
+	r.mux.Handle("POST /v1/queries", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleQueryPeerStatus))))
 	r.mux.Handle("GET /v1/queries/", r.requireAuth(http.HandlerFunc(r.handleGetQueryResult)))
-	r.mux.Handle("POST /v1/requests", r.requireAuth(http.HandlerFunc(r.handleSendRequestToPeer)))
+	r.mux.Handle("POST /v1/requests", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleSendRequestToPeer))))
 	r.mux.Handle("GET /v1/requests/incoming", r.requireAuth(http.HandlerFunc(r.handleListIncomingRequests)))
-	r.mux.Handle("POST /v1/requests/", r.requireAuth(http.HandlerFunc(r.handleRespondToRequest)))
+	r.mux.Handle("POST /v1/requests/", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleRespondToRequest))))
 	r.mux.Handle("GET /v1/approvals", r.requireAuth(http.HandlerFunc(r.handleListPendingApprovals)))
-	r.mux.Handle("POST /v1/approvals/", r.requireAuth(http.HandlerFunc(r.handleResolveApproval)))
+	r.mux.Handle("POST /v1/approvals/", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleResolveApproval))))
 	r.mux.Handle("GET /v1/audit/summary", r.requireAuth(http.HandlerFunc(r.handleAuditSummary)))
 }
 
@@ -68,11 +68,11 @@ type registerAgentRequest struct {
 func (r *router) handleBeginRegisterAgent(w http.ResponseWriter, req *http.Request) {
 	var input registerAgentRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeDecodeError(w, err)
 		return
 	}
 
-	challenge, payload, err := r.services.Agents.BeginRegistration(input.OrgSlug, input.OwnerEmail, input.AgentName, input.ClientType, input.PublicKey, input.Capabilities)
+	challenge, payload, err := r.services.Agents.BeginRegistration(req.Context(), input.OrgSlug, input.OwnerEmail, input.AgentName, input.ClientType, input.PublicKey, input.Capabilities)
 	if err != nil {
 		writeServiceError(w, err, "registration challenge failed")
 		return
@@ -94,11 +94,11 @@ type completeRegisterAgentRequest struct {
 func (r *router) handleRegisterAgent(w http.ResponseWriter, req *http.Request) {
 	var input completeRegisterAgentRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeDecodeError(w, err)
 		return
 	}
 
-	org, user, agent, accessToken, expiresAt, err := r.services.Agents.CompleteRegistration(input.ChallengeID, input.ChallengeSignature)
+	org, user, agent, accessToken, expiresAt, err := r.services.Agents.CompleteRegistration(req.Context(), input.ChallengeID, input.ChallengeSignature)
 	if err != nil {
 		switch {
 		case errors.Is(err, agents.ErrUnknownRegistrationChallenge):
@@ -115,7 +115,7 @@ func (r *router) handleRegisterAgent(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	if _, err := r.services.Audit.Record("agent.registered", "agent", agent.AgentID, org.OrgID, agent.AgentID, "", "allow", "", nil, map[string]any{
+	if _, err := r.services.Audit.Record(req.Context(), "agent.registered", "agent", agent.AgentID, org.OrgID, agent.AgentID, "", "allow", "", nil, map[string]any{
 		"owner_email":      user.Email,
 		"auth_method":      "ed25519_challenge",
 		"token_expires_at": expiresAt,
@@ -146,17 +146,17 @@ func (r *router) handlePublishArtifact(w http.ResponseWriter, req *http.Request)
 
 	var input publishArtifactRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeDecodeError(w, err)
 		return
 	}
 
-	artifact, err := r.services.Artifacts.PublishArtifact(agent, user, input.Artifact)
+	artifact, err := r.services.Artifacts.PublishArtifact(req.Context(), agent, user, input.Artifact)
 	if err != nil {
 		writeServiceError(w, err, "artifact publish failed")
 		return
 	}
 
-	if _, err := r.services.Audit.Record("artifact.published", "artifact", artifact.ArtifactID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
+	if _, err := r.services.Audit.Record(req.Context(), "artifact.published", "artifact", artifact.ArtifactID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
 		"artifact_type": artifact.Type,
 	}); err != nil {
 		log.Printf("audit record failed for artifact publish: %v", err)
@@ -186,11 +186,11 @@ func (r *router) handleGrantPermission(w http.ResponseWriter, req *http.Request)
 
 	var input grantPermissionRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeDecodeError(w, err)
 		return
 	}
 
-	granteeUser, exists, err := r.services.Agents.FindUserByEmail(input.GranteeUserEmail)
+	granteeUser, exists, err := r.services.Agents.FindUserByEmail(req.Context(), agent.OrgID, input.GranteeUserEmail)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to resolve grantee user")
 		return
@@ -200,13 +200,13 @@ func (r *router) handleGrantPermission(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	grant, err := r.services.Policy.Grant(agent.OrgID, user, granteeUser, input.ScopeType, input.ScopeRef, input.AllowedArtifactTypes, input.MaxSensitivity, input.AllowedPurposes)
+	grant, err := r.services.Policy.Grant(req.Context(), agent.OrgID, user, granteeUser, input.ScopeType, input.ScopeRef, input.AllowedArtifactTypes, input.MaxSensitivity, input.AllowedPurposes)
 	if err != nil {
 		writeServiceError(w, err, "grant creation failed")
 		return
 	}
 
-	if _, err := r.services.Audit.Record("policy.grant.created", "policy_grant", grant.PolicyGrantID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, []string{"grant:" + grant.PolicyGrantID}, map[string]any{
+	if _, err := r.services.Audit.Record(req.Context(), "policy.grant.created", "policy_grant", grant.PolicyGrantID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, []string{"grant:" + grant.PolicyGrantID}, map[string]any{
 		"grantee_email": granteeUser.Email,
 		"scope_ref":     grant.ScopeRef,
 	}); err != nil {
@@ -225,14 +225,14 @@ func (r *router) handleListAllowedPeers(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	grants, err := r.services.Policy.ListAllowedPeers(user.UserID)
+	grants, err := r.services.Policy.ListAllowedPeers(req.Context(), user.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list allowed peers")
 		return
 	}
 	peers := make([]map[string]any, 0, len(grants))
 	for _, grant := range grants {
-		owner, exists, err := r.services.Agents.FindUserByID(grant.GrantorUserID)
+		owner, exists, err := r.services.Agents.FindUserByID(req.Context(), grant.GrantorUserID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to resolve grant owner")
 			return
@@ -248,7 +248,7 @@ func (r *router) handleListAllowedPeers(w http.ResponseWriter, req *http.Request
 		})
 	}
 
-	if _, err := r.services.Audit.Record("policy.allowed_peers.listed", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL0, nil, nil); err != nil {
+	if _, err := r.services.Audit.Record(req.Context(), "policy.allowed_peers.listed", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL0, nil, nil); err != nil {
 		log.Printf("audit record failed for allowed peers listing: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
@@ -272,7 +272,7 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 
 	var input queryPeerStatusRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeDecodeError(w, err)
 		return
 	}
 
@@ -281,7 +281,7 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	targetUser, exists, err := r.services.Agents.FindUserByEmail(input.ToUserEmail)
+	targetUser, exists, err := r.services.Agents.FindUserByEmail(req.Context(), agent.OrgID, input.ToUserEmail)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to resolve target user")
 		return
@@ -290,7 +290,7 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 		writeError(w, http.StatusNotFound, "target user not found")
 		return
 	}
-	targetAgent, exists, err := r.services.Agents.FindAgentByUserID(targetUser.UserID)
+	targetAgent, exists, err := r.services.Agents.FindAgentByUserID(req.Context(), targetUser.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to resolve target agent")
 		return
@@ -318,10 +318,10 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 		ExpiresAt:      time.Now().UTC().Add(5 * time.Minute),
 	}
 
-	response, err := r.services.Queries.Evaluate(query)
+	response, err := r.services.Queries.Evaluate(req.Context(), query)
 	if err != nil {
 		if errors.Is(err, queries.ErrPermissionDenied) {
-			if _, auditErr := r.services.Audit.Record("query.denied", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "deny", core.RiskLevelL1, nil, map[string]any{
+			if _, auditErr := r.services.Audit.Record(req.Context(), "query.denied", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "deny", core.RiskLevelL1, nil, map[string]any{
 				"to_user_email": targetUser.Email,
 			}); auditErr != nil {
 				log.Printf("audit record failed for denied query: %v", auditErr)
@@ -333,7 +333,7 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	if _, err := r.services.Audit.Record("query.completed", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", core.RiskLevelL1, response.PolicyBasis, map[string]any{
+	if _, err := r.services.Audit.Record(req.Context(), "query.completed", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", core.RiskLevelL1, response.PolicyBasis, map[string]any{
 		"artifact_count": len(response.Artifacts),
 	}); err != nil {
 		log.Printf("audit record failed for completed query: %v", err)
@@ -353,7 +353,7 @@ func (r *router) handleGetQueryResult(w http.ResponseWriter, req *http.Request) 
 	}
 
 	queryID := strings.TrimPrefix(req.URL.Path, "/v1/queries/")
-	query, response, found, err := r.services.Queries.FindResult(queryID)
+	query, response, found, err := r.services.Queries.FindResult(req.Context(), queryID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load query result")
 		return
@@ -391,7 +391,7 @@ func (r *router) handleAuditSummary(w http.ResponseWriter, req *http.Request) {
 		since = parsed
 	}
 
-	events, err := r.services.Audit.Summary(agent.AgentID, since)
+	events, err := r.services.Audit.Summary(req.Context(), agent.AgentID, since)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load audit summary")
 		return
@@ -416,7 +416,7 @@ func (r *router) handleSendRequestToPeer(w http.ResponseWriter, req *http.Reques
 
 	var input sendRequestToPeerRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeDecodeError(w, err)
 		return
 	}
 	if err := core.ValidateRequestInput(input.ToUserEmail, input.RequestType, input.Title, input.Content); err != nil {
@@ -424,7 +424,7 @@ func (r *router) handleSendRequestToPeer(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	targetUser, exists, err := r.services.Agents.FindUserByEmail(input.ToUserEmail)
+	targetUser, exists, err := r.services.Agents.FindUserByEmail(req.Context(), agent.OrgID, input.ToUserEmail)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to resolve target user")
 		return
@@ -433,7 +433,7 @@ func (r *router) handleSendRequestToPeer(w http.ResponseWriter, req *http.Reques
 		writeError(w, http.StatusNotFound, "target user not found")
 		return
 	}
-	targetAgent, exists, err := r.services.Agents.FindAgentByUserID(targetUser.UserID)
+	targetAgent, exists, err := r.services.Agents.FindAgentByUserID(req.Context(), targetUser.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to resolve target agent")
 		return
@@ -443,7 +443,7 @@ func (r *router) handleSendRequestToPeer(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	requestRecord, err := r.services.Requests.Send(core.Request{
+	requestRecord, err := r.services.Requests.Send(req.Context(), core.Request{
 		OrgID:             agent.OrgID,
 		FromAgentID:       agent.AgentID,
 		FromUserID:        user.UserID,
@@ -460,7 +460,7 @@ func (r *router) handleSendRequestToPeer(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	if _, err := r.services.Audit.Record("request.created", "request", requestRecord.RequestID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", requestRecord.RiskLevel, nil, map[string]any{
+	if _, err := r.services.Audit.Record(req.Context(), "request.created", "request", requestRecord.RequestID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", requestRecord.RiskLevel, nil, map[string]any{
 		"request_type":  input.RequestType,
 		"to_user_email": targetUser.Email,
 	}); err != nil {
@@ -480,7 +480,7 @@ func (r *router) handleListIncomingRequests(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	requestsList, err := r.services.Requests.ListIncoming(agent.AgentID)
+	requestsList, err := r.services.Requests.ListIncoming(req.Context(), agent.AgentID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load incoming requests")
 		return
@@ -488,7 +488,7 @@ func (r *router) handleListIncomingRequests(w http.ResponseWriter, req *http.Req
 
 	items := make([]map[string]any, 0, len(requestsList))
 	for _, requestRecord := range requestsList {
-		sender, exists, err := r.services.Agents.FindUserByID(requestRecord.FromUserID)
+		sender, exists, err := r.services.Agents.FindUserByID(req.Context(), requestRecord.FromUserID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to resolve request sender")
 			return
@@ -531,7 +531,7 @@ func (r *router) handleRespondToRequest(w http.ResponseWriter, req *http.Request
 
 	var input respondToRequestRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeDecodeError(w, err)
 		return
 	}
 	if err := core.ValidateRequestResponseInput(requestID, input.Response); err != nil {
@@ -539,7 +539,7 @@ func (r *router) handleRespondToRequest(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	requestRecord, approval, err := r.services.Requests.Respond(agent, requestID, input.Response, input.Message)
+	requestRecord, approval, err := r.services.Requests.Respond(req.Context(), agent, requestID, input.Response, input.Message)
 	if err != nil {
 		switch {
 		case errors.Is(err, requests.ErrUnknownRequest):
@@ -565,7 +565,7 @@ func (r *router) handleRespondToRequest(w http.ResponseWriter, req *http.Request
 		eventKind = "request.approval_requested"
 		metadata["approval_id"] = approval.ApprovalID
 	}
-	if _, err := r.services.Audit.Record(eventKind, "request", requestRecord.RequestID, requestRecord.OrgID, agent.AgentID, requestRecord.FromAgentID, "allow", requestRecord.RiskLevel, nil, metadata); err != nil {
+	if _, err := r.services.Audit.Record(req.Context(), eventKind, "request", requestRecord.RequestID, requestRecord.OrgID, agent.AgentID, requestRecord.FromAgentID, "allow", requestRecord.RiskLevel, nil, metadata); err != nil {
 		log.Printf("audit record failed for request response: %v", err)
 	}
 
@@ -587,7 +587,7 @@ func (r *router) handleListPendingApprovals(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	approvalsList, err := r.services.Approvals.ListPending(agent.AgentID)
+	approvalsList, err := r.services.Approvals.ListPending(req.Context(), agent.AgentID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load pending approvals")
 		return
@@ -625,7 +625,7 @@ func (r *router) handleResolveApproval(w http.ResponseWriter, req *http.Request)
 
 	var input resolveApprovalRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeDecodeError(w, err)
 		return
 	}
 	if err := core.ValidateApprovalResolutionInput(approvalID, input.Decision); err != nil {
@@ -633,7 +633,7 @@ func (r *router) handleResolveApproval(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	approval, requestRecord, err := r.services.Approvals.Resolve(agent, approvalID, input.Decision)
+	approval, requestRecord, err := r.services.Approvals.Resolve(req.Context(), agent, approvalID, input.Decision)
 	if err != nil {
 		switch {
 		case errors.Is(err, approvals.ErrUnknownApproval):
@@ -651,7 +651,7 @@ func (r *router) handleResolveApproval(w http.ResponseWriter, req *http.Request)
 		}
 	}
 
-	if _, err := r.services.Audit.Record("approval.resolved", "approval", approval.ApprovalID, approval.OrgID, agent.AgentID, requestRecord.FromAgentID, "allow", requestRecord.RiskLevel, nil, map[string]any{
+	if _, err := r.services.Audit.Record(req.Context(), "approval.resolved", "approval", approval.ApprovalID, approval.OrgID, agent.AgentID, requestRecord.FromAgentID, "allow", requestRecord.RiskLevel, nil, map[string]any{
 		"decision":      approval.State,
 		"request_id":    requestRecord.RequestID,
 		"request_state": requestRecord.State,
@@ -666,6 +666,13 @@ func (r *router) handleResolveApproval(w http.ResponseWriter, req *http.Request)
 	})
 }
 
+func (r *router) limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		req.Body = http.MaxBytesReader(w, req.Body, 1<<20)
+		next.ServeHTTP(w, req)
+	})
+}
+
 func (r *router) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		accessToken, ok := accessTokenFromRequest(req)
@@ -674,7 +681,7 @@ func (r *router) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		agent, user, err := r.services.Agents.AuthenticateAgent(accessToken)
+		agent, user, err := r.services.Agents.AuthenticateAgent(req.Context(), accessToken)
 		if err != nil {
 			switch {
 			case errors.Is(err, agents.ErrUnknownAgentToken),
@@ -756,4 +763,13 @@ func writeServiceError(w http.ResponseWriter, err error, fallback string) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, fallback)
+}
+
+func writeDecodeError(w http.ResponseWriter, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid JSON body")
 }

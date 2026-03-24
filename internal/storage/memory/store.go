@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"sync"
@@ -16,7 +17,7 @@ type Store struct {
 	organizations    map[string]core.Organization
 	orgsBySlug       map[string]string
 	users            map[string]core.User
-	usersByEmail     map[string]string
+	usersByOrgEmail  map[string]string
 	agents           map[string]core.Agent
 	agentsByUser     map[string]string
 	challenges       map[string]core.AgentRegistrationChallenge
@@ -52,7 +53,7 @@ func New() *Store {
 		organizations:    make(map[string]core.Organization),
 		orgsBySlug:       make(map[string]string),
 		users:            make(map[string]core.User),
-		usersByEmail:     make(map[string]string),
+		usersByOrgEmail:  make(map[string]string),
 		agents:           make(map[string]core.Agent),
 		agentsByUser:     make(map[string]string),
 		challenges:       make(map[string]core.AgentRegistrationChallenge),
@@ -77,7 +78,7 @@ func normalizeSlug(slug string) string {
 	return strings.ToLower(strings.TrimSpace(slug))
 }
 
-func (s *Store) UpsertOrganization(org core.Organization) (core.Organization, error) {
+func (s *Store) UpsertOrganization(_ context.Context, org core.Organization) (core.Organization, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -86,7 +87,7 @@ func (s *Store) UpsertOrganization(org core.Organization) (core.Organization, er
 	return org, nil
 }
 
-func (s *Store) FindOrganizationBySlug(slug string) (core.Organization, bool, error) {
+func (s *Store) FindOrganizationBySlug(_ context.Context, slug string) (core.Organization, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -98,20 +99,20 @@ func (s *Store) FindOrganizationBySlug(slug string) (core.Organization, bool, er
 	return org, ok, nil
 }
 
-func (s *Store) UpsertUser(user core.User) (core.User, error) {
+func (s *Store) UpsertUser(_ context.Context, user core.User) (core.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.users[user.UserID] = user
-	s.usersByEmail[normalizeEmail(user.Email)] = user.UserID
+	s.usersByOrgEmail[user.OrgID+":"+normalizeEmail(user.Email)] = user.UserID
 	return user, nil
 }
 
-func (s *Store) FindUserByEmail(email string) (core.User, bool, error) {
+func (s *Store) FindUserByEmail(_ context.Context, orgID, email string) (core.User, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	userID, ok := s.usersByEmail[normalizeEmail(email)]
+	userID, ok := s.usersByOrgEmail[orgID+":"+normalizeEmail(email)]
 	if !ok {
 		return core.User{}, false, nil
 	}
@@ -119,7 +120,7 @@ func (s *Store) FindUserByEmail(email string) (core.User, bool, error) {
 	return user, ok, nil
 }
 
-func (s *Store) FindUserByID(userID string) (core.User, bool, error) {
+func (s *Store) FindUserByID(_ context.Context, userID string) (core.User, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -127,7 +128,7 @@ func (s *Store) FindUserByID(userID string) (core.User, bool, error) {
 	return user, ok, nil
 }
 
-func (s *Store) UpsertAgent(agent core.Agent) (core.Agent, error) {
+func (s *Store) UpsertAgent(_ context.Context, agent core.Agent) (core.Agent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -136,7 +137,7 @@ func (s *Store) UpsertAgent(agent core.Agent) (core.Agent, error) {
 	return agent, nil
 }
 
-func (s *Store) FindAgentByID(agentID string) (core.Agent, bool, error) {
+func (s *Store) FindAgentByID(_ context.Context, agentID string) (core.Agent, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -144,7 +145,7 @@ func (s *Store) FindAgentByID(agentID string) (core.Agent, bool, error) {
 	return agent, ok, nil
 }
 
-func (s *Store) FindAgentByUserID(userID string) (core.Agent, bool, error) {
+func (s *Store) FindAgentByUserID(_ context.Context, userID string) (core.Agent, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -156,7 +157,7 @@ func (s *Store) FindAgentByUserID(userID string) (core.Agent, bool, error) {
 	return agent, ok, nil
 }
 
-func (s *Store) SaveAgentRegistrationChallenge(challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error) {
+func (s *Store) SaveAgentRegistrationChallenge(_ context.Context, challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -164,7 +165,7 @@ func (s *Store) SaveAgentRegistrationChallenge(challenge core.AgentRegistrationC
 	return challenge, nil
 }
 
-func (s *Store) FindAgentRegistrationChallenge(challengeID string) (core.AgentRegistrationChallenge, bool, error) {
+func (s *Store) FindAgentRegistrationChallenge(_ context.Context, challengeID string) (core.AgentRegistrationChallenge, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -172,7 +173,7 @@ func (s *Store) FindAgentRegistrationChallenge(challengeID string) (core.AgentRe
 	return challenge, ok, nil
 }
 
-func (s *Store) SaveAgentToken(token core.AgentToken) (core.AgentToken, error) {
+func (s *Store) SaveAgentToken(_ context.Context, token core.AgentToken) (core.AgentToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -180,7 +181,7 @@ func (s *Store) SaveAgentToken(token core.AgentToken) (core.AgentToken, error) {
 	return token, nil
 }
 
-func (s *Store) FindAgentTokenByID(tokenID string) (core.AgentToken, bool, error) {
+func (s *Store) FindAgentTokenByID(_ context.Context, tokenID string) (core.AgentToken, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -188,7 +189,7 @@ func (s *Store) FindAgentTokenByID(tokenID string) (core.AgentToken, bool, error
 	return token, ok, nil
 }
 
-func (s *Store) SaveArtifact(artifact core.Artifact) (core.Artifact, error) {
+func (s *Store) SaveArtifact(_ context.Context, artifact core.Artifact) (core.Artifact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -197,7 +198,7 @@ func (s *Store) SaveArtifact(artifact core.Artifact) (core.Artifact, error) {
 	return artifact, nil
 }
 
-func (s *Store) ListArtifactsByOwner(userID string) ([]core.Artifact, error) {
+func (s *Store) ListArtifactsByOwner(_ context.Context, userID string) ([]core.Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -218,7 +219,7 @@ func (s *Store) ListArtifactsByOwner(userID string) ([]core.Artifact, error) {
 	return artifacts, nil
 }
 
-func (s *Store) SaveGrant(grant core.PolicyGrant) (core.PolicyGrant, error) {
+func (s *Store) SaveGrant(_ context.Context, grant core.PolicyGrant) (core.PolicyGrant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -226,7 +227,7 @@ func (s *Store) SaveGrant(grant core.PolicyGrant) (core.PolicyGrant, error) {
 	return grant, nil
 }
 
-func (s *Store) ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
+func (s *Store) ListGrantsForPair(_ context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -244,7 +245,7 @@ func (s *Store) ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.P
 	return grants, nil
 }
 
-func (s *Store) ListIncomingGrantsForUser(granteeUserID string) ([]core.PolicyGrant, error) {
+func (s *Store) ListIncomingGrantsForUser(_ context.Context, granteeUserID string) ([]core.PolicyGrant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -262,7 +263,7 @@ func (s *Store) ListIncomingGrantsForUser(granteeUserID string) ([]core.PolicyGr
 	return grants, nil
 }
 
-func (s *Store) SaveQuery(query core.Query) (core.Query, error) {
+func (s *Store) SaveQuery(_ context.Context, query core.Query) (core.Query, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -270,7 +271,7 @@ func (s *Store) SaveQuery(query core.Query) (core.Query, error) {
 	return query, nil
 }
 
-func (s *Store) SaveQueryResponse(response core.QueryResponse) (core.QueryResponse, error) {
+func (s *Store) SaveQueryResponse(_ context.Context, response core.QueryResponse) (core.QueryResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -278,7 +279,7 @@ func (s *Store) SaveQueryResponse(response core.QueryResponse) (core.QueryRespon
 	return response, nil
 }
 
-func (s *Store) UpdateQueryState(queryID string, state core.QueryState) (core.Query, bool, error) {
+func (s *Store) UpdateQueryState(_ context.Context, queryID string, state core.QueryState) (core.Query, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -291,7 +292,7 @@ func (s *Store) UpdateQueryState(queryID string, state core.QueryState) (core.Qu
 	return query, true, nil
 }
 
-func (s *Store) FindQuery(queryID string) (core.Query, bool, error) {
+func (s *Store) FindQuery(_ context.Context, queryID string) (core.Query, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -299,7 +300,7 @@ func (s *Store) FindQuery(queryID string) (core.Query, bool, error) {
 	return query, ok, nil
 }
 
-func (s *Store) FindQueryResponse(queryID string) (core.QueryResponse, bool, error) {
+func (s *Store) FindQueryResponse(_ context.Context, queryID string) (core.QueryResponse, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -307,7 +308,7 @@ func (s *Store) FindQueryResponse(queryID string) (core.QueryResponse, bool, err
 	return response, ok, nil
 }
 
-func (s *Store) SaveRequest(request core.Request) (core.Request, error) {
+func (s *Store) SaveRequest(_ context.Context, request core.Request) (core.Request, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -323,7 +324,7 @@ func (s *Store) SaveRequest(request core.Request) (core.Request, error) {
 	return request, nil
 }
 
-func (s *Store) FindRequest(requestID string) (core.Request, bool, error) {
+func (s *Store) FindRequest(_ context.Context, requestID string) (core.Request, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -331,7 +332,7 @@ func (s *Store) FindRequest(requestID string) (core.Request, bool, error) {
 	return request, ok, nil
 }
 
-func (s *Store) ListIncomingRequests(toAgentID string) ([]core.Request, error) {
+func (s *Store) ListIncomingRequests(_ context.Context, toAgentID string) ([]core.Request, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -351,7 +352,7 @@ func (s *Store) ListIncomingRequests(toAgentID string) ([]core.Request, error) {
 	return requests, nil
 }
 
-func (s *Store) UpdateRequestState(requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error) {
+func (s *Store) UpdateRequestState(_ context.Context, requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -366,7 +367,7 @@ func (s *Store) UpdateRequestState(requestID string, state core.RequestState, ap
 	return request, true, nil
 }
 
-func (s *Store) SaveApproval(approval core.Approval) (core.Approval, error) {
+func (s *Store) SaveApproval(_ context.Context, approval core.Approval) (core.Approval, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -382,7 +383,7 @@ func (s *Store) SaveApproval(approval core.Approval) (core.Approval, error) {
 	return approval, nil
 }
 
-func (s *Store) FindApproval(approvalID string) (core.Approval, bool, error) {
+func (s *Store) FindApproval(_ context.Context, approvalID string) (core.Approval, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -390,7 +391,7 @@ func (s *Store) FindApproval(approvalID string) (core.Approval, bool, error) {
 	return approval, ok, nil
 }
 
-func (s *Store) ListPendingApprovals(agentID string) ([]core.Approval, error) {
+func (s *Store) ListPendingApprovals(_ context.Context, agentID string) ([]core.Approval, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -410,7 +411,7 @@ func (s *Store) ListPendingApprovals(agentID string) ([]core.Approval, error) {
 	return approvals, nil
 }
 
-func (s *Store) ResolveApproval(approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error) {
+func (s *Store) ResolveApproval(_ context.Context, approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -424,7 +425,7 @@ func (s *Store) ResolveApproval(approvalID string, state core.ApprovalState, res
 	return approval, true, nil
 }
 
-func (s *Store) AppendAuditEvent(event core.AuditEvent) (core.AuditEvent, error) {
+func (s *Store) AppendAuditEvent(_ context.Context, event core.AuditEvent) (core.AuditEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -432,7 +433,7 @@ func (s *Store) AppendAuditEvent(event core.AuditEvent) (core.AuditEvent, error)
 	return event, nil
 }
 
-func (s *Store) ListAuditEvents(agentID string, since time.Time) ([]core.AuditEvent, error) {
+func (s *Store) ListAuditEvents(_ context.Context, agentID string, since time.Time) ([]core.AuditEvent, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

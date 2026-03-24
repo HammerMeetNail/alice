@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -44,7 +45,7 @@ func NewService(
 	}
 }
 
-func (s *Service) BeginRegistration(orgSlug, ownerEmail, agentName, clientType, publicKey string, capabilities []string) (core.AgentRegistrationChallenge, string, error) {
+func (s *Service) BeginRegistration(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string, capabilities []string) (core.AgentRegistrationChallenge, string, error) {
 	if err := core.ValidateAgentRegistration(orgSlug, ownerEmail, agentName, clientType, publicKey); err != nil {
 		return core.AgentRegistrationChallenge{}, "", err
 	}
@@ -72,7 +73,7 @@ func (s *Service) BeginRegistration(orgSlug, ownerEmail, agentName, clientType, 
 		ExpiresAt:    now.Add(s.cfg.AuthChallengeTTL),
 	}
 
-	challenge, err = s.challenges.SaveAgentRegistrationChallenge(challenge)
+	challenge, err = s.challenges.SaveAgentRegistrationChallenge(ctx, challenge)
 	if err != nil {
 		return core.AgentRegistrationChallenge{}, "", fmt.Errorf("save registration challenge: %w", err)
 	}
@@ -80,12 +81,12 @@ func (s *Service) BeginRegistration(orgSlug, ownerEmail, agentName, clientType, 
 	return challenge, formatRegistrationChallenge(challenge), nil
 }
 
-func (s *Service) CompleteRegistration(challengeID, challengeSignature string) (core.Organization, core.User, core.Agent, string, time.Time, error) {
+func (s *Service) CompleteRegistration(ctx context.Context, challengeID, challengeSignature string) (core.Organization, core.User, core.Agent, string, time.Time, error) {
 	if err := core.ValidateRegistrationCompletion(challengeID, challengeSignature); err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, err
 	}
 
-	challenge, ok, err := s.challenges.FindAgentRegistrationChallenge(strings.TrimSpace(challengeID))
+	challenge, ok, err := s.challenges.FindAgentRegistrationChallenge(ctx, strings.TrimSpace(challengeID))
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, fmt.Errorf("find registration challenge: %w", err)
 	}
@@ -105,16 +106,16 @@ func (s *Service) CompleteRegistration(challengeID, challengeSignature string) (
 	}
 
 	challenge.UsedAt = &now
-	if _, err := s.challenges.SaveAgentRegistrationChallenge(challenge); err != nil {
+	if _, err := s.challenges.SaveAgentRegistrationChallenge(ctx, challenge); err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, fmt.Errorf("mark registration challenge used: %w", err)
 	}
 
-	org, user, agent, err := s.upsertRegisteredAgent(challenge.OrgSlug, challenge.OwnerEmail, challenge.AgentName, challenge.ClientType, challenge.PublicKey, challenge.Capabilities, now)
+	org, user, agent, err := s.upsertRegisteredAgent(ctx, challenge.OrgSlug, challenge.OwnerEmail, challenge.AgentName, challenge.ClientType, challenge.PublicKey, challenge.Capabilities, now)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, err
 	}
 
-	token, rawToken, err := s.issueToken(agent.AgentID, now)
+	token, rawToken, err := s.issueToken(ctx, agent.AgentID, now)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, err
 	}
@@ -122,8 +123,8 @@ func (s *Service) CompleteRegistration(challengeID, challengeSignature string) (
 	return org, user, agent, rawToken, token.ExpiresAt, nil
 }
 
-func (s *Service) upsertRegisteredAgent(orgSlug, ownerEmail, agentName, clientType, publicKey string, capabilities []string, now time.Time) (core.Organization, core.User, core.Agent, error) {
-	org, ok, err := s.orgs.FindOrganizationBySlug(orgSlug)
+func (s *Service) upsertRegisteredAgent(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string, capabilities []string, now time.Time) (core.Organization, core.User, core.Agent, error) {
+	org, ok, err := s.orgs.FindOrganizationBySlug(ctx, orgSlug)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find organization by slug: %w", err)
 	}
@@ -135,13 +136,13 @@ func (s *Service) upsertRegisteredAgent(orgSlug, ownerEmail, agentName, clientTy
 			CreatedAt: now,
 			Status:    "active",
 		}
-		org, err = s.orgs.UpsertOrganization(org)
+		org, err = s.orgs.UpsertOrganization(ctx, org)
 		if err != nil {
 			return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("upsert organization: %w", err)
 		}
 	}
 
-	user, ok, err := s.users.FindUserByEmail(ownerEmail)
+	user, ok, err := s.users.FindUserByEmail(ctx, org.OrgID, ownerEmail)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find user by email: %w", err)
 	}
@@ -154,13 +155,13 @@ func (s *Service) upsertRegisteredAgent(orgSlug, ownerEmail, agentName, clientTy
 			CreatedAt:   now,
 			Status:      "active",
 		}
-		user, err = s.users.UpsertUser(user)
+		user, err = s.users.UpsertUser(ctx, user)
 		if err != nil {
 			return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("upsert user: %w", err)
 		}
 	}
 
-	agent, ok, err := s.agents.FindAgentByUserID(user.UserID)
+	agent, ok, err := s.agents.FindAgentByUserID(ctx, user.UserID)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find agent by user id: %w", err)
 	}
@@ -185,20 +186,20 @@ func (s *Service) upsertRegisteredAgent(orgSlug, ownerEmail, agentName, clientTy
 		}
 	}
 
-	agent, err = s.agents.UpsertAgent(agent)
+	agent, err = s.agents.UpsertAgent(ctx, agent)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("upsert agent: %w", err)
 	}
 	return org, user, agent, nil
 }
 
-func (s *Service) AuthenticateAgent(accessToken string) (core.Agent, core.User, error) {
+func (s *Service) AuthenticateAgent(ctx context.Context, accessToken string) (core.Agent, core.User, error) {
 	tokenID, ok := splitToken(accessToken)
 	if !ok {
 		return core.Agent{}, core.User{}, ErrInvalidAgentToken
 	}
 
-	token, found, err := s.tokens.FindAgentTokenByID(tokenID)
+	token, found, err := s.tokens.FindAgentTokenByID(ctx, tokenID)
 	if err != nil {
 		return core.Agent{}, core.User{}, fmt.Errorf("find agent token: %w", err)
 	}
@@ -217,22 +218,22 @@ func (s *Service) AuthenticateAgent(accessToken string) (core.Agent, core.User, 
 	}
 
 	token.LastUsedAt = now
-	if _, err := s.tokens.SaveAgentToken(token); err != nil {
+	if _, err := s.tokens.SaveAgentToken(ctx, token); err != nil {
 		return core.Agent{}, core.User{}, fmt.Errorf("update token last used at: %w", err)
 	}
 
-	return s.RequireAgent(token.AgentID)
+	return s.RequireAgent(ctx, token.AgentID)
 }
 
-func (s *Service) RequireAgent(agentID string) (core.Agent, core.User, error) {
-	agent, ok, err := s.agents.FindAgentByID(agentID)
+func (s *Service) RequireAgent(ctx context.Context, agentID string) (core.Agent, core.User, error) {
+	agent, ok, err := s.agents.FindAgentByID(ctx, agentID)
 	if err != nil {
 		return core.Agent{}, core.User{}, fmt.Errorf("find agent by id: %w", err)
 	}
 	if !ok {
 		return core.Agent{}, core.User{}, ErrUnknownAgent
 	}
-	user, ok, err := s.users.FindUserByID(agent.OwnerUserID)
+	user, ok, err := s.users.FindUserByID(ctx, agent.OwnerUserID)
 	if err != nil {
 		return core.Agent{}, core.User{}, fmt.Errorf("find user by id: %w", err)
 	}
@@ -242,19 +243,19 @@ func (s *Service) RequireAgent(agentID string) (core.Agent, core.User, error) {
 	return agent, user, nil
 }
 
-func (s *Service) FindUserByEmail(email string) (core.User, bool, error) {
-	return s.users.FindUserByEmail(email)
+func (s *Service) FindUserByEmail(ctx context.Context, orgID, email string) (core.User, bool, error) {
+	return s.users.FindUserByEmail(ctx, orgID, email)
 }
 
-func (s *Service) FindUserByID(userID string) (core.User, bool, error) {
-	return s.users.FindUserByID(userID)
+func (s *Service) FindUserByID(ctx context.Context, userID string) (core.User, bool, error) {
+	return s.users.FindUserByID(ctx, userID)
 }
 
-func (s *Service) FindAgentByUserID(userID string) (core.Agent, bool, error) {
-	return s.agents.FindAgentByUserID(userID)
+func (s *Service) FindAgentByUserID(ctx context.Context, userID string) (core.Agent, bool, error) {
+	return s.agents.FindAgentByUserID(ctx, userID)
 }
 
-func (s *Service) issueToken(agentID string, now time.Time) (core.AgentToken, string, error) {
+func (s *Service) issueToken(ctx context.Context, agentID string, now time.Time) (core.AgentToken, string, error) {
 	secret, err := randomToken(32)
 	if err != nil {
 		return core.AgentToken{}, "", fmt.Errorf("generate token secret: %w", err)
@@ -271,7 +272,7 @@ func (s *Service) issueToken(agentID string, now time.Time) (core.AgentToken, st
 		LastUsedAt: now,
 	}
 
-	token, err = s.tokens.SaveAgentToken(token)
+	token, err = s.tokens.SaveAgentToken(ctx, token)
 	if err != nil {
 		return core.AgentToken{}, "", fmt.Errorf("save agent token: %w", err)
 	}

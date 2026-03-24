@@ -418,7 +418,7 @@ func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gi
 		return result, nil
 	}
 
-	state, err := LoadState(r.cfg.StatePath())
+	state, err := r.loadState()
 	if err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -440,7 +440,7 @@ func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gi
 	freshEvents, cursorUpdates := filterEventsSinceCursors(state, []NormalizedEvent{event})
 	if len(freshEvents) == 0 {
 		recordWebhookDelivery(&state, replayGuard, processedAt)
-		if err := SaveState(r.cfg.StatePath(), state); err != nil {
+		if err := r.saveState(state); err != nil {
 			result.Message = err.Error()
 			return result, err
 		}
@@ -456,7 +456,7 @@ func (r *Runtime) handleGitHubPullRequestWebhook(ctx context.Context, source *gi
 		return result, err
 	}
 	recordWebhookDelivery(&state, replayGuard, processedAt)
-	if err := SaveState(r.cfg.StatePath(), state); err != nil {
+	if err := r.saveState(state); err != nil {
 		result.Message = err.Error()
 		return result, err
 	}
@@ -529,7 +529,7 @@ func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSo
 		return result, nil
 	}
 
-	state, err := LoadState(r.cfg.StatePath())
+	state, err := r.loadState()
 	if err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -551,7 +551,7 @@ func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSo
 	freshEvents, cursorUpdates := filterEventsSinceCursors(state, []NormalizedEvent{event})
 	if len(freshEvents) == 0 {
 		recordWebhookDelivery(&state, replayGuard, processedAt)
-		if err := SaveState(r.cfg.StatePath(), state); err != nil {
+		if err := r.saveState(state); err != nil {
 			result.Message = err.Error()
 			return result, err
 		}
@@ -567,7 +567,7 @@ func (r *Runtime) handleJiraIssueWebhook(ctx context.Context, source *jiraLiveSo
 		return result, err
 	}
 	recordWebhookDelivery(&state, replayGuard, processedAt)
-	if err := SaveState(r.cfg.StatePath(), state); err != nil {
+	if err := r.saveState(state); err != nil {
 		result.Message = err.Error()
 		return result, err
 	}
@@ -634,7 +634,7 @@ func (r *Runtime) handleGCalExistsWebhook(ctx context.Context, source *gcalLiveS
 		return result, nil
 	}
 
-	state, err := LoadState(r.cfg.StatePath())
+	state, err := r.loadState()
 	if err != nil {
 		result.Message = err.Error()
 		return result, err
@@ -670,7 +670,7 @@ func (r *Runtime) handleGCalExistsWebhook(ctx context.Context, source *gcalLiveS
 	freshEvents, cursorUpdates := filterEventsSinceCursors(state, events)
 	if len(freshEvents) == 0 {
 		recordWebhookDelivery(&state, replayGuard, processedAt)
-		if err := SaveState(r.cfg.StatePath(), state); err != nil {
+		if err := r.saveState(state); err != nil {
 			result.Message = err.Error()
 			return result, err
 		}
@@ -686,7 +686,7 @@ func (r *Runtime) handleGCalExistsWebhook(ctx context.Context, source *gcalLiveS
 		return result, err
 	}
 	recordWebhookDelivery(&state, replayGuard, processedAt)
-	if err := SaveState(r.cfg.StatePath(), state); err != nil {
+	if err := r.saveState(state); err != nil {
 		result.Message = err.Error()
 		return result, err
 	}

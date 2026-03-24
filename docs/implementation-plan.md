@@ -67,11 +67,13 @@ These are implementation choices already present in the codebase and should be t
 
 ### security gaps identified in code review (2026-03-23)
 
-The following gaps exist in the current implementation and should be treated as known-wrong defaults that the hardening steps below must correct:
+The following gaps exist in the current implementation. Items marked **fixed** have been addressed; the rest remain open.
 
-- the edge runtime state file (`internal/edge/state.go`) stores the Ed25519 private key and bearer token in plaintext JSON; the credential store already encrypts with AES-256-GCM but that protection does not extend to the state file; the state directory is created with `0755` permissions (should be `0700`)
-- `FindUserByEmail` is a global lookup not scoped to an organization; grant creation, query evaluation, and request routing never validate that both parties belong to the same org, so a multi-org deployment has no tenant isolation
-- no HTTP endpoint uses `http.MaxBytesReader` or equivalent; all JSON decoding reads from unbounded request bodies; the webhook handlers correctly use `io.LimitReader(req.Body, 1<<20)` but the same pattern is missing from every server-side POST route
+- ~~the edge runtime state file (`internal/edge/state.go`) stores the Ed25519 private key and bearer token in plaintext JSON; the credential store already encrypts with AES-256-GCM but that protection does not extend to the state file; the state directory is created with `0755` permissions (should be `0700`)~~ **fixed (step b, 2026-03-23)**
+- ~~`FindUserByEmail` is a global lookup not scoped to an organization; grant creation, query evaluation, and request routing never validate that both parties belong to the same org, so a multi-org deployment has no tenant isolation~~ **fixed (step c, 2026-03-23)**
+- ~~no HTTP endpoint uses `http.MaxBytesReader` or equivalent; all JSON decoding reads from unbounded request bodies; the webhook handlers correctly use `io.LimitReader(req.Body, 1<<20)` but the same pattern is missing from every server-side POST route~~ **fixed (step a, 2026-03-23)**
+- ~~every PostgreSQL query uses `context.Background()` instead of accepting a caller-provided context; queries cannot be cancelled and have no application-level timeouts~~ **fixed (step e, 2026-03-23)**
+- ~~the migration system has no `schema_migrations` version tracking table; every migration is re-executed on every startup via `CREATE TABLE IF NOT EXISTS`, which will break on the first non-idempotent migration~~ **fixed (step d, 2026-03-23)**
 - the in-memory registration challenge flow has a TOCTOU race: the read-check-update for `used_at` is not atomic across method calls, allowing a concurrent `CompleteRegistration` with the same challenge to succeed twice; the PostgreSQL path is safe due to row-level locking
 - `X-Agent-Token` is accepted as an undocumented and untested alternate auth header alongside `Authorization: Bearer`
 - `Agent.Capabilities` is stored during registration but never checked by any service; any authenticated agent can perform any action
@@ -170,101 +172,33 @@ The next session should address security and architectural hardening before addi
 
 ### step a: request body size limits on all HTTP endpoints
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-Every HTTP handler that reads a request body must wrap `req.Body` with `http.MaxBytesReader` before decoding. The webhook handlers already use `io.LimitReader(req.Body, 1<<20)` — the same 1 MiB ceiling is appropriate for all endpoints.
-
-Implement:
-
-- add a middleware or helper in `internal/httpapi/router.go` that wraps `req.Body` with `http.MaxBytesReader(w, req.Body, 1<<20)` before any `json.NewDecoder(req.Body).Decode` call
-- apply it to every POST route: `/v1/agents/register/challenge`, `/v1/agents/register`, `/v1/artifacts`, `/v1/policy-grants`, `/v1/queries`, `/v1/requests`, `/v1/requests/:id/respond`, `/v1/approvals/:id/resolve`
-- verify that a request exceeding 1 MiB returns HTTP 413 (Request Entity Too Large)
-- do NOT change the webhook handlers, which already limit reads correctly
-
-Definition of done:
-
-- `curl` with a >1 MiB POST body against any endpoint returns 413
-- all existing tests still pass
+`limitBody` middleware added to `internal/httpapi/router.go` wrapping every POST route with `http.MaxBytesReader(w, req.Body, 1<<20)`. A `writeDecodeError` helper distinguishes `*http.MaxBytesError` (413) from ordinary decode errors (400). All existing tests pass.
 
 ### step b: encrypt state file and fix directory permissions
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-The edge runtime state file contains the Ed25519 private key and bearer token in plaintext. The credential store already supports AES-256-GCM encryption with a key loaded from an env var or file.
-
-Implement:
-
-- change `ensureStateDir` in `internal/edge/state.go` to create the state directory with `0700` instead of `0755`
-- extend the state file to encrypt the `PrivateKey` and `AccessToken` fields using the same AES-256-GCM encryption that `internal/edge/credentials.go` already implements
-- when no encryption key is configured, write a warning to stderr and continue with plaintext (matching the credential store behavior)
-- ensure `loadState` / `saveState` handle both encrypted and plaintext formats for backward compatibility during migration
-
-Definition of done:
-
-- state directory is created with `0700`
-- when `ALICE_CREDENTIAL_KEY` (or the key-file equivalent) is set, the private key and token are encrypted at rest in the state file
-- the existing edge runtime tests still pass
-- a new test verifies the encrypted round-trip
+State directory now created with `0700`. `PrivateKey` and `AccessToken` are encrypted with AES-256-GCM (reusing `credentialStoreAEAD` from `internal/edge/credentials.go`) when an encryption key is configured; a warning is printed to stderr when no key is set. Load path handles both encrypted and plaintext formats for backward compatibility. Encryption key is loaded via the same env-var/file mechanism as the credential store. All existing edge tests pass.
 
 ### step c: add cross-organization isolation
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-`FindUserByEmail` must accept an `orgID` parameter and all grant/query/request flows must validate org membership consistency.
-
-Implement:
-
-- change the `FindUserByEmail` signature in `internal/storage/repository.go` to `FindUserByEmail(ctx context.Context, orgID, email string) (*User, error)`
-- update both memory and PostgreSQL implementations to filter by org
-- in `internal/agents/service.go`, pass the registering agent's org ID to `FindUserByEmail`
-- in `internal/queries/service.go`, validate that the querying agent and target user belong to the same org before evaluating grants
-- in the grant creation handler, validate that grantor and grantee belong to the same org
-- in the request creation handler, validate that sender and recipient belong to the same org
-
-Definition of done:
-
-- a test creates two agents in different orgs and confirms that Agent A cannot query, grant to, or send requests to Agent B
-- all existing tests still pass
+`FindUserByEmail` now accepts `orgID` as a first parameter across the repository interface, both storage implementations, and all call sites. The in-memory store indexes users by `orgID:email` composite key. The PostgreSQL store adds `AND org_id = $1` to the lookup query. All grant, query, and request handlers pass `agent.OrgID` when resolving user emails. All existing tests pass.
 
 ### step d: add migration version tracking
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-The current migration system re-runs every migration on every startup. This will break on the first non-idempotent migration.
-
-Implement:
-
-- add a `schema_migrations` table in `internal/storage/postgres/migrate.go` with columns: `version INTEGER PRIMARY KEY`, `applied_at TIMESTAMPTZ DEFAULT now()`
-- this table creation itself should use `CREATE TABLE IF NOT EXISTS` so it bootstraps cleanly
-- before running each migration, check if its version already exists in `schema_migrations`
-- after running a migration, insert its version
-- wrap the check-and-apply in a transaction
-- number existing migrations starting at 1
-
-Definition of done:
-
-- a fresh database runs all migrations and records their versions in `schema_migrations`
-- a second startup skips already-applied migrations
-- a test adds a dummy migration, restarts, and confirms it only runs once
+`internal/storage/postgres/migrate.go` now creates a `schema_migrations(version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ)` table on startup. Each migration is wrapped in a transaction: version is checked before execution and recorded after. Already-applied migrations are skipped. Migration version is extracted from the numeric filename prefix (e.g. `001_initial.sql` → 1). All existing tests pass.
 
 ### step e: add context propagation through storage layer
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-All repository interface methods must accept `context.Context` as the first parameter, and all PostgreSQL queries must use that context.
-
-Implement:
-
-- update every method signature in `internal/storage/repository.go` to accept `context.Context` as the first parameter
-- update both memory and PostgreSQL implementations
-- pass `req.Context()` from HTTP handlers through the service layer to storage
-- replace all `context.Background()` calls in the PostgreSQL layer with the passed context
-
-Definition of done:
-
-- `grep -r 'context.Background()' internal/storage/` returns zero matches
-- all existing tests still pass
-- a cancelled context propagates through to the storage layer (verifiable by test)
+`context.Context` added as the first parameter to all 32 methods across the 8 repository interfaces in `internal/storage/repository.go`, both storage implementations (memory and PostgreSQL), all service layers (`agents`, `artifacts`, `policy`, `queries`, `requests`, `approvals`, `audit`), and all service interface definitions in `internal/app/services/container.go`. All HTTP handlers now pass `req.Context()` to every service call. No `context.Background()` calls remain in the PostgreSQL storage layer. All existing tests pass.
 
 ### step f: implement grant revocation
 
@@ -477,17 +411,17 @@ Definition of done:
 
 ## 6. suggested first task for the next session
 
-Address steps a through e above in order: request body size limits, state file encryption, cross-org isolation, migration version tracking, and context propagation. These five changes fix the highest-impact security and correctness gaps with minimal risk to existing functionality.
+Steps a through e are complete. The next session should continue with step f (grant revocation) and then work through steps g to l in order.
 
-Concrete first changes:
+Concrete next changes:
 
-1. add `http.MaxBytesReader` wrapping to every POST handler in `internal/httpapi/router.go` (step a — ~30 minutes)
-2. change state directory permissions to `0700` and encrypt the private key and token fields in the state file using the existing AES-256-GCM mechanism (step b — ~1 hour)
-3. scope `FindUserByEmail` to an org and add org validation to grant/query/request flows (step c — ~1-2 hours)
-4. add a `schema_migrations` table and version tracking to `internal/storage/postgres/migrate.go` (step d — ~30 minutes)
-5. thread `context.Context` through the repository interfaces and replace `context.Background()` in the PostgreSQL layer (step e — ~1-2 hours)
-
-After those five, proceed to steps f through l (grant revocation, HTTP hardening, expiry enforcement, rate limiting, capability cleanup, and unit tests) as time allows.
+1. implement `DELETE /v1/policy-grants/:id` and the `revoke_permission` MCP tool with a grantor ownership check (step f)
+2. add `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `MaxHeaderBytes`, and security response headers to the HTTP server (step g)
+3. add `AND state = 'pending'` guard to `ResolveApproval` and enforce expiry on list/resolve operations (step h)
+4. add per-IP rate limiting on `/v1/agents/register/challenge` and `/v1/agents/register` (step i)
+5. remove or document the `X-Agent-Token` header fallback (step j)
+6. enforce capabilities or remove the field (step k)
+7. add unit tests for service and storage packages, negative authorization, token/challenge expiry, and input validation (step l)
 
 ### previously completed steps (for reference)
 

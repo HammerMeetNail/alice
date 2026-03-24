@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -17,7 +18,7 @@ func NewService(repo storage.ArtifactRepository) *Service {
 	return &Service{repo: repo}
 }
 
-func (s *Service) PublishArtifact(agent core.Agent, user core.User, artifact core.Artifact) (core.Artifact, error) {
+func (s *Service) PublishArtifact(ctx context.Context, agent core.Agent, user core.User, artifact core.Artifact) (core.Artifact, error) {
 	if artifact.VisibilityMode == "" {
 		artifact.VisibilityMode = core.VisibilityModeExplicitGrantsOnly
 	}
@@ -34,13 +35,13 @@ func (s *Service) PublishArtifact(agent core.Agent, user core.User, artifact cor
 	artifact.OwnerUserID = user.UserID
 	artifact.CreatedAt = time.Now().UTC()
 
-	saved, err := s.repo.SaveArtifact(artifact)
+	saved, err := s.repo.SaveArtifact(ctx, artifact)
 	if err != nil {
 		return core.Artifact{}, fmt.Errorf("save artifact: %w", err)
 	}
 	return saved, nil
 }
 
-func (s *Service) ListArtifactsByOwner(userID string) ([]core.Artifact, error) {
-	return s.repo.ListArtifactsByOwner(userID)
+func (s *Service) ListArtifactsByOwner(ctx context.Context, userID string) ([]core.Artifact, error) {
+	return s.repo.ListArtifactsByOwner(ctx, userID)
 }

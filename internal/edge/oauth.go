@@ -52,7 +52,7 @@ type oauthTokenResponse struct {
 }
 
 func (r *Runtime) BootstrapConnector(ctx context.Context, connectorType string, publish func(ConnectorBootstrapPrompt) error) (ConnectorBootstrapResult, error) {
-	state, err := LoadState(r.cfg.StatePath())
+	state, err := r.loadState()
 	if err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
@@ -89,7 +89,7 @@ func (r *Runtime) BootstrapConnector(ctx context.Context, connectorType string, 
 			return ConnectorBootstrapResult{}, err
 		}
 	}
-	if err := SaveState(r.cfg.StatePath(), state); err != nil {
+	if err := r.saveState(state); err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
 
@@ -181,7 +181,7 @@ func (r *Runtime) prepareCredentialStore(ctx context.Context, state *State) (Cre
 
 	migrated := store.MigrateFromState(state)
 	if migrated {
-		if err := SaveState(r.cfg.StatePath(), *state); err != nil {
+		if err := r.saveState(*state); err != nil {
 			return CredentialStore{}, err
 		}
 	}
@@ -240,7 +240,7 @@ func (r *Runtime) completeConnectorBootstrap(ctx context.Context, provider conne
 		return ConnectorBootstrapResult{}, err
 	}
 
-	state, err := LoadState(r.cfg.StatePath())
+	state, err := r.loadState()
 	if err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
@@ -254,7 +254,7 @@ func (r *Runtime) completeConnectorBootstrap(ctx context.Context, provider conne
 	if err := SaveCredentialStoreWithOptions(r.cfg.CredentialsPath(), credentials, options); err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
-	if err := SaveState(r.cfg.StatePath(), state); err != nil {
+	if err := r.saveState(state); err != nil {
 		return ConnectorBootstrapResult{}, err
 	}
 
@@ -268,13 +268,13 @@ func (r *Runtime) completeConnectorBootstrap(ctx context.Context, provider conne
 }
 
 func (r *Runtime) clearPendingConnectorAuth(connectorType string) error {
-	state, err := LoadState(r.cfg.StatePath())
+	state, err := r.loadState()
 	if err != nil {
 		return err
 	}
 	state.normalizePublishedArtifacts()
 	delete(state.PendingConnectorAuths, connectorType)
-	return SaveState(r.cfg.StatePath(), state)
+	return r.saveState(state)
 }
 
 func (r *Runtime) credentialStoreOptions() (CredentialStoreOptions, error) {

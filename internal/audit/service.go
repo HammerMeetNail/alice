@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -17,7 +18,7 @@ func NewService(repo storage.AuditRepository) *Service {
 	return &Service{repo: repo}
 }
 
-func (s *Service) Record(eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision string, riskLevel core.RiskLevel, policyBasis []string, metadata map[string]any) (core.AuditEvent, error) {
+func (s *Service) Record(ctx context.Context, eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision string, riskLevel core.RiskLevel, policyBasis []string, metadata map[string]any) (core.AuditEvent, error) {
 	event := core.AuditEvent{
 		AuditEventID:  id.New("audit"),
 		OrgID:         orgID,
@@ -32,13 +33,13 @@ func (s *Service) Record(eventKind, subjectType, subjectID, orgID, actorAgentID,
 		CreatedAt:     time.Now().UTC(),
 		Metadata:      metadata,
 	}
-	saved, err := s.repo.AppendAuditEvent(event)
+	saved, err := s.repo.AppendAuditEvent(ctx, event)
 	if err != nil {
 		return core.AuditEvent{}, fmt.Errorf("append audit event: %w", err)
 	}
 	return saved, nil
 }
 
-func (s *Service) Summary(agentID string, since time.Time) ([]core.AuditEvent, error) {
-	return s.repo.ListAuditEvents(agentID, since)
+func (s *Service) Summary(ctx context.Context, agentID string, since time.Time) ([]core.AuditEvent, error) {
+	return s.repo.ListAuditEvents(ctx, agentID, since)
 }

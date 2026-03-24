@@ -1,6 +1,7 @@
 package queries
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -15,11 +16,11 @@ import (
 var ErrPermissionDenied = errors.New("permission denied")
 
 type ArtifactSource interface {
-	ListArtifactsByOwner(userID string) ([]core.Artifact, error)
+	ListArtifactsByOwner(ctx context.Context, userID string) ([]core.Artifact, error)
 }
 
 type PolicySource interface {
-	ListGrantsForPair(grantorUserID, granteeUserID string) ([]core.PolicyGrant, error)
+	ListGrantsForPair(ctx context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error)
 }
 
 type Service struct {
@@ -36,23 +37,23 @@ func NewService(store storage.QueryRepository, artifacts ArtifactSource, policie
 	}
 }
 
-func (s *Service) Evaluate(query core.Query) (core.QueryResponse, error) {
-	if _, err := s.store.SaveQuery(query); err != nil {
+func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryResponse, error) {
+	if _, err := s.store.SaveQuery(ctx, query); err != nil {
 		return core.QueryResponse{}, fmt.Errorf("save query: %w", err)
 	}
 
-	grants, err := s.policies.ListGrantsForPair(query.ToUserID, query.FromUserID)
+	grants, err := s.policies.ListGrantsForPair(ctx, query.ToUserID, query.FromUserID)
 	if err != nil {
 		return core.QueryResponse{}, fmt.Errorf("list grants for pair: %w", err)
 	}
 	if len(grants) == 0 {
-		if _, _, err := s.store.UpdateQueryState(query.QueryID, core.QueryStateDenied); err != nil {
+		if _, _, err := s.store.UpdateQueryState(ctx, query.QueryID, core.QueryStateDenied); err != nil {
 			return core.QueryResponse{}, fmt.Errorf("update query state to denied: %w", err)
 		}
 		return core.QueryResponse{}, ErrPermissionDenied
 	}
 
-	allArtifacts, err := s.artifacts.ListArtifactsByOwner(query.ToUserID)
+	allArtifacts, err := s.artifacts.ListArtifactsByOwner(ctx, query.ToUserID)
 	if err != nil {
 		return core.QueryResponse{}, fmt.Errorf("list artifacts by owner: %w", err)
 	}
@@ -107,24 +108,24 @@ func (s *Service) Evaluate(query core.Query) (core.QueryResponse, error) {
 		CreatedAt:     time.Now().UTC(),
 	}
 
-	if _, err := s.store.SaveQueryResponse(response); err != nil {
+	if _, err := s.store.SaveQueryResponse(ctx, response); err != nil {
 		return core.QueryResponse{}, fmt.Errorf("save query response: %w", err)
 	}
-	if _, _, err := s.store.UpdateQueryState(query.QueryID, core.QueryStateCompleted); err != nil {
+	if _, _, err := s.store.UpdateQueryState(ctx, query.QueryID, core.QueryStateCompleted); err != nil {
 		return core.QueryResponse{}, fmt.Errorf("update query state to completed: %w", err)
 	}
 	return response, nil
 }
 
-func (s *Service) FindResult(queryID string) (core.Query, core.QueryResponse, bool, error) {
-	query, ok, err := s.store.FindQuery(queryID)
+func (s *Service) FindResult(ctx context.Context, queryID string) (core.Query, core.QueryResponse, bool, error) {
+	query, ok, err := s.store.FindQuery(ctx, queryID)
 	if err != nil {
 		return core.Query{}, core.QueryResponse{}, false, fmt.Errorf("find query: %w", err)
 	}
 	if !ok {
 		return core.Query{}, core.QueryResponse{}, false, nil
 	}
-	response, ok, err := s.store.FindQueryResponse(queryID)
+	response, ok, err := s.store.FindQueryResponse(ctx, queryID)
 	if err != nil {
 		return core.Query{}, core.QueryResponse{}, false, fmt.Errorf("find query response: %w", err)
 	}

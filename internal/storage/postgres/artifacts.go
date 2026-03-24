@@ -8,7 +8,7 @@ import (
 	"alice/internal/core"
 )
 
-func (s *Store) SaveArtifact(artifact core.Artifact) (core.Artifact, error) {
+func (s *Store) SaveArtifact(ctx context.Context, artifact core.Artifact) (core.Artifact, error) {
 	structuredPayload, err := marshalJSONObject(artifact.StructuredPayload)
 	if err != nil {
 		return core.Artifact{}, fmt.Errorf("marshal structured payload: %w", err)
@@ -19,7 +19,7 @@ func (s *Store) SaveArtifact(artifact core.Artifact) (core.Artifact, error) {
 	}
 
 	_, err = s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO artifacts (
 			artifact_id, org_id, owner_agent_id, owner_user_id, type, title, content, structured_payload,
 			source_refs, visibility_mode, sensitivity, confidence, approval_state, created_at, expires_at, supersedes_artifact_id
@@ -50,9 +50,9 @@ func (s *Store) SaveArtifact(artifact core.Artifact) (core.Artifact, error) {
 	return artifact, nil
 }
 
-func (s *Store) ListArtifactsByOwner(userID string) ([]core.Artifact, error) {
+func (s *Store) ListArtifactsByOwner(ctx context.Context, userID string) ([]core.Artifact, error) {
 	rows, err := s.db.QueryContext(
-		context.Background(),
+		ctx,
 		`SELECT artifact_id, org_id, owner_agent_id, owner_user_id, type, title, content, structured_payload,
 		        source_refs, visibility_mode, sensitivity, confidence, approval_state, created_at, expires_at, supersedes_artifact_id
 		FROM artifacts

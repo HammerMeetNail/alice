@@ -8,7 +8,7 @@ import (
 	"alice/internal/core"
 )
 
-func (s *Store) SaveQuery(query core.Query) (core.Query, error) {
+func (s *Store) SaveQuery(ctx context.Context, query core.Query) (core.Query, error) {
 	requestedTypes, err := marshalArtifactTypes(query.RequestedTypes)
 	if err != nil {
 		return core.Query{}, fmt.Errorf("marshal query requested types: %w", err)
@@ -19,7 +19,7 @@ func (s *Store) SaveQuery(query core.Query) (core.Query, error) {
 	}
 
 	_, err = s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO queries (
 			query_id, org_id, from_agent_id, from_user_id, to_agent_id, to_user_id, purpose, question,
 			requested_types, project_scope, time_window_start, time_window_end, risk_level, state, created_at, expires_at
@@ -50,7 +50,7 @@ func (s *Store) SaveQuery(query core.Query) (core.Query, error) {
 	return query, nil
 }
 
-func (s *Store) SaveQueryResponse(response core.QueryResponse) (core.QueryResponse, error) {
+func (s *Store) SaveQueryResponse(ctx context.Context, response core.QueryResponse) (core.QueryResponse, error) {
 	artifacts, err := marshalQueryArtifacts(response.Artifacts)
 	if err != nil {
 		return core.QueryResponse{}, fmt.Errorf("marshal query artifacts: %w", err)
@@ -65,7 +65,7 @@ func (s *Store) SaveQueryResponse(response core.QueryResponse) (core.QueryRespon
 	}
 
 	_, err = s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO query_responses (
 			response_id, query_id, from_agent_id, to_agent_id, artifacts, redactions, policy_basis, approval_state, confidence, created_at
 		) VALUES (
@@ -98,9 +98,9 @@ func (s *Store) SaveQueryResponse(response core.QueryResponse) (core.QueryRespon
 	return response, nil
 }
 
-func (s *Store) UpdateQueryState(queryID string, state core.QueryState) (core.Query, bool, error) {
+func (s *Store) UpdateQueryState(ctx context.Context, queryID string, state core.QueryState) (core.Query, bool, error) {
 	query, err := scanQueryRow(s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`UPDATE queries
 		SET state = $2
 		WHERE query_id = $1
@@ -118,9 +118,9 @@ func (s *Store) UpdateQueryState(queryID string, state core.QueryState) (core.Qu
 	return query, true, nil
 }
 
-func (s *Store) FindQuery(queryID string) (core.Query, bool, error) {
+func (s *Store) FindQuery(ctx context.Context, queryID string) (core.Query, bool, error) {
 	query, err := scanQueryRow(s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT query_id, org_id, from_agent_id, from_user_id, to_agent_id, to_user_id, purpose, question,
 		        requested_types, project_scope, time_window_start, time_window_end, risk_level, state, created_at, expires_at
 		FROM queries
@@ -136,9 +136,9 @@ func (s *Store) FindQuery(queryID string) (core.Query, bool, error) {
 	return query, true, nil
 }
 
-func (s *Store) FindQueryResponse(queryID string) (core.QueryResponse, bool, error) {
+func (s *Store) FindQueryResponse(ctx context.Context, queryID string) (core.QueryResponse, bool, error) {
 	response, err := scanQueryResponseRow(s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT response_id, query_id, from_agent_id, to_agent_id, artifacts, redactions, policy_basis, approval_state, confidence, created_at
 		FROM query_responses
 		WHERE query_id = $1`,

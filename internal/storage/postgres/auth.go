@@ -9,14 +9,14 @@ import (
 	"alice/internal/core"
 )
 
-func (s *Store) SaveAgentRegistrationChallenge(challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error) {
+func (s *Store) SaveAgentRegistrationChallenge(ctx context.Context, challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error) {
 	capabilities, err := marshalStringSlice(challenge.Capabilities)
 	if err != nil {
 		return core.AgentRegistrationChallenge{}, fmt.Errorf("marshal challenge capabilities: %w", err)
 	}
 
 	_, err = s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO agent_registration_challenges (
 			challenge_id, org_slug, owner_email, agent_name, client_type, public_key, capabilities, nonce, created_at, expires_at, used_at
 		) VALUES (
@@ -54,7 +54,7 @@ func (s *Store) SaveAgentRegistrationChallenge(challenge core.AgentRegistrationC
 	return challenge, nil
 }
 
-func (s *Store) FindAgentRegistrationChallenge(challengeID string) (core.AgentRegistrationChallenge, bool, error) {
+func (s *Store) FindAgentRegistrationChallenge(ctx context.Context, challengeID string) (core.AgentRegistrationChallenge, bool, error) {
 	var (
 		challenge        core.AgentRegistrationChallenge
 		capabilitiesJSON []byte
@@ -62,7 +62,7 @@ func (s *Store) FindAgentRegistrationChallenge(challengeID string) (core.AgentRe
 	)
 
 	err := s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT challenge_id, org_slug, owner_email, agent_name, client_type, public_key, capabilities, nonce, created_at, expires_at, used_at
 		FROM agent_registration_challenges
 		WHERE challenge_id = $1`,
@@ -96,9 +96,9 @@ func (s *Store) FindAgentRegistrationChallenge(challengeID string) (core.AgentRe
 	return challenge, true, nil
 }
 
-func (s *Store) SaveAgentToken(token core.AgentToken) (core.AgentToken, error) {
+func (s *Store) SaveAgentToken(ctx context.Context, token core.AgentToken) (core.AgentToken, error) {
 	_, err := s.db.ExecContext(
-		context.Background(),
+		ctx,
 		`INSERT INTO agent_tokens (
 			token_id, agent_id, token_hash, issued_at, expires_at, last_used_at, revoked_at
 		) VALUES (
@@ -125,14 +125,14 @@ func (s *Store) SaveAgentToken(token core.AgentToken) (core.AgentToken, error) {
 	return token, nil
 }
 
-func (s *Store) FindAgentTokenByID(tokenID string) (core.AgentToken, bool, error) {
+func (s *Store) FindAgentTokenByID(ctx context.Context, tokenID string) (core.AgentToken, bool, error) {
 	var (
 		token     core.AgentToken
 		revokedAt sql.NullTime
 	)
 
 	err := s.db.QueryRowContext(
-		context.Background(),
+		ctx,
 		`SELECT token_id, agent_id, token_hash, issued_at, expires_at, last_used_at, revoked_at
 		FROM agent_tokens
 		WHERE token_id = $1`,
