@@ -40,6 +40,6 @@ func (s *Service) Record(ctx context.Context, eventKind, subjectType, subjectID,
 	return saved, nil
 }
 
-func (s *Service) Summary(ctx context.Context, agentID string, since time.Time) ([]core.AuditEvent, error) {
-	return s.repo.ListAuditEvents(ctx, agentID, since)
+func (s *Service) Summary(ctx context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error) {
+	return s.repo.ListAuditEvents(ctx, agentID, since, limit, offset)
 }

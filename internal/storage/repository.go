@@ -44,7 +44,7 @@ type PolicyGrantRepository interface {
 	FindGrant(ctx context.Context, grantID string) (core.PolicyGrant, bool, error)
 	RevokeGrant(ctx context.Context, grantID, grantorUserID string) (core.PolicyGrant, error)
 	ListGrantsForPair(ctx context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error)
-	ListIncomingGrantsForUser(ctx context.Context, granteeUserID string) ([]core.PolicyGrant, error)
+	ListIncomingGrantsForUser(ctx context.Context, granteeUserID string, limit, offset int) ([]core.PolicyGrant, error)
 }
 
 type QueryRepository interface {
@@ -58,20 +58,20 @@ type QueryRepository interface {
 type RequestRepository interface {
 	SaveRequest(ctx context.Context, request core.Request) (core.Request, error)
 	FindRequest(ctx context.Context, requestID string) (core.Request, bool, error)
-	ListIncomingRequests(ctx context.Context, toAgentID string) ([]core.Request, error)
+	ListIncomingRequests(ctx context.Context, toAgentID string, limit, offset int) ([]core.Request, error)
 	UpdateRequestState(ctx context.Context, requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error)
 }
 
 type ApprovalRepository interface {
 	SaveApproval(ctx context.Context, approval core.Approval) (core.Approval, error)
 	FindApproval(ctx context.Context, approvalID string) (core.Approval, bool, error)
-	ListPendingApprovals(ctx context.Context, agentID string) ([]core.Approval, error)
+	ListPendingApprovals(ctx context.Context, agentID string, limit, offset int) ([]core.Approval, error)
 	ResolveApproval(ctx context.Context, approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error)
 }
 
 type AuditRepository interface {
 	AppendAuditEvent(ctx context.Context, event core.AuditEvent) (core.AuditEvent, error)
-	ListAuditEvents(ctx context.Context, agentID string, since time.Time) ([]core.AuditEvent, error)
+	ListAuditEvents(ctx context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error)
 }
 
 // StoreTx is the combined repository surface available within a transaction scope.

@@ -127,15 +127,16 @@ func (s *Store) ListGrantsForPair(ctx context.Context, grantorUserID, granteeUse
 	return grants, nil
 }
 
-func (s *Store) ListIncomingGrantsForUser(ctx context.Context, granteeUserID string) ([]core.PolicyGrant, error) {
+func (s *Store) ListIncomingGrantsForUser(ctx context.Context, granteeUserID string, limit, offset int) ([]core.PolicyGrant, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
 		`SELECT policy_grant_id, org_id, grantor_user_id, grantee_user_id, scope_type, scope_ref, allowed_artifact_types,
 		        max_sensitivity, allowed_purposes, visibility_mode, requires_approval_above_risk, created_at, expires_at, revoked_at
 		FROM policy_grants
 		WHERE grantee_user_id = $1 AND revoked_at IS NULL
-		ORDER BY created_at ASC`,
-		granteeUserID,
+		ORDER BY created_at ASC
+		LIMIT $2 OFFSET $3`,
+		granteeUserID, limit, offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query incoming grants: %w", err)

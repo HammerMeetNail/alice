@@ -23,8 +23,8 @@ func NewService(approvals storage.ApprovalRepository, requests storage.RequestRe
 	}
 }
 
-func (s *Service) ListPending(ctx context.Context, agentID string) ([]core.Approval, error) {
-	approvals, err := s.approvals.ListPendingApprovals(ctx, agentID)
+func (s *Service) ListPending(ctx context.Context, agentID string, limit, offset int) ([]core.Approval, error) {
+	approvals, err := s.approvals.ListPendingApprovals(ctx, agentID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list pending approvals: %w", err)
 	}

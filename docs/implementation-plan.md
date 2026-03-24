@@ -81,7 +81,7 @@ The following gaps exist in the current implementation. Items marked **fixed** h
 - ~~no rate limiting exists on any endpoint, including unauthenticated registration routes~~ **fixed (step i, 2026-03-23)**
 - Jira JQL construction uses `fmt.Sprintf` with the project key from local config without validating the key matches `^[A-Z][A-Z0-9_]+$`
 - ~~every PostgreSQL query uses `context.Background()` instead of accepting a caller-provided context; queries cannot be cancelled and have no application-level timeouts~~ (duplicate — fixed step e)
-- no list endpoint has pagination; all return unbounded result sets
+- ~~no list endpoint has pagination; all return unbounded result sets~~ **fixed (step o, 2026-03-23)**
 - ~~the migration system has no `schema_migrations` version tracking table; every migration is re-executed on every startup via `CREATE TABLE IF NOT EXISTS`, which will break on the first non-idempotent migration~~ (duplicate — fixed step d)
 - ~~no multi-step database operation uses explicit transactions~~ **fixed (step n, 2026-03-23)**
 - ~~the HTTP server sets `ReadHeaderTimeout` (5s) but not `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, or `MaxHeaderBytes`~~ **fixed (step g, 2026-03-23)**
@@ -280,19 +280,21 @@ Three multi-step service operations now run inside a single atomic transaction:
 
 ### step o: add pagination to list endpoints
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-Implement:
+Added offset-based pagination to all four list endpoints. `limit` and `cursor` query parameters accepted on all endpoints; `cursor` is a base64-encoded offset for forward-compatibility.
 
-- add `limit` and `cursor` (or `offset`) query parameters to all list endpoints: `/v1/peers`, `/v1/requests/incoming`, `/v1/approvals`, `/v1/audit/summary`
-- add corresponding pagination parameters to the storage interface methods
-- default limit: 50; maximum limit: 200
-- return a `next_cursor` field in the response when more results exist
+Changes:
 
-Definition of done:
+- `storage.ListIncomingRequests`, `ListPendingApprovals`, `ListAuditEvents`, `ListIncomingGrantsForUser` each gained `limit, offset int` parameters. PostgreSQL implementations add `LIMIT $n OFFSET $m`; memory implementations slice the sorted result list via a generic `pageSlice[T]` helper.
+- Service methods `requests.ListIncoming`, `approvals.ListPending`, `audit.Summary`, `policy.ListAllowedPeers` thread through `limit, offset`.
+- `services.Container` interface methods updated.
+- `parsePagination(req)` helper in `httpapi/router.go` reads `?limit=` (default 50, max 200) and `?cursor=` (base64-decoded offset, default 0).
+- `nextCursor(count, limit, offset)` returns a base64-encoded next-page cursor when `count == limit`, or empty string on the last page.
+- All four HTTP handlers now include `"next_cursor"` in their responses.
+- Default limit 50, max 200 enforced in `parsePagination`.
 
-- a test creates >50 artifacts/requests/approvals and confirms that pagination returns the correct subsets
-- all existing tests still pass
+All existing tests pass.
 
 ### step p: implement remaining spec features
 

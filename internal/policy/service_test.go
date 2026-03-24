@@ -164,7 +164,7 @@ func TestListAllowedPeers(t *testing.T) {
 	grantee := core.User{UserID: id.New("user"), OrgID: orgID, Email: "grantee@example.com"}
 
 	// Initially no peers
-	peers, err := svc.ListAllowedPeers(ctx, grantee.UserID)
+	peers, err := svc.ListAllowedPeers(ctx, grantee.UserID, 50, 0)
 	if err != nil || len(peers) != 0 {
 		t.Fatalf("expected 0 initial peers, got %d err=%v", len(peers), err)
 	}
@@ -178,7 +178,7 @@ func TestListAllowedPeers(t *testing.T) {
 		t.Fatalf("Grant: %v", err)
 	}
 
-	peers, err = svc.ListAllowedPeers(ctx, grantee.UserID)
+	peers, err = svc.ListAllowedPeers(ctx, grantee.UserID, 50, 0)
 	if err != nil || len(peers) != 1 {
 		t.Fatalf("expected 1 peer, got %d err=%v", len(peers), err)
 	}

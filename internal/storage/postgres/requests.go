@@ -81,15 +81,16 @@ func (s *Store) FindRequest(ctx context.Context, requestID string) (core.Request
 	return request, true, nil
 }
 
-func (s *Store) ListIncomingRequests(ctx context.Context, toAgentID string) ([]core.Request, error) {
+func (s *Store) ListIncomingRequests(ctx context.Context, toAgentID string, limit, offset int) ([]core.Request, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
 		`SELECT request_id, org_id, from_agent_id, from_user_id, to_agent_id, to_user_id, request_type, title, content,
 		        structured_payload, risk_level, state, approval_state, response_message, created_at, expires_at
 		FROM requests
 		WHERE to_agent_id = $1 AND (expires_at IS NULL OR expires_at > NOW())
-		ORDER BY created_at ASC`,
-		toAgentID,
+		ORDER BY created_at ASC
+		LIMIT $2 OFFSET $3`,
+		toAgentID, limit, offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query incoming requests: %w", err)
@@ -188,15 +189,17 @@ func (s *Store) FindApproval(ctx context.Context, approvalID string) (core.Appro
 	return approval, true, nil
 }
 
-func (s *Store) ListPendingApprovals(ctx context.Context, agentID string) ([]core.Approval, error) {
+func (s *Store) ListPendingApprovals(ctx context.Context, agentID string, limit, offset int) ([]core.Approval, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
 		`SELECT approval_id, org_id, agent_id, owner_user_id, subject_type, subject_id, reason, state, created_at, expires_at, resolved_at
 		FROM approvals
 		WHERE agent_id = $1 AND state = $2 AND (expires_at IS NULL OR expires_at > NOW())
-		ORDER BY created_at ASC`,
+		ORDER BY created_at ASC
+		LIMIT $3 OFFSET $4`,
 		agentID,
 		core.ApprovalStatePending,
+		limit, offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query pending approvals: %w", err)

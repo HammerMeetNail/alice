@@ -268,7 +268,7 @@ func (s *Store) ListGrantsForPair(_ context.Context, grantorUserID, granteeUserI
 	return grants, nil
 }
 
-func (s *Store) ListIncomingGrantsForUser(_ context.Context, granteeUserID string) ([]core.PolicyGrant, error) {
+func (s *Store) ListIncomingGrantsForUser(_ context.Context, granteeUserID string, limit, offset int) ([]core.PolicyGrant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -283,7 +283,7 @@ func (s *Store) ListIncomingGrantsForUser(_ context.Context, granteeUserID strin
 		return grants[i].CreatedAt.Before(grants[j].CreatedAt)
 	})
 
-	return grants, nil
+	return pageSlice(grants, limit, offset), nil
 }
 
 func (s *Store) SaveQuery(_ context.Context, query core.Query) (core.Query, error) {
@@ -355,7 +355,7 @@ func (s *Store) FindRequest(_ context.Context, requestID string) (core.Request, 
 	return request, ok, nil
 }
 
-func (s *Store) ListIncomingRequests(_ context.Context, toAgentID string) ([]core.Request, error) {
+func (s *Store) ListIncomingRequests(_ context.Context, toAgentID string, limit, offset int) ([]core.Request, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -376,7 +376,7 @@ func (s *Store) ListIncomingRequests(_ context.Context, toAgentID string) ([]cor
 	sort.SliceStable(requests, func(i, j int) bool {
 		return requests[i].CreatedAt.Before(requests[j].CreatedAt)
 	})
-	return requests, nil
+	return pageSlice(requests, limit, offset), nil
 }
 
 func (s *Store) UpdateRequestState(_ context.Context, requestID string, state core.RequestState, approvalState core.ApprovalState, responseMessage string) (core.Request, bool, error) {
@@ -418,7 +418,7 @@ func (s *Store) FindApproval(_ context.Context, approvalID string) (core.Approva
 	return approval, ok, nil
 }
 
-func (s *Store) ListPendingApprovals(_ context.Context, agentID string) ([]core.Approval, error) {
+func (s *Store) ListPendingApprovals(_ context.Context, agentID string, limit, offset int) ([]core.Approval, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -439,7 +439,7 @@ func (s *Store) ListPendingApprovals(_ context.Context, agentID string) ([]core.
 	sort.SliceStable(approvals, func(i, j int) bool {
 		return approvals[i].CreatedAt.Before(approvals[j].CreatedAt)
 	})
-	return approvals, nil
+	return pageSlice(approvals, limit, offset), nil
 }
 
 func (s *Store) ResolveApproval(_ context.Context, approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error) {
@@ -464,7 +464,7 @@ func (s *Store) AppendAuditEvent(_ context.Context, event core.AuditEvent) (core
 	return event, nil
 }
 
-func (s *Store) ListAuditEvents(_ context.Context, agentID string, since time.Time) ([]core.AuditEvent, error) {
+func (s *Store) ListAuditEvents(_ context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -482,13 +482,29 @@ func (s *Store) ListAuditEvents(_ context.Context, agentID string, since time.Ti
 		return events[i].CreatedAt.Before(events[j].CreatedAt)
 	})
 
-	return events, nil
+	return pageSlice(events, limit, offset), nil
 }
 
 // WithTx satisfies storage.Transactor. The memory store's mutex-based
 // serialisation is sufficient; no real transaction is needed.
 func (s *Store) WithTx(_ context.Context, fn func(tx storage.StoreTx) error) error {
 	return fn(s)
+}
+
+// pageSlice applies offset-based pagination to a slice.
+// limit ≤ 0 means no cap; offset ≤ 0 means start from the beginning.
+func pageSlice[T any](items []T, limit, offset int) []T {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(items) {
+		return items[:0]
+	}
+	items = items[offset:]
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items
 }
 
 func removeID(values []string, target string) []string {

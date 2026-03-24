@@ -25,7 +25,7 @@ type ArtifactService interface {
 type PolicyService interface {
 	Grant(ctx context.Context, orgID string, grantorUser core.User, granteeUser core.User, scopeType, scopeRef string, artifactTypes []core.ArtifactType, maxSensitivity core.Sensitivity, purposes []core.QueryPurpose) (core.PolicyGrant, error)
 	RevokeGrant(ctx context.Context, grantID, grantorUserID string) (core.PolicyGrant, error)
-	ListAllowedPeers(ctx context.Context, granteeUserID string) ([]core.PolicyGrant, error)
+	ListAllowedPeers(ctx context.Context, granteeUserID string, limit, offset int) ([]core.PolicyGrant, error)
 }
 
 type QueryService interface {
@@ -35,18 +35,18 @@ type QueryService interface {
 
 type RequestService interface {
 	Send(ctx context.Context, request core.Request) (core.Request, error)
-	ListIncoming(ctx context.Context, agentID string) ([]core.Request, error)
+	ListIncoming(ctx context.Context, agentID string, limit, offset int) ([]core.Request, error)
 	Respond(ctx context.Context, agent core.Agent, requestID string, action core.RequestResponseAction, message string) (core.Request, *core.Approval, error)
 }
 
 type ApprovalService interface {
-	ListPending(ctx context.Context, agentID string) ([]core.Approval, error)
+	ListPending(ctx context.Context, agentID string, limit, offset int) ([]core.Approval, error)
 	Resolve(ctx context.Context, agent core.Agent, approvalID string, decision core.ApprovalState) (core.Approval, core.Request, error)
 }
 
 type AuditService interface {
 	Record(ctx context.Context, eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision string, riskLevel core.RiskLevel, policyBasis []string, metadata map[string]any) (core.AuditEvent, error)
-	Summary(ctx context.Context, agentID string, since time.Time) ([]core.AuditEvent, error)
+	Summary(ctx context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error)
 }
 
 type Container struct {

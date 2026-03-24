@@ -130,7 +130,7 @@ func TestExpiredRequestsFilteredFromList(t *testing.T) {
 	store.SaveRequest(ctx, activeRequest)
 	store.SaveRequest(ctx, expiredRequest)
 
-	requests, err := store.ListIncomingRequests(ctx, agentID)
+	requests, err := store.ListIncomingRequests(ctx, agentID, 50, 0)
 	if err != nil {
 		t.Fatalf("ListIncomingRequests: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestExpiredApprovalsFilteredFromList(t *testing.T) {
 	store.SaveApproval(ctx, activeApproval)
 	store.SaveApproval(ctx, expiredApproval)
 
-	approvals, err := store.ListPendingApprovals(ctx, agentID)
+	approvals, err := store.ListPendingApprovals(ctx, agentID, 50, 0)
 	if err != nil {
 		t.Fatalf("ListPendingApprovals: %v", err)
 	}

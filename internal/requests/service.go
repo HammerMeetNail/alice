@@ -40,8 +40,8 @@ func (s *Service) Send(ctx context.Context, request core.Request) (core.Request,
 	return saved, nil
 }
 
-func (s *Service) ListIncoming(ctx context.Context, agentID string) ([]core.Request, error) {
-	requests, err := s.requests.ListIncomingRequests(ctx, agentID)
+func (s *Service) ListIncoming(ctx context.Context, agentID string, limit, offset int) ([]core.Request, error) {
+	requests, err := s.requests.ListIncomingRequests(ctx, agentID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list incoming requests: %w", err)
 	}

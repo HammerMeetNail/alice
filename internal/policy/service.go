@@ -58,6 +58,6 @@ func (s *Service) ListGrantsForPair(ctx context.Context, grantorUserID, granteeU
 	return s.repo.ListGrantsForPair(ctx, grantorUserID, granteeUserID)
 }
 
-func (s *Service) ListAllowedPeers(ctx context.Context, granteeUserID string) ([]core.PolicyGrant, error) {
-	return s.repo.ListIncomingGrantsForUser(ctx, granteeUserID)
+func (s *Service) ListAllowedPeers(ctx context.Context, granteeUserID string, limit, offset int) ([]core.PolicyGrant, error) {
+	return s.repo.ListIncomingGrantsForUser(ctx, granteeUserID, limit, offset)
 }

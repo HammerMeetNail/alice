@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -308,7 +310,8 @@ func (r *router) handleListAllowedPeers(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	grants, err := r.services.Policy.ListAllowedPeers(req.Context(), user.UserID)
+	limit, offset := parsePagination(req)
+	grants, err := r.services.Policy.ListAllowedPeers(req.Context(), user.UserID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list allowed peers")
 		return
@@ -334,7 +337,10 @@ func (r *router) handleListAllowedPeers(w http.ResponseWriter, req *http.Request
 	if _, err := r.services.Audit.Record(req.Context(), "policy.allowed_peers.listed", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL0, nil, nil); err != nil {
 		slog.Error("audit record failed", "op", "list_peers", "err", err)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"peers":       peers,
+		"next_cursor": nextCursor(len(grants), limit, offset),
+	})
 }
 
 type queryPeerStatusRequest struct {
@@ -474,12 +480,16 @@ func (r *router) handleAuditSummary(w http.ResponseWriter, req *http.Request) {
 		since = parsed
 	}
 
-	events, err := r.services.Audit.Summary(req.Context(), agent.AgentID, since)
+	limit, offset := parsePagination(req)
+	events, err := r.services.Audit.Summary(req.Context(), agent.AgentID, since, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load audit summary")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events":      events,
+		"next_cursor": nextCursor(len(events), limit, offset),
+	})
 }
 
 type sendRequestToPeerRequest struct {
@@ -563,7 +573,8 @@ func (r *router) handleListIncomingRequests(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	requestsList, err := r.services.Requests.ListIncoming(req.Context(), agent.AgentID)
+	limit, offset := parsePagination(req)
+	requestsList, err := r.services.Requests.ListIncoming(req.Context(), agent.AgentID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load incoming requests")
 		return
@@ -591,7 +602,10 @@ func (r *router) handleListIncomingRequests(w http.ResponseWriter, req *http.Req
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"requests": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"requests":    items,
+		"next_cursor": nextCursor(len(requestsList), limit, offset),
+	})
 }
 
 type respondToRequestRequest struct {
@@ -673,7 +687,8 @@ func (r *router) handleListPendingApprovals(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	approvalsList, err := r.services.Approvals.ListPending(req.Context(), agent.AgentID)
+	limit, offset := parsePagination(req)
+	approvalsList, err := r.services.Approvals.ListPending(req.Context(), agent.AgentID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load pending approvals")
 		return
@@ -689,7 +704,10 @@ func (r *router) handleListPendingApprovals(w http.ResponseWriter, req *http.Req
 			"expires_at":   approval.ExpiresAt,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"approvals": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"approvals":   items,
+		"next_cursor": nextCursor(len(approvalsList), limit, offset),
+	})
 }
 
 type resolveApprovalRequest struct {
@@ -849,6 +867,38 @@ func accessTokenFromRequest(req *http.Request) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(authorization[len(prefix):]), true
+}
+
+// parsePagination reads ?limit= and ?cursor= from the request.
+// limit defaults to 50 and is capped at 200. cursor is a base64-encoded offset.
+func parsePagination(req *http.Request) (limit, offset int) {
+	limit = 50
+	if raw := req.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			if n > 200 {
+				n = 200
+			}
+			limit = n
+		}
+	}
+	offset = 0
+	if cursor := req.URL.Query().Get("cursor"); cursor != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(cursor); err == nil {
+			if n, err := strconv.Atoi(string(decoded)); err == nil && n > 0 {
+				offset = n
+			}
+		}
+	}
+	return limit, offset
+}
+
+// nextCursor returns a cursor string pointing to the next page, or empty string
+// when results are fewer than limit (indicating the last page).
+func nextCursor(count, limit, offset int) string {
+	if count < limit {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString([]byte(strconv.Itoa(offset + limit)))
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
