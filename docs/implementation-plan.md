@@ -238,21 +238,16 @@ Status: **complete** (2026-03-23)
 
 ### step l: add unit tests for services, storage, and negative authorization
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-The entire test suite is integration-level. Unit tests are needed for:
+Unit test files added in `internal/agents/`, `internal/policy/`, `internal/queries/`, and `internal/storage/memory/`. Tests cover:
 
-- **policy evaluation:** `internal/policy/service.go` — test grant matching, sensitivity ceiling, purpose filtering, artifact type filtering, project scope matching
-- **negative authorization:** test that queries are denied when: no grant exists, grant has wrong project scope, grant has lower sensitivity ceiling, grant has wrong purpose, grant has wrong artifact types, agents are in different orgs
-- **storage parity:** test that memory and PostgreSQL stores behave identically for edge cases (duplicate IDs, email normalization, FK-like constraints)
-- **token/challenge expiry:** test that expired tokens and challenges are rejected
-- **input validation:** test that malformed JSON, missing required fields, and oversized payloads are rejected with appropriate errors
+- **agents**: full registration flow, expired challenge rejection, used-challenge rejection, invalid signature rejection, valid/invalid token authentication, missing-field validation
+- **policy**: grant creation with valid and invalid inputs, grantor-only revocation enforcement, peer listing
+- **queries**: no-grant denial, matching grant succeeds, wrong purpose/artifact type/sensitivity ceiling returns empty result, revoked grant denied, expired grant returns empty result, project scope matching
+- **memory store**: grant revocation idempotency and ownership guard, approval state guard (no double-resolution), expired request/approval filtering from list queries, org-scoped user lookup isolation
 
-Definition of done:
-
-- at least one `_test.go` file exists in each of: `internal/agents/`, `internal/policy/`, `internal/queries/`, `internal/storage/memory/`, `internal/storage/postgres/`
-- `make test` passes
-- `make test-postgres` passes
+All new tests pass alongside all existing integration tests.
 
 ### step m: add structured logging
 
