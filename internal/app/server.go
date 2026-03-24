@@ -39,6 +39,7 @@ type repositories interface {
 	storage.RequestRepository
 	storage.ApprovalRepository
 	storage.AuditRepository
+	storage.Transactor
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -91,12 +92,12 @@ func NewContainer(cfg config.Config) (services.Container, func() error, error) {
 }
 
 func buildContainer(repos repositories, cfg config.Config) services.Container {
-	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg)
+	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg, repos)
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService)
-	requestService := requests.NewService(repos, repos)
-	approvalService := approvals.NewService(repos, repos)
+	requestService := requests.NewService(repos, repos, repos)
+	approvalService := approvals.NewService(repos, repos, repos)
 	auditService := audit.NewService(repos)
 
 	return services.Container{

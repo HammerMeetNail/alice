@@ -73,3 +73,25 @@ type AuditRepository interface {
 	AppendAuditEvent(ctx context.Context, event core.AuditEvent) (core.AuditEvent, error)
 	ListAuditEvents(ctx context.Context, agentID string, since time.Time) ([]core.AuditEvent, error)
 }
+
+// StoreTx is the combined repository surface available within a transaction scope.
+type StoreTx interface {
+	OrganizationRepository
+	UserRepository
+	AgentRepository
+	AgentRegistrationChallengeRepository
+	AgentTokenRepository
+	ArtifactRepository
+	PolicyGrantRepository
+	QueryRepository
+	RequestRepository
+	ApprovalRepository
+	AuditRepository
+}
+
+// Transactor runs fn inside a single atomic transaction.
+// On PostgreSQL, the underlying database transaction is committed on success
+// and rolled back on error. On memory, fn is called directly.
+type Transactor interface {
+	WithTx(ctx context.Context, fn func(tx StoreTx) error) error
+}

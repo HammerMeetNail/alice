@@ -13,12 +13,14 @@ import (
 type Service struct {
 	requests  storage.RequestRepository
 	approvals storage.ApprovalRepository
+	tx        storage.Transactor
 }
 
-func NewService(requests storage.RequestRepository, approvals storage.ApprovalRepository) *Service {
+func NewService(requests storage.RequestRepository, approvals storage.ApprovalRepository, tx storage.Transactor) *Service {
 	return &Service{
 		requests:  requests,
 		approvals: approvals,
+		tx:        tx,
 	}
 }
 
@@ -65,6 +67,7 @@ func (s *Service) Respond(ctx context.Context, agent core.Agent, requestID strin
 	}
 
 	if action == core.RequestResponseRequireApproval {
+		now := time.Now().UTC()
 		approval := core.Approval{
 			ApprovalID:  id.New("approval"),
 			OrgID:       request.OrgID,
@@ -74,21 +77,32 @@ func (s *Service) Respond(ctx context.Context, agent core.Agent, requestID strin
 			SubjectID:   request.RequestID,
 			Reason:      "Request response requires user approval before disclosure or acceptance.",
 			State:       core.ApprovalStatePending,
-			CreatedAt:   time.Now().UTC(),
-			ExpiresAt:   time.Now().UTC().Add(2 * time.Hour),
+			CreatedAt:   now,
+			ExpiresAt:   now.Add(2 * time.Hour),
 		}
-		savedApproval, err := s.approvals.SaveApproval(ctx, approval)
-		if err != nil {
-			return core.Request{}, nil, fmt.Errorf("save approval: %w", err)
+
+		var savedApproval core.Approval
+		var updatedRequest core.Request
+
+		if err := s.tx.WithTx(ctx, func(tx storage.StoreTx) error {
+			var txErr error
+			savedApproval, txErr = tx.SaveApproval(ctx, approval)
+			if txErr != nil {
+				return fmt.Errorf("save approval: %w", txErr)
+			}
+			var ok bool
+			updatedRequest, ok, txErr = tx.UpdateRequestState(ctx, request.RequestID, request.State, core.ApprovalStatePending, message)
+			if txErr != nil {
+				return fmt.Errorf("mark request approval pending: %w", txErr)
+			}
+			if !ok {
+				return ErrUnknownRequest
+			}
+			return nil
+		}); err != nil {
+			return core.Request{}, nil, err
 		}
-		updated, found, err := s.requests.UpdateRequestState(ctx, request.RequestID, request.State, core.ApprovalStatePending, message)
-		if err != nil {
-			return core.Request{}, nil, fmt.Errorf("mark request approval pending: %w", err)
-		}
-		if !found {
-			return core.Request{}, nil, ErrUnknownRequest
-		}
-		return updated, &savedApproval, nil
+		return updatedRequest, &savedApproval, nil
 	}
 
 	nextState := actionToState(action)

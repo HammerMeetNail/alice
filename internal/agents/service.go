@@ -25,6 +25,7 @@ type Service struct {
 	challenges storage.AgentRegistrationChallengeRepository
 	tokens     storage.AgentTokenRepository
 	cfg        config.Config
+	tx         storage.Transactor
 }
 
 func NewService(
@@ -34,6 +35,7 @@ func NewService(
 	challenges storage.AgentRegistrationChallengeRepository,
 	tokens storage.AgentTokenRepository,
 	cfg config.Config,
+	tx storage.Transactor,
 ) *Service {
 	return &Service{
 		orgs:       orgs,
@@ -42,6 +44,7 @@ func NewService(
 		challenges: challenges,
 		tokens:     tokens,
 		cfg:        cfg,
+		tx:         tx,
 	}
 }
 
@@ -105,43 +108,60 @@ func (s *Service) CompleteRegistration(ctx context.Context, challengeID, challen
 	}
 
 	challenge.UsedAt = &now
-	if _, err := s.challenges.SaveAgentRegistrationChallenge(ctx, challenge); err != nil {
-		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, fmt.Errorf("mark registration challenge used: %w", err)
-	}
 
-	org, user, agent, err := s.upsertRegisteredAgent(ctx, challenge.OrgSlug, challenge.OwnerEmail, challenge.AgentName, challenge.ClientType, challenge.PublicKey, now)
-	if err != nil {
+	var (
+		org      core.Organization
+		user     core.User
+		agent    core.Agent
+		rawToken string
+		tokenExp time.Time
+	)
+
+	if err := s.tx.WithTx(ctx, func(tx storage.StoreTx) error {
+		if _, err := tx.SaveAgentRegistrationChallenge(ctx, challenge); err != nil {
+			return fmt.Errorf("mark registration challenge used: %w", err)
+		}
+
+		var txErr error
+		org, user, agent, txErr = upsertRegisteredAgentTx(ctx, tx, challenge.OrgSlug, challenge.OwnerEmail, challenge.AgentName, challenge.ClientType, challenge.PublicKey, s.cfg.DefaultOrgName, now)
+		if txErr != nil {
+			return txErr
+		}
+
+		var token core.AgentToken
+		token, rawToken, txErr = issueTokenTx(ctx, tx, agent.AgentID, s.cfg.AuthTokenTTL, now)
+		if txErr != nil {
+			return txErr
+		}
+		tokenExp = token.ExpiresAt
+		return nil
+	}); err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, err
 	}
 
-	token, rawToken, err := s.issueToken(ctx, agent.AgentID, now)
-	if err != nil {
-		return core.Organization{}, core.User{}, core.Agent{}, "", time.Time{}, err
-	}
-
-	return org, user, agent, rawToken, token.ExpiresAt, nil
+	return org, user, agent, rawToken, tokenExp, nil
 }
 
-func (s *Service) upsertRegisteredAgent(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string, now time.Time) (core.Organization, core.User, core.Agent, error) {
-	org, ok, err := s.orgs.FindOrganizationBySlug(ctx, orgSlug)
+func upsertRegisteredAgentTx(ctx context.Context, tx storage.StoreTx, orgSlug, ownerEmail, agentName, clientType, publicKey, defaultOrgName string, now time.Time) (core.Organization, core.User, core.Agent, error) {
+	org, ok, err := tx.FindOrganizationBySlug(ctx, orgSlug)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find organization by slug: %w", err)
 	}
 	if !ok {
 		org = core.Organization{
 			OrgID:     id.New("org"),
-			Name:      s.cfg.DefaultOrgName,
+			Name:      defaultOrgName,
 			Slug:      strings.ToLower(strings.TrimSpace(orgSlug)),
 			CreatedAt: now,
 			Status:    "active",
 		}
-		org, err = s.orgs.UpsertOrganization(ctx, org)
+		org, err = tx.UpsertOrganization(ctx, org)
 		if err != nil {
 			return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("upsert organization: %w", err)
 		}
 	}
 
-	user, ok, err := s.users.FindUserByEmail(ctx, org.OrgID, ownerEmail)
+	user, ok, err := tx.FindUserByEmail(ctx, org.OrgID, ownerEmail)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find user by email: %w", err)
 	}
@@ -154,13 +174,13 @@ func (s *Service) upsertRegisteredAgent(ctx context.Context, orgSlug, ownerEmail
 			CreatedAt:   now,
 			Status:      "active",
 		}
-		user, err = s.users.UpsertUser(ctx, user)
+		user, err = tx.UpsertUser(ctx, user)
 		if err != nil {
 			return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("upsert user: %w", err)
 		}
 	}
 
-	agent, ok, err := s.agents.FindAgentByUserID(ctx, user.UserID)
+	agent, ok, err := tx.FindAgentByUserID(ctx, user.UserID)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("find agent by user id: %w", err)
 	}
@@ -183,7 +203,7 @@ func (s *Service) upsertRegisteredAgent(ctx context.Context, orgSlug, ownerEmail
 		}
 	}
 
-	agent, err = s.agents.UpsertAgent(ctx, agent)
+	agent, err = tx.UpsertAgent(ctx, agent)
 	if err != nil {
 		return core.Organization{}, core.User{}, core.Agent{}, fmt.Errorf("upsert agent: %w", err)
 	}
@@ -252,7 +272,7 @@ func (s *Service) FindAgentByUserID(ctx context.Context, userID string) (core.Ag
 	return s.agents.FindAgentByUserID(ctx, userID)
 }
 
-func (s *Service) issueToken(ctx context.Context, agentID string, now time.Time) (core.AgentToken, string, error) {
+func issueTokenTx(ctx context.Context, tx storage.StoreTx, agentID string, ttl time.Duration, now time.Time) (core.AgentToken, string, error) {
 	secret, err := randomToken(32)
 	if err != nil {
 		return core.AgentToken{}, "", fmt.Errorf("generate token secret: %w", err)
@@ -265,11 +285,11 @@ func (s *Service) issueToken(ctx context.Context, agentID string, now time.Time)
 		AgentID:    agentID,
 		TokenHash:  hashToken(rawToken),
 		IssuedAt:   now,
-		ExpiresAt:  now.Add(s.cfg.AuthTokenTTL),
+		ExpiresAt:  now.Add(ttl),
 		LastUsedAt: now,
 	}
 
-	token, err = s.tokens.SaveAgentToken(ctx, token)
+	token, err = tx.SaveAgentToken(ctx, token)
 	if err != nil {
 		return core.AgentToken{}, "", fmt.Errorf("save agent token: %w", err)
 	}

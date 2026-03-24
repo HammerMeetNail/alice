@@ -14,8 +14,17 @@ import (
 	_ "github.com/lib/pq"
 )
 
+// dbExecutor is satisfied by both *sql.DB and *sql.Tx, allowing all store
+// methods to execute against either a plain connection or an open transaction.
+type dbExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 type Store struct {
-	db *sql.DB
+	db    dbExecutor
+	rawDB *sql.DB // retained for BeginTx, Close, and Ping
 }
 
 var (
@@ -30,6 +39,7 @@ var (
 	_ storage.RequestRepository                    = (*Store)(nil)
 	_ storage.ApprovalRepository                   = (*Store)(nil)
 	_ storage.AuditRepository                      = (*Store)(nil)
+	_ storage.Transactor                           = (*Store)(nil)
 )
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
@@ -47,11 +57,29 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	return &Store{db: db, rawDB: db}, nil
 }
 
 func (s *Store) Close() error {
-	return s.db.Close()
+	return s.rawDB.Close()
+}
+
+// WithTx runs fn inside a single database transaction. If fn returns an error
+// the transaction is rolled back; otherwise it is committed.
+func (s *Store) WithTx(ctx context.Context, fn func(tx storage.StoreTx) error) error {
+	tx, err := s.rawDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	txStore := &Store{db: tx, rawDB: s.rawDB}
+	if err := fn(txStore); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
 }
 
 func normalizeEmail(email string) string {

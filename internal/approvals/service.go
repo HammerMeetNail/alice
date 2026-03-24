@@ -12,12 +12,14 @@ import (
 type Service struct {
 	approvals storage.ApprovalRepository
 	requests  storage.RequestRepository
+	tx        storage.Transactor
 }
 
-func NewService(approvals storage.ApprovalRepository, requests storage.RequestRepository) *Service {
+func NewService(approvals storage.ApprovalRepository, requests storage.RequestRepository, tx storage.Transactor) *Service {
 	return &Service{
 		approvals: approvals,
 		requests:  requests,
+		tx:        tx,
 	}
 }
 
@@ -47,26 +49,36 @@ func (s *Service) Resolve(ctx context.Context, agent core.Agent, approvalID stri
 		return core.Approval{}, core.Request{}, ErrExpiredApproval
 	}
 
-	resolvedApproval, found, err := s.approvals.ResolveApproval(ctx, approval.ApprovalID, decision, time.Now().UTC())
-	if err != nil {
-		return core.Approval{}, core.Request{}, fmt.Errorf("resolve approval: %w", err)
-	}
-	if !found {
-		return core.Approval{}, core.Request{}, ErrUnknownApproval
-	}
-
 	requestState := core.RequestStateAccepted
 	if decision == core.ApprovalStateDenied {
 		requestState = core.RequestStateDenied
 	}
 
-	request, found, err := s.requests.UpdateRequestState(ctx, approval.SubjectID, requestState, decision, "")
-	if err != nil {
-		return core.Approval{}, core.Request{}, fmt.Errorf("update request after approval: %w", err)
-	}
-	if !found {
-		return core.Approval{}, core.Request{}, ErrUnknownRequest
+	var resolvedApproval core.Approval
+	var updatedRequest core.Request
+
+	if err := s.tx.WithTx(ctx, func(tx storage.StoreTx) error {
+		var ok bool
+		var txErr error
+		resolvedApproval, ok, txErr = tx.ResolveApproval(ctx, approval.ApprovalID, decision, time.Now().UTC())
+		if txErr != nil {
+			return fmt.Errorf("resolve approval: %w", txErr)
+		}
+		if !ok {
+			return ErrUnknownApproval
+		}
+
+		updatedRequest, ok, txErr = tx.UpdateRequestState(ctx, approval.SubjectID, requestState, decision, "")
+		if txErr != nil {
+			return fmt.Errorf("update request after approval: %w", txErr)
+		}
+		if !ok {
+			return ErrUnknownRequest
+		}
+		return nil
+	}); err != nil {
+		return core.Approval{}, core.Request{}, err
 	}
 
-	return resolvedApproval, request, nil
+	return resolvedApproval, updatedRequest, nil
 }

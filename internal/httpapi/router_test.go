@@ -165,15 +165,16 @@ type testRepositories interface {
 	storage.RequestRepository
 	storage.ApprovalRepository
 	storage.AuditRepository
+	storage.Transactor
 }
 
 func buildTestHandler(cfg config.Config, repos testRepositories) http.Handler {
-	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg)
+	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg, repos)
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService)
-	requestService := requests.NewService(repos, repos)
-	approvalService := approvals.NewService(repos, repos)
+	requestService := requests.NewService(repos, repos, repos)
+	approvalService := approvals.NewService(repos, repos, repos)
 	auditService := audit.NewService(repos)
 
 	return NewRouter(services.Container{

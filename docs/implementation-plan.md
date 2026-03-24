@@ -83,7 +83,7 @@ The following gaps exist in the current implementation. Items marked **fixed** h
 - ~~every PostgreSQL query uses `context.Background()` instead of accepting a caller-provided context; queries cannot be cancelled and have no application-level timeouts~~ (duplicate — fixed step e)
 - no list endpoint has pagination; all return unbounded result sets
 - ~~the migration system has no `schema_migrations` version tracking table; every migration is re-executed on every startup via `CREATE TABLE IF NOT EXISTS`, which will break on the first non-idempotent migration~~ (duplicate — fixed step d)
-- no multi-step database operation uses explicit transactions
+- ~~no multi-step database operation uses explicit transactions~~ **fixed (step n, 2026-03-23)**
 - ~~the HTTP server sets `ReadHeaderTimeout` (5s) but not `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, or `MaxHeaderBytes`~~ **fixed (step g, 2026-03-23)**
 - ~~the codebase uses the standard `log` package everywhere; the spec calls for structured logging~~ **fixed (step m, 2026-03-23)**
 - no CORS, CSRF, or security response headers are set
@@ -264,19 +264,19 @@ Replaced all `log.Printf` / `log.Fatalf` / `log.Fatal` calls with `log/slog` (st
 
 ### step n: add explicit transaction handling for multi-step operations
 
-Status: not started
+Status: **complete** (2026-03-23)
 
-Implement:
+Added `storage.StoreTx` (combined repo interface) and `storage.Transactor` (single `WithTx(ctx, fn func(StoreTx) error) error` method) to `internal/storage/repository.go`.
 
-- add a `BeginTx` / `CommitTx` / `RollbackTx` pattern (or a `WithTx(ctx, fn)` helper) to the PostgreSQL store
-- wrap `ResolveApproval` in a transaction (resolve approval + update linked request state)
-- wrap `RespondToRequest` in a transaction when it also creates an approval
-- consider wrapping `CompleteRegistration` in a transaction (mark challenge used + create token)
+`*postgres.Store` now uses a `dbExecutor` interface (`ExecContext` / `QueryContext` / `QueryRowContext`) internally so that `*sql.TX` can be substituted transparently. `WithTx` begins a real transaction, creates a tx-backed `Store`, calls `fn`, and commits or rolls back. `*memory.Store.WithTx` calls `fn(s)` directly (mutex-based serialisation is sufficient).
 
-Definition of done:
+Three multi-step service operations now run inside a single atomic transaction:
 
-- multi-step operations are atomic
-- a test verifies that a failure midway through a transaction rolls back all changes
+- **`agents.CompleteRegistration`**: mark challenge used + upsert org/user/agent + issue token are all inside one `WithTx` call; if any step fails the challenge is not marked used and no partial state is written
+- **`approvals.Resolve`**: `ResolveApproval` + `UpdateRequestState` are inside one `WithTx` call; an approval can never be resolved without the linked request being updated
+- **`requests.Respond` (RequireApproval path)**: `SaveApproval` + `UpdateRequestState` are inside one `WithTx` call; an approval record can never exist without the request reflecting its pending state
+
+`agents.NewService`, `requests.NewService`, and `approvals.NewService` each take an extra `storage.Transactor` parameter. `buildContainer` passes `repos` (which implements `Transactor`) as that parameter. All test call sites updated. All existing tests pass.
 
 ### step o: add pagination to list endpoints
 

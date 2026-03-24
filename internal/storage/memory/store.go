@@ -485,6 +485,12 @@ func (s *Store) ListAuditEvents(_ context.Context, agentID string, since time.Ti
 	return events, nil
 }
 
+// WithTx satisfies storage.Transactor. The memory store's mutex-based
+// serialisation is sufficient; no real transaction is needed.
+func (s *Store) WithTx(_ context.Context, fn func(tx storage.StoreTx) error) error {
+	return fn(s)
+}
+
 func removeID(values []string, target string) []string {
 	filtered := values[:0]
 	for _, value := range values {

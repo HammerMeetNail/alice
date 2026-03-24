@@ -42,7 +42,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("parse migration version from %q: %w", name, err)
 		}
 
-		tx, err := s.db.BeginTx(ctx, nil)
+		tx, err := s.rawDB.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin transaction for migration %s: %w", name, err)
 		}

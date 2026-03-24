@@ -20,7 +20,7 @@ func newAgentService() *agents.Service {
 		AuthTokenTTL:     time.Hour,
 		DefaultOrgName:   "Test Org",
 	}
-	return agents.NewService(store, store, store, store, store, cfg)
+	return agents.NewService(store, store, store, store, store, cfg, store)
 }
 
 func generateKeyPair(t *testing.T) (publicKeyB64, privateKeyB64 string, privateKey ed25519.PrivateKey) {
@@ -72,7 +72,7 @@ func TestRegistration_ExpiredChallenge(t *testing.T) {
 		AuthTokenTTL:     time.Hour,
 		DefaultOrgName:   "Test Org",
 	}
-	svc := agents.NewService(store, store, store, store, store, cfg)
+	svc := agents.NewService(store, store, store, store, store, cfg, store)
 	ctx := context.Background()
 
 	pubKeyB64, _, privKey := generateKeyPair(t)
