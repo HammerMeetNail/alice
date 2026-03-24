@@ -283,14 +283,11 @@ func TestQueryEvaluate_ExpiredGrant(t *testing.T) {
 	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
 		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
 
-	// ListGrantsForPair filters revoked but not expired at storage level;
-	// matchingGrant skips expired grants at evaluation time.
-	resp, err := svc.Evaluate(ctx, query)
-	if err != nil {
-		t.Fatalf("unexpected error %v (grants list is not empty, but expired grant should yield 0 artifacts)", err)
-	}
-	if len(resp.Artifacts) != 0 {
-		t.Fatalf("expected 0 artifacts (expired grant), got %d", len(resp.Artifacts))
+	// Expired grants are now filtered at the storage layer, so the queries
+	// service sees no valid grants and denies the query.
+	_, err := svc.Evaluate(ctx, query)
+	if err != queries.ErrPermissionDenied {
+		t.Fatalf("expected ErrPermissionDenied for expired grant, got %v", err)
 	}
 }
 

@@ -81,10 +81,13 @@ type JiraWebhookConfig struct {
 }
 
 type GCalWebhookConfig struct {
-	Enabled      bool   `json:"enabled"`
-	ListenAddr   string `json:"listen_addr"`
-	SecretEnvVar string `json:"secret_env_var"`
-	SecretFile   string `json:"secret_file"`
+	Enabled             bool   `json:"enabled"`
+	ListenAddr          string `json:"listen_addr"`
+	SecretEnvVar        string `json:"secret_env_var"`
+	SecretFile          string `json:"secret_file"`
+	CallbackURL         string `json:"callback_url"`
+	ChannelIDPrefix     string `json:"channel_id_prefix"`
+	RequestedTTLSeconds int    `json:"requested_ttl_seconds"`
 }
 
 type GitHubConnectorConfig struct {
@@ -535,6 +538,18 @@ func (c Config) GCalWebhookSecretEnvVar() string {
 
 func (c Config) GCalWebhookSecretFile() string {
 	return c.resolveConnectorPath(c.Connectors.GCal.Webhook.SecretFile)
+}
+
+func (c Config) GCalWebhookCallbackURL() string {
+	return strings.TrimSpace(c.Connectors.GCal.Webhook.CallbackURL)
+}
+
+func (c Config) GCalWebhookChannelIDPrefix() string {
+	return strings.TrimSpace(c.Connectors.GCal.Webhook.ChannelIDPrefix)
+}
+
+func (c Config) GCalWebhookRequestedTTLSeconds() int {
+	return c.Connectors.GCal.Webhook.RequestedTTLSeconds
 }
 
 func (c Config) resolvePath(value string) string {

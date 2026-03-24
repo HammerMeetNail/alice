@@ -53,7 +53,7 @@ func (s *Service) CorrectArtifact(ctx context.Context, agent core.Agent, user co
 		return core.Artifact{}, fmt.Errorf("artifact %s not found", originalArtifactID)
 	}
 	if original.OwnerAgentID != agent.AgentID {
-		return core.Artifact{}, fmt.Errorf("artifact %s is not owned by the authenticated agent", originalArtifactID)
+		return core.Artifact{}, core.ForbiddenError{Message: "artifact is not owned by the authenticated agent"}
 	}
 
 	correction.SupersedesArtifactID = &originalArtifactID

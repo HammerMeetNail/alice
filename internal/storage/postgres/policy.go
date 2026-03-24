@@ -103,6 +103,7 @@ func (s *Store) ListGrantsForPair(ctx context.Context, grantorUserID, granteeUse
 		        max_sensitivity, allowed_purposes, visibility_mode, requires_approval_above_risk, created_at, expires_at, revoked_at
 		FROM policy_grants
 		WHERE grantor_user_id = $1 AND grantee_user_id = $2 AND revoked_at IS NULL
+		AND (expires_at IS NULL OR expires_at > NOW())
 		ORDER BY created_at ASC`,
 		grantorUserID,
 		granteeUserID,
@@ -134,6 +135,7 @@ func (s *Store) ListIncomingGrantsForUser(ctx context.Context, granteeUserID str
 		        max_sensitivity, allowed_purposes, visibility_mode, requires_approval_above_risk, created_at, expires_at, revoked_at
 		FROM policy_grants
 		WHERE grantee_user_id = $1 AND revoked_at IS NULL
+		AND (expires_at IS NULL OR expires_at > NOW())
 		ORDER BY created_at ASC
 		LIMIT $2 OFFSET $3`,
 		granteeUserID, limit, offset,

@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -119,6 +120,9 @@ func (s *Service) CompleteRegistration(ctx context.Context, challengeID, challen
 
 	if err := s.tx.WithTx(ctx, func(tx storage.StoreTx) error {
 		if _, err := tx.SaveAgentRegistrationChallenge(ctx, challenge); err != nil {
+			if errors.Is(err, storage.ErrChallengeAlreadyUsed) {
+				return ErrUsedRegistrationChallenge
+			}
 			return fmt.Errorf("mark registration challenge used: %w", err)
 		}
 

@@ -4,7 +4,7 @@
 
 Active implementation guide  
 Audience: engineering, platform, future agent sessions  
-Last updated: 2026-03-23
+Last updated: 2026-03-24
 
 ---
 
@@ -43,6 +43,7 @@ The repository is no longer design-only. The current implementation includes:
 - a targeted handler test covering the request and approval flow against memory and, when configured, PostgreSQL
 - a targeted MCP test covering local registration, artifact publish, grant, peer listing, query/result retrieval, request response, and approval resolution
 - a targeted edge runtime test covering registration reuse, fixture publication, fixture-derived artifacts, replacement-aware connector publication, live GitHub/Jira/Calendar polling, signed GitHub webhook intake, shared-secret Jira webhook intake, shared-secret Google Calendar webhook intake, webhook duplicate/replay handling, connector pagination, transient connector retry behavior, connector cursor persistence, connector OAuth bootstrap, encrypted credential-store behavior, actionable re-auth errors, query-result retrieval, and incoming-request polling
+- a `RegisterConnectorWatch` edge runtime method and `watch.go` for Google Calendar provider-side watch (push channel) registration with reuse-detection and state persistence
 - a Podman-based local container workflow through `make local` and `make down` that runs both the server and PostgreSQL, plus `make postgres-up` / `make test-postgres` helpers that bring up PostgreSQL-only test infrastructure, reuse an existing `alice-db` container when present, and wait for container health before running the PostgreSQL-backed test path
 
 ---
@@ -74,7 +75,7 @@ The following gaps exist in the current implementation. Items marked **fixed** h
 - ~~no HTTP endpoint uses `http.MaxBytesReader` or equivalent; all JSON decoding reads from unbounded request bodies; the webhook handlers correctly use `io.LimitReader(req.Body, 1<<20)` but the same pattern is missing from every server-side POST route~~ **fixed (step a, 2026-03-23)**
 - ~~every PostgreSQL query uses `context.Background()` instead of accepting a caller-provided context; queries cannot be cancelled and have no application-level timeouts~~ **fixed (step e, 2026-03-23)**
 - ~~the migration system has no `schema_migrations` version tracking table; every migration is re-executed on every startup via `CREATE TABLE IF NOT EXISTS`, which will break on the first non-idempotent migration~~ **fixed (step d, 2026-03-23)**
-- the in-memory registration challenge flow has a TOCTOU race: the read-check-update for `used_at` is not atomic across method calls, allowing a concurrent `CompleteRegistration` with the same challenge to succeed twice; the PostgreSQL path is safe due to row-level locking
+- ~~the in-memory registration challenge flow has a TOCTOU race: the read-check-update for `used_at` is not atomic across method calls, allowing a concurrent `CompleteRegistration` with the same challenge to succeed twice; the PostgreSQL path is safe due to row-level locking~~ **fixed (2026-03-24)**
 - ~~`X-Agent-Token` is accepted as an undocumented and untested alternate auth header alongside `Authorization: Bearer`~~ **fixed (step j, 2026-03-23)**
 - ~~`Agent.Capabilities` is stored during registration but never checked by any service; any authenticated agent can perform any action~~ **fixed (step k, 2026-03-23)** (field removed)
 - ~~`ResolveApproval` in the SQL layer does not include `AND state = 'pending'`, so a concurrent race can re-resolve an already-resolved approval~~ **fixed (step h, 2026-03-23)**
@@ -86,17 +87,17 @@ The following gaps exist in the current implementation. Items marked **fixed** h
 - ~~no multi-step database operation uses explicit transactions~~ **fixed (step n, 2026-03-23)**
 - ~~the HTTP server sets `ReadHeaderTimeout` (5s) but not `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, or `MaxHeaderBytes`~~ **fixed (step g, 2026-03-23)**
 - ~~the codebase uses the standard `log` package everywhere; the spec calls for structured logging~~ **fixed (step m, 2026-03-23)**
-- no CORS, CSRF, or security response headers are set
+- no CORS or CSRF protection is set (security response headers `X-Content-Type-Options`, `X-Frame-Options`, `Cache-Control` were added in step g)
 - ~~grant revocation (`revoke_permission` / `DELETE /v1/policy-grants/:id`) is not implemented~~ **fixed (step f, 2026-03-23)**
 - ~~`submit_correction` is not implemented~~ **fixed (step p, 2026-03-23)**
 - `team_scope` and `manager_scope` visibility modes pass through without team/manager relationship logic
 - ~~`PolicyGrant.RequiresApprovalAboveRisk` is set but never checked during query evaluation~~ **fixed (step p, 2026-03-23)**
 - ~~the `Redactions` field is always empty; no redaction logic exists~~ **fixed (step p, 2026-03-23)**
-- expired requests, approvals, and grants are not filtered during list/resolve operations (only expired artifacts are filtered during query evaluation)
-- no unit tests exist for any service or storage package; all testing is integration-level
-- no negative authorization tests exist (cross-agent access, sensitivity ceiling, purpose mismatch, cross-org)
-- no token/challenge expiration tests exist
-- no malformed-input tests exist
+- ~~expired requests, approvals, and grants are not filtered during list/resolve operations (only expired artifacts are filtered during query evaluation)~~ **fixed (2026-03-24)**: expired requests/approvals in lists were fixed in step h; expired grants are now also filtered in `ListGrantsForPair` and `ListIncomingGrantsForUser` (both memory and PostgreSQL), replacing the previous evaluation-time-only filter
+- ~~no unit tests exist for any service or storage package; all testing is integration-level~~ **fixed (step l)**
+- ~~no negative authorization tests exist (cross-agent access, sensitivity ceiling, purpose mismatch, cross-org)~~ **fixed (step l and 2026-03-24)**: service-level tests cover sensitivity ceiling, purpose mismatch, revoked/expired grants; HTTP-level test covers cross-agent artifact correction (403)
+- ~~no token/challenge expiration tests exist~~ **fixed (2026-03-24)**: expired challenge test added in step l; expired token test added 2026-03-24
+- ~~no malformed-input tests exist~~ **fixed (2026-03-24)**: malformed JSON (400) and oversized body (413) HTTP tests added
 
 ---
 
@@ -338,15 +339,17 @@ Remaining:
 
 ## 6. suggested first task for the next session
 
-Steps a through k are complete. The next session should implement step l (unit tests) and then continue with steps m–p.
+Steps a through p are largely complete. The remaining open security gaps and spec items are:
 
-Concrete next changes:
+1. **CORS/CSRF** — no CORS headers or CSRF protection; requires knowing the intended browser-facing origin before implementing
+2. **`team_scope` / `manager_scope` visibility modes** — require an org graph not yet in scope
+3. **`RegisterConnectorWatch` CLI command** — `watch.go` and the supporting config/state types are implemented but no `edge-agent watch` subcommand wires them up yet
+4. **cross-org negative authorization HTTP tests** — the service-level tests cover cross-org user lookup isolation; an HTTP-level cross-org registration + query attempt would further harden the test surface
 
-1. add unit tests for service and storage packages, negative authorization, token/challenge expiry, and input validation (step l)
-2. replace `log.Printf` / `log.Fatalf` with structured `log/slog` (step m)
-3. add `WithTx` transaction wrapping to multi-step PostgreSQL operations (step n)
-4. add `limit`/`cursor` pagination to list endpoints (step o)
-5. implement remaining spec features: redaction, `submit_correction`, risk-based approval, visibility modes, Jira JQL validation (step p)
+Concrete next change if continuing security hardening:
+
+- Add a `watch` subcommand to `cmd/edge-agent/main.go` that calls `runtime.RegisterConnectorWatch` and prints the `ConnectorWatchReport` as JSON
+- Add an HTTP-level test that registers two agents in different orgs and verifies a cross-org query attempt is denied
 
 ### previously completed steps (for reference)
 

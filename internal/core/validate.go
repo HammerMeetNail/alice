@@ -20,6 +20,21 @@ func IsValidationError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// ForbiddenError is returned by service methods when the caller is authenticated
+// but does not have permission to perform the requested operation.
+type ForbiddenError struct {
+	Message string
+}
+
+func (e ForbiddenError) Error() string {
+	return e.Message
+}
+
+func IsForbiddenError(err error) bool {
+	var target ForbiddenError
+	return errors.As(err, &target)
+}
+
 func invalidf(format string, args ...any) error {
 	return ValidationError{Message: fmt.Sprintf(format, args...)}
 }

@@ -45,7 +45,21 @@ type State struct {
 	WebhookSequenceNumbers map[string]int64                `json:"webhook_sequence_numbers,omitempty"`
 	ConnectorCredentials   map[string]ConnectorCredential          `json:"connector_credentials,omitempty"`
 	PendingConnectorAuths  map[string]PendingConnectorAuth         `json:"pending_connector_auths,omitempty"`
+	ConnectorWatches       map[string]ConnectorWatchState          `json:"connector_watches,omitempty"`
 	EncryptedSecrets       *encryptedStateSecretsEnvelope          `json:"encrypted_secrets,omitempty"`
+}
+
+// ConnectorWatchState records an active provider-side watch (e.g. a Google
+// Calendar push-notification channel) that was registered by the edge agent.
+type ConnectorWatchState struct {
+	ConnectorType string    `json:"connector_type"`
+	ScopeRef      string    `json:"scope_ref"`
+	ChannelID     string    `json:"channel_id"`
+	ResourceID    string    `json:"resource_id"`
+	ResourceURI   string    `json:"resource_uri,omitempty"`
+	CallbackURL   string    `json:"callback_url"`
+	RegisteredAt  time.Time `json:"registered_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
 }
 
 type ConnectorCredential struct {
@@ -224,6 +238,21 @@ func (s *State) normalizePublishedArtifacts() {
 	if s.PendingConnectorAuths == nil {
 		s.PendingConnectorAuths = map[string]PendingConnectorAuth{}
 	}
+	if s.ConnectorWatches == nil {
+		s.ConnectorWatches = map[string]ConnectorWatchState{}
+	}
+}
+
+func (s State) ConnectorWatch(key string) ConnectorWatchState {
+	return s.ConnectorWatches[key]
+}
+
+func (s *State) SetConnectorWatch(key string, watch ConnectorWatchState) {
+	s.normalizePublishedArtifacts()
+	if key == "" {
+		return
+	}
+	s.ConnectorWatches[key] = watch
 }
 
 func (s State) CursorTime(key string) time.Time {

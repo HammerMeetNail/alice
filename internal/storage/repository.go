@@ -2,10 +2,15 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"alice/internal/core"
 )
+
+// ErrChallengeAlreadyUsed is returned by SaveAgentRegistrationChallenge when
+// the challenge has already been marked used by a concurrent completion attempt.
+var ErrChallengeAlreadyUsed = errors.New("registration challenge already used")
 
 type OrganizationRepository interface {
 	UpsertOrganization(ctx context.Context, org core.Organization) (core.Organization, error)

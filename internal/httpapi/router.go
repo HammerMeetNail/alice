@@ -977,6 +977,10 @@ func writeServiceError(w http.ResponseWriter, err error, fallback string) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if core.IsForbiddenError(err) {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 	writeError(w, http.StatusInternalServerError, fallback)
 }
 

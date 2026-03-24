@@ -167,6 +167,33 @@ func TestAuthentication_InvalidToken(t *testing.T) {
 	}
 }
 
+func TestAuthentication_ExpiredToken(t *testing.T) {
+	store := memory.New()
+	cfg := config.Config{
+		AuthChallengeTTL: 5 * time.Minute,
+		AuthTokenTTL:     -time.Millisecond, // expires immediately
+		DefaultOrgName:   "Test Org",
+	}
+	svc := agents.NewService(store, store, store, store, store, cfg, store)
+	ctx := context.Background()
+
+	pubKeyB64, _, privKey := generateKeyPair(t)
+	challenge, payload, err := svc.BeginRegistration(ctx, "testorg", "alice@example.com", "Alice Agent", "edge", pubKeyB64)
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	sig := signChallenge(t, payload, privKey)
+	_, _, _, accessToken, _, err := svc.CompleteRegistration(ctx, challenge.ChallengeID, sig)
+	if err != nil {
+		t.Fatalf("CompleteRegistration: %v", err)
+	}
+
+	_, _, err = svc.AuthenticateAgent(ctx, accessToken)
+	if err == nil {
+		t.Fatal("expected error for expired token")
+	}
+}
+
 func TestRegistration_MissingFields(t *testing.T) {
 	svc := newAgentService()
 	ctx := context.Background()

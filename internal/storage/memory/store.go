@@ -162,6 +162,14 @@ func (s *Store) SaveAgentRegistrationChallenge(_ context.Context, challenge core
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Atomic check-and-set: if the caller is marking the challenge as used and
+	// it is already marked used (concurrent CompleteRegistration race), reject it.
+	if challenge.UsedAt != nil {
+		if existing, ok := s.challenges[challenge.ChallengeID]; ok && existing.UsedAt != nil {
+			return core.AgentRegistrationChallenge{}, storage.ErrChallengeAlreadyUsed
+		}
+	}
+
 	s.challenges[challenge.ChallengeID] = challenge
 	return challenge, nil
 }
@@ -262,11 +270,19 @@ func (s *Store) ListGrantsForPair(_ context.Context, grantorUserID, granteeUserI
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	now := time.Now().UTC()
 	grants := make([]core.PolicyGrant, 0)
 	for _, grant := range s.grants {
-		if grant.GrantorUserID == grantorUserID && grant.GranteeUserID == granteeUserID && grant.RevokedAt == nil {
-			grants = append(grants, grant)
+		if grant.GrantorUserID != grantorUserID || grant.GranteeUserID != granteeUserID {
+			continue
 		}
+		if grant.RevokedAt != nil {
+			continue
+		}
+		if grant.ExpiresAt != nil && now.After(*grant.ExpiresAt) {
+			continue
+		}
+		grants = append(grants, grant)
 	}
 
 	sort.SliceStable(grants, func(i, j int) bool {
@@ -280,11 +296,16 @@ func (s *Store) ListIncomingGrantsForUser(_ context.Context, granteeUserID strin
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	now := time.Now().UTC()
 	grants := make([]core.PolicyGrant, 0)
 	for _, grant := range s.grants {
-		if grant.GranteeUserID == granteeUserID && grant.RevokedAt == nil {
-			grants = append(grants, grant)
+		if grant.GranteeUserID != granteeUserID || grant.RevokedAt != nil {
+			continue
 		}
+		if grant.ExpiresAt != nil && now.After(*grant.ExpiresAt) {
+			continue
+		}
+		grants = append(grants, grant)
 	}
 
 	sort.SliceStable(grants, func(i, j int) bool {

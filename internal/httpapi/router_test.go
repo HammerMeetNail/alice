@@ -59,6 +59,108 @@ func TestProtectedRoutesRequireBearerToken(t *testing.T) {
 	}
 }
 
+func TestMalformedJSONReturns400(t *testing.T) {
+	handler := newTestHandler(t, "")
+
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/v1/agents/register/challenge"},
+		{http.MethodPost, "/v1/agents/register"},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, strings.NewReader("{not valid json"))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for malformed JSON, got %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestOversizedBodyReturns413(t *testing.T) {
+	handler := newTestHandler(t, "")
+
+	// Build a body just over 1 MiB.
+	big := strings.NewReader(`{"padding":"` + strings.Repeat("x", 1<<20+1) + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/register/challenge", big)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized body, got %d", rec.Code)
+	}
+}
+
+func TestExpiredTokenReturns401(t *testing.T) {
+	handler := newTestHandler(t, "")
+	rec := performJSON(t, handler, http.MethodGet, "/v1/peers", "expired~token-value", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for expired/invalid token, got %d", rec.Code)
+	}
+}
+
+func TestCrossAgentArtifactCorrection(t *testing.T) {
+	// Alice publishes an artifact; Bob should not be able to correct it.
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+	bob := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+
+	// Alice publishes an artifact and captures its ID.
+	rec := performJSON(t, handler, http.MethodPost, "/v1/artifacts", alice.AccessToken, map[string]any{
+		"artifact": map[string]any{
+			"type":            "summary",
+			"title":           "Alice's status",
+			"content":         "All good.",
+			"visibility_mode": "explicit_grants_only",
+			"sensitivity":     "low",
+			"confidence":      0.9,
+			"source_refs": []map[string]any{{
+				"source_system": "test",
+				"source_type":   "manual",
+				"source_id":     "alice-art-1",
+				"observed_at":   time.Now().UTC().Format(time.RFC3339),
+			}},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Alice publish artifact status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var publishResp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&publishResp); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+	artifactID := publishResp["artifact_id"].(string)
+
+	// Bob tries to correct Alice's artifact — should be 403.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/artifacts/"+artifactID+"/correct", bob.AccessToken, map[string]any{
+		"artifact": map[string]any{
+			"type":            "summary",
+			"title":           "Corrected status",
+			"content":         "Actually not so good.",
+			"visibility_mode": "explicit_grants_only",
+			"sensitivity":     "low",
+			"confidence":      0.8,
+			"source_refs": []map[string]any{{
+				"source_system": "test",
+				"source_type":   "manual",
+				"source_id":     "alice-art-1",
+				"observed_at":   time.Now().UTC().Format(time.RFC3339),
+			}},
+		},
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when Bob corrects Alice's artifact, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRegisterAgentRejectsInvalidSignature(t *testing.T) {
 	handler := newTestHandler(t, "")
 	fixture := newFixture(t)
