@@ -393,6 +393,9 @@ An attacker or compromised runtime pretends to be another agent or user.
 - nonce/replay protection
 - token binding where possible
 - audit on auth anomalies
+- **[not yet implemented]** email OTP verification to prove inbox ownership during registration (see implementation plan step r)
+- **[not yet implemented]** org invite tokens to gate registration to authorized members (see implementation plan step s)
+- **[not yet implemented]** org admin approval queue for human-in-the-loop registration review (see implementation plan step t)
 
 ---
 
@@ -864,6 +867,7 @@ The test suite should include at minimum:
 
 Authentication and identity:
 - [x] signed or strongly authenticated agent registration (Ed25519 challenge flow implemented)
+- [ ] email address verification during registration (Ed25519 proves key possession but not inbox ownership; see implementation plan steps r/s/t)
 - [x] short-lived server-issued access tokens (implemented with SHA-256 hashed storage)
 - [ ] remove or document `X-Agent-Token` alternate auth header (undocumented fallback widens attack surface)
 - [ ] enforce `Agent.Capabilities` or remove the field (stored but never checked)
@@ -952,6 +956,8 @@ These risks must be acknowledged in docs, UI copy, policy defaults, and deployme
 A full code review on 2026-03-23 identified the following concrete vulnerabilities in the current implementation. These are grouped by severity and include file-level locations for remediation. Each is tracked in `docs/implementation-plan.md` with a corresponding hardening step.
 
 ### 21.1 HIGH severity
+
+**Self-asserted email addresses.** `internal/agents/service.go` (`BeginRegistration`) accepts `owner_email` as a self-asserted string. The Ed25519 challenge flow proves key possession but not inbox ownership. Anyone who knows an org slug can register as any email address and receive a valid bearer token for that identity. Remediation: implement email OTP verification (implementation plan step r), org invite tokens (step s), and/or org admin approval queue (step t).
 
 **Plaintext state file.** `internal/edge/state.go` stores the Ed25519 private key and bearer token in an unencrypted JSON file. The state directory is created with `0755` permissions (world-listable). The credential store (`internal/edge/credentials.go`) already implements AES-256-GCM encryption — the same mechanism should be extended to the state file. The directory should use `0700`.
 

@@ -100,6 +100,7 @@ The following gaps exist in the current implementation. Items marked **fixed** h
 - ~~no negative authorization tests exist (cross-agent access, sensitivity ceiling, purpose mismatch, cross-org)~~ **fixed (step l and 2026-03-24)**: service-level tests cover sensitivity ceiling, purpose mismatch, revoked/expired grants; HTTP-level test covers cross-agent artifact correction (403)
 - ~~no token/challenge expiration tests exist~~ **fixed (2026-03-24)**: expired challenge test added in step l; expired token test added 2026-03-24
 - ~~no malformed-input tests exist~~ **fixed (2026-03-24)**: malformed JSON (400) and oversized body (413) HTTP tests added
+- **email addresses are self-asserted and unverified during registration**: the Ed25519 challenge flow proves the agent holds the private key but does not prove the registrant controls the claimed `owner_email`; anyone who knows an org slug can register as any email address; see steps r/s/t for the phased remediation plan
 
 ---
 
@@ -350,6 +351,176 @@ Status: **not started**
 - No raw database credentials should ever be required on a user's machine in the HTTP client path
 - All existing tests must continue to pass; the HTTP client path requires integration tests against a running `cmd/server` instance (use `httptest.NewServer` to avoid a live dependency)
 
+### step r: email OTP verification during registration
+
+Status: **not started**
+
+**Problem:** The Ed25519 challenge flow proves "this agent holds the private key it generated" but not "this agent's owner actually controls the claimed email address." Anyone who knows an org slug can register as any email. This is the most critical identity gap in the current system.
+
+**Design overview:**
+
+After `CompleteRegistration` succeeds cryptographically, the agent enters a `pending_email_verification` state. The server sends a short-lived one-time code to `owner_email`. The agent must submit that code before the server promotes it to `active` status. Until verified, the agent cannot query, grant, request, or publish.
+
+**Required changes:**
+
+1. **SMTP integration in `internal/config/config.go` and new `internal/email/` package:**
+   - Add env vars: `ALICE_SMTP_HOST`, `ALICE_SMTP_PORT` (default 587), `ALICE_SMTP_USERNAME`, `ALICE_SMTP_PASSWORD`, `ALICE_SMTP_FROM` (sender address), `ALICE_SMTP_TLS` (default `true`)
+   - Implement `email.Sender` interface with a single `Send(ctx context.Context, to, subject, body string) error` method
+   - Implement `email.SMTPSender` using `net/smtp` with STARTTLS support
+   - Implement `email.NoopSender` that logs the OTP to `slog.Warn` for environments without SMTP (development fallback with explicit opt-in via `ALICE_SMTP_HOST=noop`)
+
+2. **OTP domain model in `internal/core/types.go`:**
+   - Add `EmailVerification` struct: `VerificationID`, `AgentID`, `OrgID`, `Email`, `CodeHash` (SHA-256 of the 6-digit code), `CreatedAt`, `ExpiresAt`, `VerifiedAt`, `Attempts` (counter for brute-force limiting)
+   - Add config: `ALICE_EMAIL_OTP_TTL` (default 10 minutes), `ALICE_EMAIL_OTP_MAX_ATTEMPTS` (default 5)
+
+3. **Storage layer:**
+   - Add `EmailVerificationRepository` interface: `SaveEmailVerification(ctx, verification)`, `FindPendingVerification(ctx, agentID)`, `MarkEmailVerified(ctx, verificationID)`, `IncrementVerificationAttempts(ctx, verificationID)`
+   - Add PostgreSQL migration adding `email_verifications` table and an `email_verified_at` column to the `agents` table
+   - Add `status` column to `agents` table with values `pending_email_verification` and `active` (existing agents default to `active`)
+   - Implement in both memory and PostgreSQL stores
+
+4. **Registration flow changes in `internal/agents/service.go`:**
+   - After `CompleteRegistration` upserts the agent, if the org's verification mode includes email OTP, generate a 6-digit code via `crypto/rand`, hash it, save an `EmailVerification` record, and send the code via `email.Sender`
+   - Set `Agent.Status = "pending_email_verification"` and include `status` in the registration response
+   - Add `VerifyEmail(ctx, agentID, code string) error` method: look up pending verification, check expiry, check max attempts, constant-time compare hash, mark verified, set `Agent.Status = "active"`
+   - Add `ResendVerificationEmail(ctx, agentID) error` method: invalidate existing verification, generate a new code, send it; rate-limit to one resend per 60 seconds
+
+5. **Auth middleware enforcement in `internal/httpapi/router.go`:**
+   - After `AuthenticateAgent` succeeds, check `Agent.Status`; if `pending_email_verification`, reject with HTTP 403 and body `{"error": "email_verification_required", "message": "complete email verification before using this endpoint"}`
+   - Exempt the verification endpoints themselves and `GET /healthz` from this check
+
+6. **New HTTP routes:**
+   - `POST /v1/agents/verify-email` (authenticated): accepts `{"code": "123456"}`, calls `VerifyEmail`
+   - `POST /v1/agents/resend-verification` (authenticated): calls `ResendVerificationEmail`
+
+7. **New MCP tools:**
+   - `verify_email`: accepts `code` parameter, calls `VerifyEmail`
+   - `resend_verification_email`: calls `ResendVerificationEmail`
+
+8. **Edge runtime changes in `internal/edge/runtime.go`:**
+   - After `ensureSession()` completes registration, check the returned `status`; if `pending_email_verification`, print guidance to stderr and poll `POST /v1/agents/verify-email` or wait for user input depending on mode
+
+9. **Mailpit integration for local development:**
+   - Add a `mailpit` service to `compose.yml`: image `axllent/mailpit:latest`, ports `1025:1025` (SMTP) and `8025:8025` (web UI), container name `alice-mailpit`
+   - Set `ALICE_SMTP_HOST=mailpit`, `ALICE_SMTP_PORT=1025`, `ALICE_SMTP_TLS=false`, `ALICE_SMTP_FROM=alice@localhost` in the server service environment within `compose.yml`
+   - Add `make mailpit-ui` target that prints `http://localhost:8025` for convenience
+   - Mailpit starts automatically with `make local`; developers can view sent OTP emails in the Mailpit web UI at `http://localhost:8025`
+
+10. **Testing:**
+    - Unit tests: OTP generation, hash verification, expiry, max-attempts lockout, resend rate limiting
+    - HTTP tests: registration returns `pending_email_verification` status, unverified agent gets 403 on protected endpoints, correct code promotes to `active`, wrong code increments attempts, expired code rejected
+    - Integration test using `email.NoopSender` to capture OTP codes in tests without real SMTP
+    - Edge runtime test: verify the pending-verification flow and retry behavior
+
+**Constraints:**
+- OTP codes must be generated with `crypto/rand`, not `math/rand`
+- Code comparison must use `subtle.ConstantTimeCompare` on the SHA-256 hash, not plaintext string comparison
+- The SMTP password must never appear in logs; `email.SMTPSender` must not log credentials
+- Verification state must be included in audit events (`agent.email_verification_sent`, `agent.email_verified`, `agent.email_verification_failed`)
+- Existing agents (registered before this feature) must be grandfathered as `active` to avoid breaking running deployments
+
+### step s: org invite tokens
+
+Status: **not started**
+
+**Problem:** Even with email OTP, any valid email holder can join any org whose slug they know. Orgs need a way to restrict who can register. Invite tokens let an org admin gate registration with a shared secret distributed out-of-band — no email infrastructure required.
+
+**Design overview:**
+
+Each organization has an optional `invite_token`. When the org's verification mode includes invite tokens, `BeginRegistration` requires a valid `invite_token` parameter. The first registration in an org auto-generates the token and returns it; subsequent registrations must supply it.
+
+**Required changes:**
+
+1. **Org verification mode in `internal/core/types.go`:**
+   - Add `VerificationMode` field to `Organization`: a string set (`email_otp`, `invite_token`, `admin_approval`, or combinations) defaulting to `email_otp`
+   - Add `InviteTokenHash` field to `Organization` (SHA-256 of the token; raw token is never stored)
+
+2. **Storage layer:**
+   - PostgreSQL migration adding `verification_mode` and `invite_token_hash` columns to the `organizations` table
+   - `UpdateOrganizationVerificationMode(ctx, orgID, mode)` and `SetOrgInviteTokenHash(ctx, orgID, hash)` in the repository interface
+   - Implement in both memory and PostgreSQL stores
+
+3. **Registration flow changes in `internal/agents/service.go`:**
+   - `BeginRegistration` accepts an optional `invite_token` parameter
+   - If the org exists and its mode includes `invite_token`, validate the token against the stored hash using `subtle.ConstantTimeCompare`; reject with `ErrInvalidInviteToken` (HTTP 403) on mismatch
+   - If the org does not yet exist (first registration creates it), generate a 32-byte token via `crypto/rand`, store its SHA-256 hash on the new org, and return the raw token in the registration response (this is the only time it is visible)
+   - Add `RotateInviteToken(ctx, orgID, agentID) (string, error)`: generates a new token, replaces the hash; restricted to org admins (first registrant or designated admin)
+
+4. **New HTTP routes and MCP tools:**
+   - `POST /v1/orgs/rotate-invite-token` (authenticated, admin-only): returns the new raw token
+   - `rotate_invite_token` MCP tool
+   - Update `POST /v1/agents/register/challenge` request schema to accept optional `invite_token` field
+   - Update `register_agent` MCP tool schema to accept optional `invite_token` parameter
+
+5. **Edge runtime changes:**
+   - `internal/edge/config.go`: add optional `invite_token` field to `AgentConfig`
+   - `ensureSession()` passes the token during registration if configured
+
+6. **Testing:**
+   - Unit tests: first-registration token generation, valid token accepted, invalid token rejected, token rotation, constant-time comparison
+   - HTTP tests: registration without token when required returns 403, registration with correct token succeeds, rotated token invalidates old token
+
+**Constraints:**
+- Raw invite tokens must never be stored; only SHA-256 hashes are persisted
+- Token comparison must use `subtle.ConstantTimeCompare` to prevent timing attacks
+- Token rotation must be audit-logged (`org.invite_token_rotated`)
+- The raw token is returned exactly once (at generation or rotation); it cannot be retrieved afterward
+
+### step t: org admin approval queue for new agents
+
+Status: **not started**
+
+**Problem:** Some organizations want human oversight of every new agent joining the org. Neither email OTP (proves inbox ownership but not authorization to join) nor invite tokens (shared secrets can leak) provide this. An approval queue lets an existing org member explicitly approve or reject each new registration.
+
+**Design overview:**
+
+When the org's verification mode includes `admin_approval`, newly registered agents enter a `pending_admin_approval` state after completing any other required verification (email OTP, invite token). An existing org member with admin privileges must approve the agent before it becomes `active`. The first registrant in an org is auto-approved and becomes the initial admin.
+
+**Required changes:**
+
+1. **Admin role in `internal/core/types.go`:**
+   - Add `Role` field to `User` with values `member` and `admin` (default `member`)
+   - The first user created in an org via registration is automatically assigned `admin`
+   - Add `AgentApproval` struct: `ApprovalID`, `AgentID`, `OrgID`, `RequestedAt`, `ReviewedBy` (user ID), `ReviewedAt`, `Decision` (`approved` or `rejected`), `Reason` (optional)
+
+2. **Agent status lifecycle:**
+   - Extend `Agent.Status` to support the full chain: `pending_email_verification` → `pending_admin_approval` → `active` (or `rejected`)
+   - The applicable states depend on the org's `VerificationMode`; if only `admin_approval` is set, agents skip email verification and go straight to `pending_admin_approval`
+
+3. **Storage layer:**
+   - PostgreSQL migration adding `agent_approvals` table and `role` column to `users` table
+   - `AgentApprovalRepository` interface: `SaveAgentApproval(ctx, approval)`, `FindPendingAgentApprovals(ctx, orgID, limit, offset)`, `FindAgentApprovalByAgentID(ctx, agentID)`
+   - Implement in both memory and PostgreSQL stores
+
+4. **Service layer in `internal/agents/service.go`:**
+   - After email verification completes (or immediately after registration if email OTP is not required), check org mode; if `admin_approval` is enabled, set `Agent.Status = "pending_admin_approval"` and create an `AgentApproval` record
+   - `ListPendingAgentApprovals(ctx, orgID, limit, offset)`: returns pending agents for the org; restricted to admins
+   - `ReviewAgentApproval(ctx, orgID, agentID, decision, reason, reviewerUserID)`: sets `Agent.Status` to `active` or `rejected`; restricted to admins; must run in a transaction (update approval + update agent status)
+   - Admin check: verify `user.Role == "admin"` and `user.OrgID == orgID`; return `core.ForbiddenError` otherwise
+
+5. **New HTTP routes:**
+   - `GET /v1/orgs/pending-agents` (authenticated, admin-only): returns paginated list of agents awaiting approval
+   - `POST /v1/orgs/agents/:id/review` (authenticated, admin-only): accepts `{"decision": "approved"|"rejected", "reason": "..."}`, calls `ReviewAgentApproval`
+
+6. **New MCP tools:**
+   - `list_pending_agents`: returns agents awaiting admin approval in the caller's org
+   - `review_agent`: accepts `agent_id`, `decision`, and optional `reason`
+
+7. **Edge runtime changes:**
+   - After registration and email verification, if status is `pending_admin_approval`, print guidance to stderr ("awaiting admin approval — ask an org admin to approve your agent") and poll a status endpoint or wait
+
+8. **Testing:**
+   - Unit tests: first registrant gets `admin` role, subsequent registrants get `member`, admin can approve/reject, non-admin gets `ForbiddenError`, rejected agent cannot authenticate
+   - HTTP tests: pending agent gets 403 on protected endpoints, admin approval promotes to `active`, admin rejection sets `rejected`, non-admin review attempt returns 403, pagination on pending-agents list
+   - Combined mode test: org with `email_otp,admin_approval` requires both before `active`
+
+**Constraints:**
+- Admin privilege checks must use `core.ForbiddenError` (mapped to HTTP 403), not 404
+- Approval decisions must be audit-logged (`agent.approval_approved`, `agent.approval_rejected`) with the reviewer's identity
+- A rejected agent's bearer token must be revoked; subsequent `AuthenticateAgent` calls must fail
+- The approval queue must support pagination (reuse `parsePagination` from step o)
+- Combined verification modes are processed in order: invite token (at `BeginRegistration` time) → email OTP (post-registration) → admin approval (post-email-verification)
+
 ---
 
 ## 5. immediate constraints for future sessions
@@ -366,6 +537,8 @@ Status: **not started**
 - cross-org isolation must be validated on every grant, query, and request path
 - no new fields should be stored but unenforced; either enforce the field or remove it
 - structured logging (`log/slog`) must be used for all new code; migrate existing `log` calls when touching a file
+- agents must not be able to query, grant, request, or publish until they reach `active` status; the auth middleware must enforce this for all verification modes
+- org verification mode is configurable per-org; the server must support `email_otp`, `invite_token`, `admin_approval`, or any combination
 - update this file, `README.md`, and `AGENTS.md` whenever the implementation status materially changes
 
 ---
@@ -386,8 +559,9 @@ Once step q is complete, the two-person workflow in the README can be tested as 
 
 Remaining open items after step q:
 
-1. **CORS/CSRF** — requires a known browser-facing origin; not applicable to the current API-only surface
-2. **`team_scope` / `manager_scope` visibility modes** — require an org graph not yet in scope
+1. **Registration identity verification (steps r/s/t)** — the most critical security gap; email addresses are currently self-asserted and unverified; implement in order: email OTP (step r), org invite tokens (step s), org admin approval queue (step t); all three are configurable per-org
+2. **CORS/CSRF** — requires a known browser-facing origin; not applicable to the current API-only surface
+3. **`team_scope` / `manager_scope` visibility modes** — require an org graph not yet in scope
 
 ### previously completed steps (for reference)
 
