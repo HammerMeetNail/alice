@@ -72,7 +72,7 @@ Open Claude Code in your project. The `alice` MCP tools will be available. Ask C
 
 > Use the alice `register_agent` tool to register me. Use org slug `my-org`, email `me@example.com`, agent name `my-agent`, and client type `mcp`.
 
-Claude will call `register_agent` with your key material, complete the Ed25519 challenge flow automatically, and store the session token for subsequent tool calls.
+Claude will call `register_agent`, which generates a keypair automatically, completes the Ed25519 challenge flow, and stores the session token for subsequent tool calls.
 
 ### 5. Publish an artifact
 
@@ -384,11 +384,15 @@ In Bob's Claude Code session:
 
 > Respond to that request with `accepted` and message "Will review this afternoon."
 
-### Step 6 — Check the audit trail
+### Step 6 — Check the audit trail and sent requests
 
 Either user can inspect the audit log:
 
-> Show my alice audit summary.
+> Use alice `get_audit_summary` to show my recent activity.
+
+Alice can see the status of her sent request:
+
+> Use alice `list_sent_requests` to show my outbound requests and their responses.
 
 ---
 
@@ -398,7 +402,7 @@ All tools are available through the MCP stdio server. Call `register_agent` firs
 
 ### `register_agent`
 
-Register an agent and start an authenticated session.
+Register an agent and start an authenticated session. A keypair is generated automatically — you do not need to provide key material.
 
 | Parameter | Required | Description |
 |---|---|---|
@@ -406,12 +410,12 @@ Register an agent and start an authenticated session.
 | `owner_email` | yes | Agent owner email |
 | `agent_name` | yes | Human-readable agent name |
 | `client_type` | yes | Client type (e.g. `mcp`, `edge_agent`) |
-| `public_key` | yes* | Base64-encoded Ed25519 public key |
-| `private_key` | no | Base64-encoded Ed25519 private key for one-shot local bootstrap |
+| `public_key` | no | Base64-encoded Ed25519 public key. Auto-generated if omitted. |
+| `private_key` | no | Base64-encoded Ed25519 private key. Auto-generated if omitted. |
 | `challenge_id` | no | Challenge ID for two-step completion |
 | `challenge_signature` | no | Base64-encoded signature for two-step completion |
 
-*When `private_key` is provided alongside `public_key`, registration completes in one call. When only `public_key` is provided, the tool returns a challenge string that must be signed and submitted in a second call with `challenge_id` and `challenge_signature`.
+Registration always completes in a single call — the tool generates a keypair, submits the challenge, signs it internally, and stores the returned token automatically.
 
 ### `publish_artifact`
 
@@ -520,6 +524,18 @@ Send a Gatekeeper request to another agent.
 
 List pending requests directed to the authenticated agent. Returns requests that have not expired and have not been responded to.
 
+### `list_sent_requests`
+
+List requests sent by the authenticated agent, including their current state and any response message from the recipient.
+
+### `get_audit_summary`
+
+Retrieve audit events visible to the authenticated agent (events where the agent is actor or target).
+
+| Parameter | Required | Description |
+|---|---|---|
+| `since` | no | RFC3339 timestamp — only return events after this time |
+
 ### `respond_to_request`
 
 Respond to an incoming request.
@@ -565,10 +581,11 @@ The coordination server (`cmd/server`) exposes these endpoints at `http://127.0.
 | `GET` | `/v1/queries/:id` | required | Retrieve a query result |
 | `POST` | `/v1/requests` | required | Send a request to a peer |
 | `GET` | `/v1/requests/incoming` | required | List incoming requests |
+| `GET` | `/v1/requests/sent` | required | List sent requests |
 | `POST` | `/v1/requests/:id/respond` | required | Respond to a request |
 | `GET` | `/v1/approvals` | required | List pending approvals |
 | `POST` | `/v1/approvals/:id/resolve` | required | Resolve an approval |
-| `GET` | `/v1/audit/summary` | required | List audit events |
+| `GET` | `/v1/audit/summary` | required | List audit events for the authenticated agent. Accepts `?since=<RFC3339>` |
 
 List endpoints accept `?limit=N&cursor=<opaque>` for pagination. Default limit is 50, maximum is 200.
 

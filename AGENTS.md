@@ -10,12 +10,14 @@ The repository contains a fully runnable coordination server plus product and im
 - `cmd/mcp-server/`: stdio MCP entrypoint for Claude Code and OpenCode
 - `cmd/edge-agent/`: per-user edge runtime with four operating modes: default poll-and-publish, `-bootstrap-connector` (OAuth PKCE), `-register-watches` (provider-side push channel setup), and `-serve-webhooks` (webhook intake server)
 - `internal/`: server and edge-runtime packages including:
-  - Ed25519 challenge/response registration with TOCTOU-safe atomic check-and-set
+  - Ed25519 challenge/response registration with TOCTOU-safe atomic check-and-set; the MCP `register_agent` tool auto-generates a keypair when none is supplied, so callers need only provide org slug, email, agent name, and client type
   - Bearer token auth with configurable TTL and expired-token rejection
   - HTTP API with body-size limiting, malformed-JSON 400 responses, and oversized-body 413 responses
   - `core.ForbiddenError` for ownership violations mapped to HTTP 403
   - Policy grant evaluation with sensitivity ceiling, purpose filtering, and storage-layer expiry filtering (expired grants are excluded at query time for all surfaces including list endpoints)
   - `storage.ErrChallengeAlreadyUsed` sentinel for cross-layer error translation without import cycles
+  - `list_sent_requests` MCP tool and `GET /v1/requests/sent` HTTP route exposing the sender's view of outbound request state
+  - `get_audit_summary` MCP tool wrapping `GET /v1/audit/summary` with optional `since` filter
   - Normalized edge connector events, live GitHub/Jira/Calendar pollers with pagination and transient retry handling
   - Signed GitHub webhook intake, shared-secret Jira webhook intake, shared-secret Google Calendar webhook intake
   - Persisted webhook replay/duplicate suppression and connector cursor state

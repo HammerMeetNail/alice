@@ -23,8 +23,8 @@ func (s *Server) registerTools() map[string]toolDefinition {
 				"owner_email":         stringSchema("Agent owner email address."),
 				"agent_name":          stringSchema("Human-readable agent name."),
 				"client_type":         stringSchema("Client type identifier."),
-				"public_key":          stringSchema("Base64-encoded Ed25519 public key."),
-				"private_key":         stringSchema("Optional base64-encoded Ed25519 private key for one-shot local bootstrap."),
+				"public_key":          stringSchema("Optional base64-encoded Ed25519 public key. If omitted, a keypair is generated automatically."),
+				"private_key":         stringSchema("Optional base64-encoded Ed25519 private key. If omitted, a keypair is generated automatically."),
 				"challenge_id":        stringSchema("Optional challenge id for explicit registration completion."),
 				"challenge_signature": stringSchema("Optional base64-encoded challenge signature for explicit registration completion."),
 			}),
@@ -193,23 +193,35 @@ func (s *Server) handleRegisterAgent(ctx context.Context, args map[string]any) (
 		return response, nil
 	}
 
+	// Auto-generate a keypair when none is provided so callers never need to supply key material.
+	publicKeyB64 := stringArg(args, "public_key")
+	privateKeyB64 := stringArg(args, "private_key")
+	if publicKeyB64 == "" {
+		pub, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			return nil, fmt.Errorf("generate keypair: %w", err)
+		}
+		publicKeyB64 = base64.StdEncoding.EncodeToString(pub)
+		privateKeyB64 = base64.StdEncoding.EncodeToString(priv)
+	}
+
 	body := map[string]any{
 		"org_slug":    args["org_slug"],
 		"owner_email": args["owner_email"],
 		"agent_name":  args["agent_name"],
 		"client_type": args["client_type"],
-		"public_key":  args["public_key"],
+		"public_key":  publicKeyB64,
 	}
 	challenge, err := s.callJSON(ctx, http.MethodPost, "/v1/agents/register/challenge", body, "")
 	if err != nil {
 		return nil, err
 	}
 
-	privateKey := stringArg(args, "private_key")
-	if privateKey == "" {
+	if privateKeyB64 == "" {
 		challenge["next_step"] = "sign the challenge string and call register_agent again with challenge_id and challenge_signature, or provide private_key for one-shot local bootstrap"
 		return challenge, nil
 	}
+	privateKey := privateKeyB64
 
 	signature, err := signRegistrationChallenge(stringArg(challenge, "challenge"), privateKey)
 	if err != nil {
