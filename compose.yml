@@ -27,6 +27,7 @@ services:
     environment:
       ALICE_LISTEN_ADDR: ":8080"
       ALICE_DATABASE_URL: "postgres://alice:alice@db:5432/alice?sslmode=disable"
+      ALICE_AUTH_TOKEN_TTL: "24h"
     ports:
       - "8080:8080"
     healthcheck:
