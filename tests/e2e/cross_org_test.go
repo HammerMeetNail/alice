@@ -14,13 +14,15 @@ func TestCrossOrgIsolation(t *testing.T) {
 	base := newE2EServer(t)
 	slugA := orgSlug(t) + "a"
 	slugB := orgSlug(t) + "b"
+	aliceEmail := slugA + "-alice@example.com"
+	carolEmail := slugB + "-carol@example.com"
 
-	alice := registerAgent(t, base, slugA, "alice@example.com")
-	_ = registerAgent(t, base, slugB, "carol@example.com")
+	alice := registerAgent(t, base, slugA, aliceEmail)
+	_ = registerAgent(t, base, slugB, carolEmail)
 
 	// Alice tries to grant permission to Carol (different org) → 404.
 	status, _ := doJSONRaw(t, base, http.MethodPost, "/v1/policy-grants", alice.AccessToken, map[string]any{
-		"grantee_user_email":     "carol@example.com",
+		"grantee_user_email":     carolEmail,
 		"scope_type":             "project",
 		"scope_ref":              "proj",
 		"allowed_artifact_types": []string{"summary"},
@@ -33,7 +35,7 @@ func TestCrossOrgIsolation(t *testing.T) {
 
 	// Alice tries to query Carol → 404.
 	status, _ = doJSONRaw(t, base, http.MethodPost, "/v1/queries", alice.AccessToken, map[string]any{
-		"to_user_email":   "carol@example.com",
+		"to_user_email":   carolEmail,
 		"purpose":         "status_check",
 		"question":        "What is Carol doing?",
 		"requested_types": []string{"summary"},
@@ -48,7 +50,7 @@ func TestCrossOrgIsolation(t *testing.T) {
 
 	// Alice tries to send a request to Carol → 404.
 	status, _ = doJSONRaw(t, base, http.MethodPost, "/v1/requests", alice.AccessToken, map[string]any{
-		"to_user_email": "carol@example.com",
+		"to_user_email": carolEmail,
 		"request_type":  "ask_for_review",
 		"title":         "Review this",
 		"content":       "Please review.",
