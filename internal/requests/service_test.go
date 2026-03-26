@@ -1,0 +1,286 @@
+package requests_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"alice/internal/core"
+	"alice/internal/id"
+	"alice/internal/requests"
+	"alice/internal/storage/memory"
+)
+
+func newService() *requests.Service {
+	store := memory.New()
+	return requests.NewService(store, store, store)
+}
+
+func makeRequest(fromAgentID, toAgentID, orgID string) core.Request {
+	return core.Request{
+		OrgID:       orgID,
+		FromAgentID: fromAgentID,
+		ToAgentID:   toAgentID,
+		RequestType: "information",
+		Title:       "How is the project going?",
+		Content:     "Please share your latest status.",
+	}
+}
+
+func TestSend(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	fromAgent := id.New("agent")
+	toAgent := id.New("agent")
+
+	saved, err := svc.Send(ctx, makeRequest(fromAgent, toAgent, orgID))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if saved.RequestID == "" {
+		t.Fatal("expected non-empty RequestID")
+	}
+	if saved.State != core.RequestStatePending {
+		t.Fatalf("expected pending state, got %s", saved.State)
+	}
+	if saved.ExpiresAt.IsZero() {
+		t.Fatal("expected ExpiresAt to be set")
+	}
+	if saved.CreatedAt.IsZero() {
+		t.Fatal("expected CreatedAt to be set")
+	}
+}
+
+func TestListIncoming(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	recipient := id.New("agent")
+	sender := id.New("agent")
+
+	// Send two requests to recipient, one to someone else.
+	if _, err := svc.Send(ctx, makeRequest(sender, recipient, orgID)); err != nil {
+		t.Fatalf("Send 1: %v", err)
+	}
+	if _, err := svc.Send(ctx, makeRequest(sender, recipient, orgID)); err != nil {
+		t.Fatalf("Send 2: %v", err)
+	}
+	if _, err := svc.Send(ctx, makeRequest(sender, id.New("agent"), orgID)); err != nil {
+		t.Fatalf("Send other: %v", err)
+	}
+
+	list, err := svc.ListIncoming(ctx, recipient, 50, 0)
+	if err != nil {
+		t.Fatalf("ListIncoming: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 incoming requests, got %d", len(list))
+	}
+}
+
+func TestListSent(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	sender := id.New("agent")
+
+	if _, err := svc.Send(ctx, makeRequest(sender, id.New("agent"), orgID)); err != nil {
+		t.Fatalf("Send 1: %v", err)
+	}
+	if _, err := svc.Send(ctx, makeRequest(sender, id.New("agent"), orgID)); err != nil {
+		t.Fatalf("Send 2: %v", err)
+	}
+	// Different sender — should not appear.
+	if _, err := svc.Send(ctx, makeRequest(id.New("agent"), id.New("agent"), orgID)); err != nil {
+		t.Fatalf("Send other: %v", err)
+	}
+
+	list, err := svc.ListSent(ctx, sender, 50, 0)
+	if err != nil {
+		t.Fatalf("ListSent: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 sent requests, got %d", len(list))
+	}
+}
+
+func TestRespond_Accept(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	toAgentID := id.New("agent")
+	agent := core.Agent{AgentID: toAgentID, OrgID: orgID}
+
+	sent, err := svc.Send(ctx, makeRequest(id.New("agent"), toAgentID, orgID))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	updated, approval, err := svc.Respond(ctx, agent, sent.RequestID, core.RequestResponseAccept, "Sounds good")
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if approval != nil {
+		t.Fatal("expected no approval for direct accept")
+	}
+	if updated.State != core.RequestStateAccepted {
+		t.Fatalf("expected accepted state, got %s", updated.State)
+	}
+}
+
+func TestRespond_Deny(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	toAgentID := id.New("agent")
+	agent := core.Agent{AgentID: toAgentID, OrgID: orgID}
+
+	sent, err := svc.Send(ctx, makeRequest(id.New("agent"), toAgentID, orgID))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	updated, _, err := svc.Respond(ctx, agent, sent.RequestID, core.RequestResponseDeny, "Not now")
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if updated.State != core.RequestStateDenied {
+		t.Fatalf("expected denied state, got %s", updated.State)
+	}
+}
+
+func TestRespond_AlreadyClosed(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	toAgentID := id.New("agent")
+	agent := core.Agent{AgentID: toAgentID, OrgID: orgID}
+
+	sent, err := svc.Send(ctx, makeRequest(id.New("agent"), toAgentID, orgID))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if _, _, err := svc.Respond(ctx, agent, sent.RequestID, core.RequestResponseAccept, ""); err != nil {
+		t.Fatalf("first Respond: %v", err)
+	}
+
+	_, _, err = svc.Respond(ctx, agent, sent.RequestID, core.RequestResponseDeny, "")
+	if !errors.Is(err, requests.ErrRequestAlreadyClosed) {
+		t.Fatalf("expected ErrRequestAlreadyClosed, got %v", err)
+	}
+}
+
+func TestRespond_NotRecipient(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	sent, err := svc.Send(ctx, makeRequest(id.New("agent"), id.New("agent"), orgID))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	wrongAgent := core.Agent{AgentID: id.New("agent"), OrgID: orgID}
+	_, _, err = svc.Respond(ctx, wrongAgent, sent.RequestID, core.RequestResponseAccept, "")
+	if !errors.Is(err, requests.ErrRequestNotVisible) {
+		t.Fatalf("expected ErrRequestNotVisible, got %v", err)
+	}
+}
+
+func TestRespond_NotFound(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	agent := core.Agent{AgentID: id.New("agent"), OrgID: id.New("org")}
+	_, _, err := svc.Respond(ctx, agent, "nonexistent", core.RequestResponseAccept, "")
+	if !errors.Is(err, requests.ErrUnknownRequest) {
+		t.Fatalf("expected ErrUnknownRequest, got %v", err)
+	}
+}
+
+func TestRespond_RequireApproval(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	toAgentID := id.New("agent")
+	agent := core.Agent{AgentID: toAgentID, OrgID: orgID, OwnerUserID: id.New("user")}
+
+	sent, err := svc.Send(ctx, makeRequest(id.New("agent"), toAgentID, orgID))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	updated, approval, err := svc.Respond(ctx, agent, sent.RequestID, core.RequestResponseRequireApproval, "need user consent")
+	if err != nil {
+		t.Fatalf("Respond with require_approval: %v", err)
+	}
+	if approval == nil {
+		t.Fatal("expected an approval record to be created")
+	}
+	if approval.ApprovalID == "" {
+		t.Fatal("expected non-empty ApprovalID")
+	}
+	if approval.SubjectID != sent.RequestID {
+		t.Fatalf("approval SubjectID mismatch: got %s want %s", approval.SubjectID, sent.RequestID)
+	}
+	if updated.ApprovalState != core.ApprovalStatePending {
+		t.Fatalf("expected request approval state pending, got %s", updated.ApprovalState)
+	}
+}
+
+func TestListIncoming_ExpiredFiltered(t *testing.T) {
+	store := memory.New()
+	svc := requests.NewService(store, store, store)
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	toAgentID := id.New("agent")
+	now := time.Now().UTC()
+
+	// Save one active and one already-expired request directly into the store.
+	active := core.Request{
+		RequestID:   id.New("request"),
+		OrgID:       orgID,
+		ToAgentID:   toAgentID,
+		State:       core.RequestStatePending,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(time.Hour),
+		RequestType: "info",
+		Title:       "active",
+		Content:     "x",
+	}
+	expired := core.Request{
+		RequestID:   id.New("request"),
+		OrgID:       orgID,
+		ToAgentID:   toAgentID,
+		State:       core.RequestStatePending,
+		CreatedAt:   now.Add(-2 * time.Hour),
+		ExpiresAt:   now.Add(-time.Hour),
+		RequestType: "info",
+		Title:       "expired",
+		Content:     "x",
+	}
+	store.SaveRequest(ctx, active)
+	store.SaveRequest(ctx, expired)
+
+	list, err := svc.ListIncoming(ctx, toAgentID, 50, 0)
+	if err != nil {
+		t.Fatalf("ListIncoming: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 non-expired request, got %d", len(list))
+	}
+	if list[0].RequestID != active.RequestID {
+		t.Fatalf("unexpected RequestID %s", list[0].RequestID)
+	}
+}
