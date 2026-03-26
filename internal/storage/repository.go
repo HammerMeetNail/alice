@@ -12,15 +12,36 @@ import (
 // the challenge has already been marked used by a concurrent completion attempt.
 var ErrChallengeAlreadyUsed = errors.New("registration challenge already used")
 
+// ErrVerificationNotFound is returned when no pending verification exists for an agent.
+var ErrVerificationNotFound = errors.New("email verification not found")
+
+// ErrOrgNotFound is returned when no organization matches the given criteria.
+var ErrOrgNotFound = errors.New("organization not found")
+
+// ErrAgentApprovalNotFound is returned when no agent approval record exists.
+var ErrAgentApprovalNotFound = errors.New("agent approval not found")
+
 type OrganizationRepository interface {
 	UpsertOrganization(ctx context.Context, org core.Organization) (core.Organization, error)
 	FindOrganizationBySlug(ctx context.Context, slug string) (core.Organization, bool, error)
+	FindOrganizationByID(ctx context.Context, orgID string) (core.Organization, bool, error)
+	UpdateOrgVerificationMode(ctx context.Context, orgID, mode string) error
+	SetOrgInviteTokenHash(ctx context.Context, orgID, hash string) error
+	FindOrgBySlug(ctx context.Context, slug string) (core.Organization, error)
 }
 
 type UserRepository interface {
 	UpsertUser(ctx context.Context, user core.User) (core.User, error)
 	FindUserByEmail(ctx context.Context, orgID, email string) (core.User, bool, error)
 	FindUserByID(ctx context.Context, userID string) (core.User, bool, error)
+	UpdateUserRole(ctx context.Context, userID, role string) error
+}
+
+type AgentApprovalRepository interface {
+	SaveAgentApproval(ctx context.Context, approval core.AgentApproval) error
+	FindPendingAgentApprovals(ctx context.Context, orgID string, limit, offset int) ([]core.AgentApproval, error)
+	FindAgentApprovalByAgentID(ctx context.Context, agentID string) (core.AgentApproval, error)
+	UpdateAgentApproval(ctx context.Context, approvalID, decision, reason, reviewedBy string, reviewedAt time.Time) error
 }
 
 type AgentRepository interface {
@@ -37,6 +58,7 @@ type AgentRegistrationChallengeRepository interface {
 type AgentTokenRepository interface {
 	SaveAgentToken(ctx context.Context, token core.AgentToken) (core.AgentToken, error)
 	FindAgentTokenByID(ctx context.Context, tokenID string) (core.AgentToken, bool, error)
+	RevokeAllTokensForAgent(ctx context.Context, agentID string, revokedAt time.Time) error
 }
 
 type ArtifactRepository interface {
@@ -77,6 +99,13 @@ type ApprovalRepository interface {
 	ResolveApproval(ctx context.Context, approvalID string, state core.ApprovalState, resolvedAt time.Time) (core.Approval, bool, error)
 }
 
+type EmailVerificationRepository interface {
+	SaveEmailVerification(ctx context.Context, v core.EmailVerification) (core.EmailVerification, error)
+	FindPendingVerification(ctx context.Context, agentID string) (core.EmailVerification, bool, error)
+	MarkEmailVerified(ctx context.Context, verificationID string, verifiedAt time.Time) error
+	IncrementVerificationAttempts(ctx context.Context, verificationID string) error
+}
+
 type AuditRepository interface {
 	AppendAuditEvent(ctx context.Context, event core.AuditEvent) (core.AuditEvent, error)
 	ListAuditEvents(ctx context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error)
@@ -95,6 +124,8 @@ type StoreTx interface {
 	RequestRepository
 	ApprovalRepository
 	AuditRepository
+	EmailVerificationRepository
+	AgentApprovalRepository
 }
 
 // Transactor runs fn inside a single atomic transaction.

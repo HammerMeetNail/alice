@@ -147,6 +147,18 @@ func (s *Store) FindAgentTokenByID(ctx context.Context, tokenID string) (core.Ag
 	return token, true, nil
 }
 
+func (s *Store) RevokeAllTokensForAgent(ctx context.Context, agentID string, revokedAt time.Time) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE agent_tokens SET revoked_at = $2 WHERE agent_id = $1 AND revoked_at IS NULL`,
+		agentID, revokedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke all tokens for agent: %w", err)
+	}
+	return nil
+}
+
 func nullTimePtr(value *time.Time) sql.NullTime {
 	if value == nil {
 		return sql.NullTime{}

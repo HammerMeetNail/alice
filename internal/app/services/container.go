@@ -4,17 +4,23 @@ import (
 	"context"
 	"time"
 
+	"alice/internal/agents"
 	"alice/internal/core"
 )
 
 type AgentService interface {
-	BeginRegistration(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey string) (core.AgentRegistrationChallenge, string, error)
-	CompleteRegistration(ctx context.Context, challengeID, challengeSignature string) (core.Organization, core.User, core.Agent, string, time.Time, error)
+	BeginRegistration(ctx context.Context, orgSlug, ownerEmail, agentName, clientType, publicKey, inviteToken string) (agents.BeginRegistrationResult, error)
+	CompleteRegistration(ctx context.Context, challengeID, challengeSignature string) (agents.CompleteRegistrationResult, error)
 	AuthenticateAgent(ctx context.Context, accessToken string) (core.Agent, core.User, error)
 	RequireAgent(ctx context.Context, agentID string) (core.Agent, core.User, error)
 	FindUserByEmail(ctx context.Context, orgID, email string) (core.User, bool, error)
 	FindUserByID(ctx context.Context, userID string) (core.User, bool, error)
 	FindAgentByUserID(ctx context.Context, userID string) (core.Agent, bool, error)
+	VerifyEmail(ctx context.Context, agentID, code string) error
+	ResendVerificationEmail(ctx context.Context, agentID string) error
+	RotateInviteToken(ctx context.Context, orgID, callerAgentID string) (string, error)
+	ListPendingAgentApprovals(ctx context.Context, orgID, callerAgentID string, limit, offset int) ([]core.AgentApproval, error)
+	ReviewAgentApproval(ctx context.Context, orgID, targetAgentID, callerAgentID, decision, reason string) error
 }
 
 type ArtifactService interface {

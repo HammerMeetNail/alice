@@ -8,7 +8,7 @@ POSTGRES_SERVICE ?= db
 POSTGRES_CONTAINER_NAME ?= alice-db
 POSTGRES_WAIT_TIMEOUT ?= 60
 
-.PHONY: local down status logs postgres-up postgres-down test test-postgres
+.PHONY: local down status logs postgres-up postgres-down test test-postgres mailpit-ui
 
 local:
 	@$(PODMAN_COMPOSE) up --build -d
@@ -53,3 +53,6 @@ test:
 
 test-postgres: postgres-up
 	@ALICE_TEST_DATABASE_URL=$(TEST_POSTGRES_URL) go test ./...
+
+mailpit-ui:
+	@echo "http://localhost:8025"

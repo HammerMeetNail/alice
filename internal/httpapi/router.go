@@ -93,20 +93,27 @@ func (r *router) routes() {
 	r.mux.HandleFunc("GET /healthz", r.handleHealthz)
 	r.mux.Handle("POST /v1/agents/register/challenge", r.rateLimit(r.limitBody(http.HandlerFunc(r.handleBeginRegisterAgent))))
 	r.mux.Handle("POST /v1/agents/register", r.rateLimit(r.limitBody(http.HandlerFunc(r.handleRegisterAgent))))
-	r.mux.Handle("POST /v1/artifacts", r.limitBody(r.requireAuth(http.HandlerFunc(r.handlePublishArtifact))))
-	r.mux.Handle("POST /v1/artifacts/", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleCorrectArtifact))))
-	r.mux.Handle("POST /v1/policy-grants", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleGrantPermission))))
-	r.mux.Handle("DELETE /v1/policy-grants/", r.requireAuth(http.HandlerFunc(r.handleRevokePermission)))
-	r.mux.Handle("GET /v1/peers", r.requireAuth(http.HandlerFunc(r.handleListAllowedPeers)))
-	r.mux.Handle("POST /v1/queries", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleQueryPeerStatus))))
-	r.mux.Handle("GET /v1/queries/", r.requireAuth(http.HandlerFunc(r.handleGetQueryResult)))
-	r.mux.Handle("POST /v1/requests", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleSendRequestToPeer))))
-	r.mux.Handle("GET /v1/requests/incoming", r.requireAuth(http.HandlerFunc(r.handleListIncomingRequests)))
-	r.mux.Handle("GET /v1/requests/sent", r.requireAuth(http.HandlerFunc(r.handleListSentRequests)))
-	r.mux.Handle("POST /v1/requests/", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleRespondToRequest))))
-	r.mux.Handle("GET /v1/approvals", r.requireAuth(http.HandlerFunc(r.handleListPendingApprovals)))
-	r.mux.Handle("POST /v1/approvals/", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleResolveApproval))))
-	r.mux.Handle("GET /v1/audit/summary", r.requireAuth(http.HandlerFunc(r.handleAuditSummary)))
+	// Email verification endpoints: require auth but are exempt from email-verified check.
+	r.mux.Handle("POST /v1/agents/verify-email", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleVerifyEmail))))
+	r.mux.Handle("POST /v1/agents/resend-verification", r.requireAuth(http.HandlerFunc(r.handleResendVerification)))
+	// All other authenticated routes enforce email verification.
+	r.mux.Handle("POST /v1/artifacts", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handlePublishArtifact))))
+	r.mux.Handle("POST /v1/artifacts/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleCorrectArtifact))))
+	r.mux.Handle("POST /v1/policy-grants", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleGrantPermission))))
+	r.mux.Handle("DELETE /v1/policy-grants/", r.requireVerifiedAuth(http.HandlerFunc(r.handleRevokePermission)))
+	r.mux.Handle("GET /v1/peers", r.requireVerifiedAuth(http.HandlerFunc(r.handleListAllowedPeers)))
+	r.mux.Handle("POST /v1/queries", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleQueryPeerStatus))))
+	r.mux.Handle("GET /v1/queries/", r.requireVerifiedAuth(http.HandlerFunc(r.handleGetQueryResult)))
+	r.mux.Handle("POST /v1/requests", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleSendRequestToPeer))))
+	r.mux.Handle("GET /v1/requests/incoming", r.requireVerifiedAuth(http.HandlerFunc(r.handleListIncomingRequests)))
+	r.mux.Handle("GET /v1/requests/sent", r.requireVerifiedAuth(http.HandlerFunc(r.handleListSentRequests)))
+	r.mux.Handle("POST /v1/requests/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleRespondToRequest))))
+	r.mux.Handle("GET /v1/approvals", r.requireVerifiedAuth(http.HandlerFunc(r.handleListPendingApprovals)))
+	r.mux.Handle("POST /v1/approvals/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleResolveApproval))))
+	r.mux.Handle("GET /v1/audit/summary", r.requireVerifiedAuth(http.HandlerFunc(r.handleAuditSummary)))
+	r.mux.Handle("POST /v1/orgs/rotate-invite-token", r.requireVerifiedAuth(http.HandlerFunc(r.handleRotateInviteToken)))
+	r.mux.Handle("GET /v1/orgs/pending-agents", r.requireVerifiedAuth(http.HandlerFunc(r.handleListPendingAgents)))
+	r.mux.Handle("POST /v1/orgs/agents/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleReviewAgent))))
 }
 
 func (r *router) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -114,11 +121,12 @@ func (r *router) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 type registerAgentRequest struct {
-	OrgSlug    string `json:"org_slug"`
-	OwnerEmail string `json:"owner_email"`
-	AgentName  string `json:"agent_name"`
-	ClientType string `json:"client_type"`
-	PublicKey  string `json:"public_key"`
+	OrgSlug     string `json:"org_slug"`
+	OwnerEmail  string `json:"owner_email"`
+	AgentName   string `json:"agent_name"`
+	ClientType  string `json:"client_type"`
+	PublicKey   string `json:"public_key"`
+	InviteToken string `json:"invite_token"`
 }
 
 func (r *router) handleBeginRegisterAgent(w http.ResponseWriter, req *http.Request) {
@@ -128,17 +136,30 @@ func (r *router) handleBeginRegisterAgent(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	challenge, payload, err := r.services.Agents.BeginRegistration(req.Context(), input.OrgSlug, input.OwnerEmail, input.AgentName, input.ClientType, input.PublicKey)
+	result, err := r.services.Agents.BeginRegistration(req.Context(), input.OrgSlug, input.OwnerEmail, input.AgentName, input.ClientType, input.PublicKey, input.InviteToken)
 	if err != nil {
-		writeServiceError(w, err, "registration challenge failed")
+		switch {
+		case errors.Is(err, agents.ErrInviteTokenRequired):
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error":   "invite_token_required",
+				"message": err.Error(),
+			})
+		case errors.Is(err, agents.ErrInvalidInviteToken):
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error":   "invalid_invite_token",
+				"message": err.Error(),
+			})
+		default:
+			writeServiceError(w, err, "registration challenge failed")
+		}
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"challenge_id": challenge.ChallengeID,
-		"challenge":    payload,
+		"challenge_id": result.Challenge.ChallengeID,
+		"challenge":    result.Payload,
 		"algorithm":    "ed25519",
-		"expires_at":   challenge.ExpiresAt,
+		"expires_at":   result.Challenge.ExpiresAt,
 	})
 }
 
@@ -154,7 +175,7 @@ func (r *router) handleRegisterAgent(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	org, user, agent, accessToken, expiresAt, err := r.services.Agents.CompleteRegistration(req.Context(), input.ChallengeID, input.ChallengeSignature)
+	regResult, err := r.services.Agents.CompleteRegistration(req.Context(), input.ChallengeID, input.ChallengeSignature)
 	if err != nil {
 		switch {
 		case errors.Is(err, agents.ErrUnknownRegistrationChallenge):
@@ -170,22 +191,128 @@ func (r *router) handleRegisterAgent(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
+	org := regResult.Org
+	user := regResult.User
+	agent := regResult.Agent
+	accessToken := regResult.AccessToken
+	expiresAt := regResult.TokenExpiresAt
 
 	if _, err := r.services.Audit.Record(req.Context(), "agent.registered", "agent", agent.AgentID, org.OrgID, agent.AgentID, "", "allow", "", nil, map[string]any{
 		"owner_email":      user.Email,
 		"auth_method":      "ed25519_challenge",
 		"token_expires_at": expiresAt,
+		"status":           agent.Status,
 	}); err != nil {
 		slog.Error("audit record failed", "op", "agent_registration", "err", err)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	if agent.Status == "pending_email_verification" {
+		if _, err := r.services.Audit.Record(req.Context(), "agent.email_verification_sent", "agent", agent.AgentID, org.OrgID, agent.AgentID, "", "allow", "", nil, map[string]any{
+			"email": user.Email,
+		}); err != nil {
+			slog.Error("audit record failed", "op", "email_verification_sent", "err", err)
+		}
+	}
+
+	resp := map[string]any{
 		"agent_id":     agent.AgentID,
 		"org_id":       org.OrgID,
 		"status":       agent.Status,
 		"access_token": accessToken,
 		"token_type":   "Bearer",
 		"expires_at":   expiresAt,
+	}
+	if regResult.FirstInviteToken != "" {
+		resp["first_invite_token"] = regResult.FirstInviteToken
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+type verifyEmailRequest struct {
+	Code string `json:"code"`
+}
+
+func (r *router) handleVerifyEmail(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	var input verifyEmailRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeDecodeError(w, err)
+		return
+	}
+	if strings.TrimSpace(input.Code) == "" {
+		writeError(w, http.StatusBadRequest, "code is required")
+		return
+	}
+
+	if err := r.services.Agents.VerifyEmail(req.Context(), agent.AgentID, input.Code); err != nil {
+		switch {
+		case errors.Is(err, agents.ErrVerificationNotFound):
+			writeError(w, http.StatusNotFound, "no pending email verification found")
+		case errors.Is(err, agents.ErrVerificationExpired):
+			if _, auditErr := r.services.Audit.Record(req.Context(), "agent.email_verification_failed", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "deny", "", nil, map[string]any{"reason": "expired"}); auditErr != nil {
+				slog.Error("audit record failed", "op", "email_verify_failed", "err", auditErr)
+			}
+			writeError(w, http.StatusGone, "verification code expired")
+		case errors.Is(err, agents.ErrVerificationMaxAttempts):
+			if _, auditErr := r.services.Audit.Record(req.Context(), "agent.email_verification_failed", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "deny", "", nil, map[string]any{"reason": "max_attempts"}); auditErr != nil {
+				slog.Error("audit record failed", "op", "email_verify_failed", "err", auditErr)
+			}
+			writeError(w, http.StatusTooManyRequests, "max verification attempts exceeded")
+		case errors.Is(err, agents.ErrInvalidVerificationCode):
+			if _, auditErr := r.services.Audit.Record(req.Context(), "agent.email_verification_failed", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "deny", "", nil, map[string]any{"reason": "invalid_code"}); auditErr != nil {
+				slog.Error("audit record failed", "op", "email_verify_failed", "err", auditErr)
+			}
+			writeError(w, http.StatusUnauthorized, "invalid verification code")
+		default:
+			writeServiceError(w, err, "email verification failed")
+		}
+		return
+	}
+
+	if _, err := r.services.Audit.Record(req.Context(), "agent.email_verified", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "allow", "", nil, nil); err != nil {
+		slog.Error("audit record failed", "op", "email_verify", "err", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id": agent.AgentID,
+		"status":   "active",
+		"verified": true,
+	})
+}
+
+func (r *router) handleResendVerification(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	if err := r.services.Agents.ResendVerificationEmail(req.Context(), agent.AgentID); err != nil {
+		switch {
+		case errors.Is(err, agents.ErrVerificationNotFound):
+			writeError(w, http.StatusNotFound, "no pending email verification found")
+			return
+		case errors.Is(err, agents.ErrResendTooSoon):
+			writeError(w, http.StatusTooManyRequests, err.Error())
+			return
+		default:
+			writeServiceError(w, err, "resend verification failed")
+			return
+		}
+	}
+
+	if _, err := r.services.Audit.Record(req.Context(), "agent.email_verification_sent", "agent", agent.AgentID, agent.OrgID, agent.AgentID, "", "allow", "", nil, nil); err != nil {
+		slog.Error("audit record failed", "op", "email_resend", "err", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id": agent.AgentID,
+		"sent":     true,
 	})
 }
 
@@ -861,6 +988,120 @@ func (r *router) handleResolveApproval(w http.ResponseWriter, req *http.Request)
 	})
 }
 
+func (r *router) handleRotateInviteToken(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	rawToken, err := r.services.Agents.RotateInviteToken(req.Context(), agent.OrgID, agent.AgentID)
+	if err != nil {
+		switch {
+		case errors.Is(err, agents.ErrUnknownAgent):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, agents.ErrNotOrgAdmin):
+			writeError(w, http.StatusForbidden, err.Error())
+		default:
+			writeServiceError(w, err, "rotate invite token failed")
+		}
+		return
+	}
+
+	if _, auditErr := r.services.Audit.Record(req.Context(), "org.invite_token_rotated", "org", agent.OrgID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, nil); auditErr != nil {
+		slog.Error("audit record failed", "op", "rotate_invite_token", "err", auditErr)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"invite_token": rawToken,
+	})
+}
+
+func (r *router) handleListPendingAgents(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	limit, offset := parsePagination(req)
+	approvals, err := r.services.Agents.ListPendingAgentApprovals(req.Context(), agent.OrgID, agent.AgentID, limit, offset)
+	if err != nil {
+		switch {
+		case errors.Is(err, agents.ErrNotOrgAdmin):
+			writeError(w, http.StatusForbidden, err.Error())
+		default:
+			writeServiceError(w, err, "list pending agents failed")
+		}
+		return
+	}
+
+	items := make([]map[string]any, 0, len(approvals))
+	for _, approval := range approvals {
+		items = append(items, map[string]any{
+			"approval_id":  approval.ApprovalID,
+			"agent_id":     approval.AgentID,
+			"org_id":       approval.OrgID,
+			"requested_at": approval.RequestedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pending_agents": items,
+		"next_cursor":    nextCursor(len(approvals), limit, offset),
+	})
+}
+
+type reviewAgentRequest struct {
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+}
+
+func (r *router) handleReviewAgent(w http.ResponseWriter, req *http.Request) {
+	callerAgent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	targetAgentID := strings.TrimPrefix(req.URL.Path, "/v1/orgs/agents/")
+	targetAgentID = strings.TrimSuffix(targetAgentID, "/review")
+	targetAgentID = strings.Trim(targetAgentID, "/")
+	if targetAgentID == "" {
+		writeError(w, http.StatusNotFound, "agent id is required")
+		return
+	}
+
+	var input reviewAgentRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeDecodeError(w, err)
+		return
+	}
+	if input.Decision != "approved" && input.Decision != "rejected" {
+		writeError(w, http.StatusBadRequest, "decision must be 'approved' or 'rejected'")
+		return
+	}
+
+	if err := r.services.Agents.ReviewAgentApproval(req.Context(), callerAgent.OrgID, targetAgentID, callerAgent.AgentID, input.Decision, input.Reason); err != nil {
+		switch {
+		case errors.Is(err, agents.ErrNotOrgAdmin):
+			writeError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, agents.ErrAgentApprovalNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, agents.ErrUnknownAgent):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeServiceError(w, err, "review agent failed")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agent_id": targetAgentID,
+		"decision": input.Decision,
+	})
+}
+
 func (r *router) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ip := clientIP(req)
@@ -931,6 +1172,39 @@ func (r *router) requireAuth(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, currentUserContextKey{}, user)
 		next.ServeHTTP(w, req.WithContext(ctx))
 	})
+}
+
+// requireVerifiedAuth is like requireAuth but also rejects agents with
+// status pending_email_verification, pending_admin_approval, or rejected with HTTP 403.
+func (r *router) requireVerifiedAuth(next http.Handler) http.Handler {
+	return r.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		agent, _, ok := currentActor(req)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+			return
+		}
+		switch agent.Status {
+		case core.AgentStatusPendingEmailVerification:
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error":   "email_verification_required",
+				"message": "complete email verification before using this endpoint",
+			})
+			return
+		case core.AgentStatusPendingAdminApproval:
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error":   "admin_approval_pending",
+				"message": "awaiting org admin approval — ask an org admin to run: alice review_agent " + agent.AgentID + " approved",
+			})
+			return
+		case core.AgentStatusRejected:
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error":   "agent_rejected",
+				"message": "this agent has been rejected by an org admin",
+			})
+			return
+		}
+		next.ServeHTTP(w, req)
+	}))
 }
 
 func currentActor(req *http.Request) (core.Agent, core.User, bool) {

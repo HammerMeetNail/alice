@@ -34,6 +34,10 @@ type Store struct {
 	approvals        map[string]core.Approval
 	approvalsByAgent map[string][]string
 	auditEvents      []core.AuditEvent
+	emailVerifications map[string]core.EmailVerification // verificationID → verification
+	emailVerifsByAgent map[string]string                // agentID → verificationID (pending)
+	agentApprovals   map[string]core.AgentApproval      // approvalID → approval
+	agentApprovalsByAgent map[string]string             // agentID → approvalID
 }
 
 var (
@@ -48,6 +52,8 @@ var (
 	_ storage.RequestRepository                    = (*Store)(nil)
 	_ storage.ApprovalRepository                   = (*Store)(nil)
 	_ storage.AuditRepository                      = (*Store)(nil)
+	_ storage.EmailVerificationRepository          = (*Store)(nil)
+	_ storage.AgentApprovalRepository              = (*Store)(nil)
 )
 
 func New() *Store {
@@ -70,6 +76,10 @@ func New() *Store {
 		requestsByFromAgent: make(map[string][]string),
 		approvals:        make(map[string]core.Approval),
 		approvalsByAgent: make(map[string][]string),
+		emailVerifications: make(map[string]core.EmailVerification),
+		emailVerifsByAgent: make(map[string]string),
+		agentApprovals:       make(map[string]core.AgentApproval),
+		agentApprovalsByAgent: make(map[string]string),
 	}
 }
 
@@ -102,6 +112,55 @@ func (s *Store) FindOrganizationBySlug(_ context.Context, slug string) (core.Org
 	return org, ok, nil
 }
 
+func (s *Store) FindOrganizationByID(_ context.Context, orgID string) (core.Organization, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	org, ok := s.organizations[orgID]
+	return org, ok, nil
+}
+
+func (s *Store) FindOrgBySlug(_ context.Context, slug string) (core.Organization, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	orgID, ok := s.orgsBySlug[normalizeSlug(slug)]
+	if !ok {
+		return core.Organization{}, storage.ErrOrgNotFound
+	}
+	org, ok := s.organizations[orgID]
+	if !ok {
+		return core.Organization{}, storage.ErrOrgNotFound
+	}
+	return org, nil
+}
+
+func (s *Store) UpdateOrgVerificationMode(_ context.Context, orgID, mode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.organizations[orgID]
+	if !ok {
+		return storage.ErrOrgNotFound
+	}
+	org.VerificationMode = mode
+	s.organizations[orgID] = org
+	return nil
+}
+
+func (s *Store) SetOrgInviteTokenHash(_ context.Context, orgID, hash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.organizations[orgID]
+	if !ok {
+		return storage.ErrOrgNotFound
+	}
+	org.InviteTokenHash = hash
+	s.organizations[orgID] = org
+	return nil
+}
+
 func (s *Store) UpsertUser(_ context.Context, user core.User) (core.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,6 +188,19 @@ func (s *Store) FindUserByID(_ context.Context, userID string) (core.User, bool,
 
 	user, ok := s.users[userID]
 	return user, ok, nil
+}
+
+func (s *Store) UpdateUserRole(_ context.Context, userID, role string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, ok := s.users[userID]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	user.Role = role
+	s.users[userID] = user
+	return nil
 }
 
 func (s *Store) UpsertAgent(_ context.Context, agent core.Agent) (core.Agent, error) {
@@ -198,6 +270,19 @@ func (s *Store) FindAgentTokenByID(_ context.Context, tokenID string) (core.Agen
 
 	token, ok := s.tokens[tokenID]
 	return token, ok, nil
+}
+
+func (s *Store) RevokeAllTokensForAgent(_ context.Context, agentID string, revokedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for tokenID, token := range s.tokens {
+		if token.AgentID == agentID && token.RevokedAt == nil {
+			token.RevokedAt = &revokedAt
+			s.tokens[tokenID] = token
+		}
+	}
+	return nil
 }
 
 func (s *Store) SaveArtifact(_ context.Context, artifact core.Artifact) (core.Artifact, error) {
@@ -552,6 +637,127 @@ func (s *Store) ListAuditEvents(_ context.Context, agentID string, since time.Ti
 	})
 
 	return pageSlice(events, limit, offset), nil
+}
+
+// --- EmailVerificationRepository ---
+
+func (s *Store) SaveEmailVerification(_ context.Context, v core.EmailVerification) (core.EmailVerification, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Remove any prior pending verification for the same agent.
+	if oldID, ok := s.emailVerifsByAgent[v.AgentID]; ok {
+		delete(s.emailVerifications, oldID)
+	}
+
+	s.emailVerifications[v.VerificationID] = v
+	if v.VerifiedAt == nil {
+		s.emailVerifsByAgent[v.AgentID] = v.VerificationID
+	}
+	return v, nil
+}
+
+func (s *Store) FindPendingVerification(_ context.Context, agentID string) (core.EmailVerification, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	id, ok := s.emailVerifsByAgent[agentID]
+	if !ok {
+		return core.EmailVerification{}, false, nil
+	}
+	v, ok := s.emailVerifications[id]
+	if !ok || v.VerifiedAt != nil {
+		return core.EmailVerification{}, false, nil
+	}
+	return v, true, nil
+}
+
+func (s *Store) MarkEmailVerified(_ context.Context, verificationID string, verifiedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	v, ok := s.emailVerifications[verificationID]
+	if !ok {
+		return storage.ErrVerificationNotFound
+	}
+	v.VerifiedAt = &verifiedAt
+	s.emailVerifications[verificationID] = v
+	delete(s.emailVerifsByAgent, v.AgentID)
+	return nil
+}
+
+func (s *Store) IncrementVerificationAttempts(_ context.Context, verificationID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	v, ok := s.emailVerifications[verificationID]
+	if !ok {
+		return storage.ErrVerificationNotFound
+	}
+	v.Attempts++
+	s.emailVerifications[verificationID] = v
+	return nil
+}
+
+// --- AgentApprovalRepository ---
+
+func (s *Store) SaveAgentApproval(_ context.Context, approval core.AgentApproval) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.agentApprovals[approval.ApprovalID] = approval
+	s.agentApprovalsByAgent[approval.AgentID] = approval.ApprovalID
+	return nil
+}
+
+func (s *Store) FindPendingAgentApprovals(_ context.Context, orgID string, limit, offset int) ([]core.AgentApproval, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	approvals := make([]core.AgentApproval, 0)
+	for _, approval := range s.agentApprovals {
+		if approval.OrgID != orgID || approval.Decision != "" {
+			continue
+		}
+		approvals = append(approvals, approval)
+	}
+
+	sort.SliceStable(approvals, func(i, j int) bool {
+		return approvals[i].RequestedAt.Before(approvals[j].RequestedAt)
+	})
+
+	return pageSlice(approvals, limit, offset), nil
+}
+
+func (s *Store) FindAgentApprovalByAgentID(_ context.Context, agentID string) (core.AgentApproval, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	approvalID, ok := s.agentApprovalsByAgent[agentID]
+	if !ok {
+		return core.AgentApproval{}, storage.ErrAgentApprovalNotFound
+	}
+	approval, ok := s.agentApprovals[approvalID]
+	if !ok {
+		return core.AgentApproval{}, storage.ErrAgentApprovalNotFound
+	}
+	return approval, nil
+}
+
+func (s *Store) UpdateAgentApproval(_ context.Context, approvalID, decision, reason, reviewedBy string, reviewedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	approval, ok := s.agentApprovals[approvalID]
+	if !ok {
+		return storage.ErrAgentApprovalNotFound
+	}
+	approval.Decision = decision
+	approval.Reason = reason
+	approval.ReviewedBy = reviewedBy
+	approval.ReviewedAt = &reviewedAt
+	s.agentApprovals[approvalID] = approval
+	return nil
 }
 
 // WithTx satisfies storage.Transactor. The memory store's mutex-based

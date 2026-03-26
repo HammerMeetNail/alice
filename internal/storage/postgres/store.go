@@ -39,6 +39,7 @@ var (
 	_ storage.RequestRepository                    = (*Store)(nil)
 	_ storage.ApprovalRepository                   = (*Store)(nil)
 	_ storage.AuditRepository                      = (*Store)(nil)
+	_ storage.EmailVerificationRepository          = (*Store)(nil)
 	_ storage.Transactor                           = (*Store)(nil)
 )
 

@@ -12,18 +12,22 @@ import (
 func (s *Store) UpsertOrganization(ctx context.Context, org core.Organization) (core.Organization, error) {
 	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO organizations (org_id, name, slug, created_at, status)
-		VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO organizations (org_id, name, slug, created_at, status, verification_mode, invite_token_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (org_id) DO UPDATE
 		SET name = EXCLUDED.name,
 		    slug = EXCLUDED.slug,
 		    created_at = EXCLUDED.created_at,
-		    status = EXCLUDED.status`,
+		    status = EXCLUDED.status,
+		    verification_mode = EXCLUDED.verification_mode,
+		    invite_token_hash = EXCLUDED.invite_token_hash`,
 		org.OrgID,
 		org.Name,
 		normalizeSlug(org.Slug),
 		org.CreatedAt,
 		org.Status,
+		org.VerificationMode,
+		org.InviteTokenHash,
 	)
 	if err != nil {
 		return core.Organization{}, fmt.Errorf("upsert organization: %w", err)
@@ -35,11 +39,11 @@ func (s *Store) FindOrganizationBySlug(ctx context.Context, slug string) (core.O
 	var org core.Organization
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT org_id, name, slug, created_at, status
+		`SELECT org_id, name, slug, created_at, status, verification_mode, invite_token_hash
 		FROM organizations
 		WHERE slug = $1`,
 		normalizeSlug(slug),
-	).Scan(&org.OrgID, &org.Name, &org.Slug, &org.CreatedAt, &org.Status)
+	).Scan(&org.OrgID, &org.Name, &org.Slug, &org.CreatedAt, &org.Status, &org.VerificationMode, &org.InviteTokenHash)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return core.Organization{}, false, nil
@@ -57,8 +61,8 @@ func (s *Store) UpsertUser(ctx context.Context, user core.User) (core.User, erro
 
 	_, err = s.db.ExecContext(
 		ctx,
-		`INSERT INTO users (user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+		`INSERT INTO users (user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status, role)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
 		ON CONFLICT (user_id) DO UPDATE
 		SET org_id = EXCLUDED.org_id,
 		    email = EXCLUDED.email,
@@ -66,7 +70,8 @@ func (s *Store) UpsertUser(ctx context.Context, user core.User) (core.User, erro
 		    role_titles = EXCLUDED.role_titles,
 		    manager_user_id = EXCLUDED.manager_user_id,
 		    created_at = EXCLUDED.created_at,
-		    status = EXCLUDED.status`,
+		    status = EXCLUDED.status,
+		    role = EXCLUDED.role`,
 		user.UserID,
 		user.OrgID,
 		normalizeEmail(user.Email),
@@ -75,6 +80,7 @@ func (s *Store) UpsertUser(ctx context.Context, user core.User) (core.User, erro
 		nullString(user.ManagerUserID),
 		user.CreatedAt,
 		user.Status,
+		user.Role,
 	)
 	if err != nil {
 		return core.User{}, fmt.Errorf("upsert user: %w", err)
@@ -92,12 +98,12 @@ func (s *Store) FindUserByEmail(ctx context.Context, orgID, email string) (core.
 
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status
+		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status, role
 		FROM users
 		WHERE org_id = $1 AND email = $2`,
 		orgID,
 		normalizeEmail(email),
-	).Scan(&user.UserID, &user.OrgID, &user.Email, &user.DisplayName, &roleTitles, &managerUser, &user.CreatedAt, &user.Status)
+	).Scan(&user.UserID, &user.OrgID, &user.Email, &user.DisplayName, &roleTitles, &managerUser, &user.CreatedAt, &user.Status, &user.Role)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return core.User{}, false, nil
@@ -121,11 +127,11 @@ func (s *Store) FindUserByID(ctx context.Context, userID string) (core.User, boo
 
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status
+		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status, role
 		FROM users
 		WHERE user_id = $1`,
 		userID,
-	).Scan(&user.UserID, &user.OrgID, &user.Email, &user.DisplayName, &roleTitles, &managerUser, &user.CreatedAt, &user.Status)
+	).Scan(&user.UserID, &user.OrgID, &user.Email, &user.DisplayName, &roleTitles, &managerUser, &user.CreatedAt, &user.Status, &user.Role)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return core.User{}, false, nil
@@ -138,6 +144,18 @@ func (s *Store) FindUserByID(ctx context.Context, userID string) (core.User, boo
 	}
 	user.ManagerUserID = managerUser.String
 	return user, true, nil
+}
+
+func (s *Store) UpdateUserRole(ctx context.Context, userID, role string) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE users SET role = $2 WHERE user_id = $1`,
+		userID, role,
+	)
+	if err != nil {
+		return fmt.Errorf("update user role: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) UpsertAgent(ctx context.Context, agent core.Agent) (core.Agent, error) {

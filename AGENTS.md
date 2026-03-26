@@ -26,6 +26,10 @@ The repository contains a fully runnable coordination server plus product and im
   - Actionable re-auth errors, replacement-aware artifact derivation, transition-aware project-level aggregate derivation
   - Cross-org isolation: `FindUserByEmail` is scoped to `agent.OrgID`, blocking all cross-org queries, grants, and requests at the handler layer
   - Memory and PostgreSQL storage implementations; memory store is safe for concurrent use
+  - `cmd/mcp-server` HTTP client mode: when `ALICE_SERVER_URL` is set the MCP server forwards all calls to a remote coordination server over HTTP(S) with no local database required; `ALICE_SERVER_TLS_CA` accepts a PEM file for self-signed or internal CA certificates; `ALICE_MCP_ACCESS_TOKEN` persists the bearer token across restarts
+  - Email OTP verification (`internal/email/`): `Sender` interface with `SMTPSender` (STARTTLS) and `NoopSender` (logs OTP to stderr, enabled via `ALICE_SMTP_HOST=noop`); when SMTP is configured, `CompleteRegistration` sets agent status to `pending_email_verification` and emails a 6-digit code; `POST /v1/agents/verify-email` and `POST /v1/agents/resend-verification` routes plus `verify_email` / `resend_verification_email` MCP tools complete the flow; `requireVerifiedAuth` middleware blocks all other authenticated routes for unverified agents; OTP codes use `crypto/rand` and `subtle.ConstantTimeCompare` on SHA-256 hashes; when SMTP is not configured agents register as `active` immediately (existing behaviour preserved)
+  - Org invite tokens: `Organization.VerificationMode` controls which verification layers are required (`email_otp`, `invite_token`, `admin_approval`, or combinations); when mode includes `invite_token`, `BeginRegistration` validates the supplied token against a stored SHA-256 hash using `subtle.ConstantTimeCompare`; the raw token is returned once on first registration and never stored; `POST /v1/orgs/rotate-invite-token` and `rotate_invite_token` MCP tool allow admins to rotate the token; edge runtime `AgentConfig` accepts an optional `invite_token` field
+  - Org admin approval queue: when mode includes `admin_approval`, agents enter `pending_admin_approval` status after all other verification steps complete; the first registrant in an org is auto-approved and assigned the `admin` role; `GET /v1/orgs/pending-agents` and `POST /v1/orgs/agents/:id/review` routes plus `list_pending_agents` / `review_agent` MCP tools let admins approve or reject agents; rejection revokes all bearer tokens; `requireVerifiedAuth` middleware blocks `pending_admin_approval` and `rejected` agents from all protected routes; approval decisions are audit-logged with reviewer identity
 - `examples/`: runnable local example configs plus artifact fixtures, connector fixtures, live polling examples, webhook intake examples, and OAuth bootstrap examples for GitHub, Jira, and Google Calendar
 - `api/jsonschema/`: machine-readable schema files
 
@@ -42,6 +46,7 @@ Run these commands from the repository root:
 - `make logs`: tail server container logs
 - `make test`: run the Go test suite
 - `make test-postgres`: start or reuse the PostgreSQL container, wait for health, and run the Go test suite with `ALICE_TEST_DATABASE_URL` set
+- `make mailpit-ui`: print the Mailpit web UI URL (`http://localhost:8025`) for inspecting OTP emails during local development
 - `git diff -- README.md AGENTS.md docs/ examples/`: inspect documentation and example-config changes before committing
 
 Podman is the expected local container runtime for this repository, and the default local stack includes PostgreSQL.
@@ -65,6 +70,10 @@ New security enforcement must be tested at both the unit level (service layer) a
 - **Expired grant filtering**: `Evaluate` must return `ErrPermissionDenied` (not empty results) when all grants are expired, because filtering happens at the storage layer
 - **ForbiddenError → 403**: attempting to correct an artifact you do not own must return HTTP 403
 - **Cross-org isolation**: a user in org A cannot query, grant, or request against a user in org B; all such attempts must return HTTP 404
+- **Email OTP**: when a sender is configured, `CompleteRegistration` must return `pending_email_verification` status; a `pending_email_verification` agent must receive HTTP 403 on all protected routes; a correct code must promote the agent to `active`; a wrong code must increment the attempt counter; use `email.NoopSender` (or pass `nil`) in tests that do not exercise the email path
+- **MCP remote mode**: `TestToolFlowRemoteServer` exercises the full tool flow via `httptest.NewServer`; new MCP tool tests should cover both the embedded and remote paths when behaviour differs
+- **Invite tokens**: first registration must generate and return a raw token (never stored); second registration without token must return `ErrInviteTokenRequired`; wrong token must return `ErrInvalidInviteToken`; token comparison must use `subtle.ConstantTimeCompare`
+- **Admin approval**: first registrant must get `admin` role and `active` status; subsequent registrants in an `admin_approval` org must get `pending_admin_approval`; `pending_admin_approval` and `rejected` agents must receive HTTP 403 on all protected routes; only admins may call `ReviewAgentApproval`; rejection must revoke all bearer tokens
 
 ## Commit & Pull Request Guidelines
 Existing history uses short, imperative commit subjects. Follow that pattern: one-line, imperative, capitalized, no trailing period.

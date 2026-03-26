@@ -13,4 +13,20 @@ var (
 	ErrInvalidAgentToken            = errors.New("invalid agent token")
 	ErrExpiredAgentToken            = errors.New("expired agent token")
 	ErrRevokedAgentToken            = errors.New("revoked agent token")
+
+	// Email OTP verification errors.
+	ErrVerificationNotFound    = errors.New("email verification not found")
+	ErrVerificationExpired     = errors.New("email verification code expired")
+	ErrVerificationMaxAttempts = errors.New("email verification max attempts exceeded")
+	ErrInvalidVerificationCode = errors.New("invalid email verification code")
+	ErrResendTooSoon           = errors.New("verification email resend too soon; wait 60 seconds")
+
+	// Invite token errors.
+	ErrInvalidInviteToken  = errors.New("invalid or missing invite token")
+	ErrInviteTokenRequired = errors.New("invite token required to join this org")
+
+	// Admin approval errors.
+	ErrNotOrgAdmin             = errors.New("caller is not an org admin")
+	ErrAgentRejected           = errors.New("agent has been rejected")
+	ErrAgentApprovalNotFound   = errors.New("agent approval not found")
 )

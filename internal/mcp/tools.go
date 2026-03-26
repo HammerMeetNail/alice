@@ -27,6 +27,7 @@ func (s *Server) registerTools() map[string]toolDefinition {
 				"private_key":         stringSchema("Optional base64-encoded Ed25519 private key. If omitted, a keypair is generated automatically."),
 				"challenge_id":        stringSchema("Optional challenge id for explicit registration completion."),
 				"challenge_signature": stringSchema("Optional base64-encoded challenge signature for explicit registration completion."),
+				"invite_token":        stringSchema("Optional invite token required when the org has invite_token verification mode."),
 			}),
 			Handler: s.handleRegisterAgent,
 		},
@@ -164,6 +165,42 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			}),
 			Handler: s.handleResolveApproval,
 		},
+		"verify_email": {
+			Name:        "verify_email",
+			Description: "Submit the one-time email verification code to activate the agent session.",
+			InputSchema: objectSchema(map[string]any{
+				"code": stringSchema("6-digit verification code received by email."),
+			}),
+			Handler: s.handleVerifyEmail,
+		},
+		"resend_verification_email": {
+			Name:        "resend_verification_email",
+			Description: "Request a new email verification code (rate-limited to one resend per 60 seconds).",
+			InputSchema: objectSchema(map[string]any{}),
+			Handler:     s.handleResendVerificationEmail,
+		},
+		"rotate_invite_token": {
+			Name:        "rotate_invite_token",
+			Description: "Rotate the org's invite token, invalidating the previous one. Caller must belong to the org.",
+			InputSchema: objectSchema(map[string]any{}),
+			Handler:     s.handleRotateInviteToken,
+		},
+		"list_pending_agents": {
+			Name:        "list_pending_agents",
+			Description: "List agents awaiting admin approval in the caller's org. Caller must be an org admin.",
+			InputSchema: objectSchema(map[string]any{}),
+			Handler:     s.handleListPendingAgents,
+		},
+		"review_agent": {
+			Name:        "review_agent",
+			Description: "Approve or reject a pending agent registration. Caller must be an org admin.",
+			InputSchema: objectSchema(map[string]any{
+				"agent_id": stringSchema("Agent ID to review."),
+				"decision": stringSchema("'approved' or 'rejected'."),
+				"reason":   stringSchema("Optional reason for the decision."),
+			}),
+			Handler: s.handleReviewAgent,
+		},
 	}
 }
 
@@ -206,11 +243,12 @@ func (s *Server) handleRegisterAgent(ctx context.Context, args map[string]any) (
 	}
 
 	body := map[string]any{
-		"org_slug":    args["org_slug"],
-		"owner_email": args["owner_email"],
-		"agent_name":  args["agent_name"],
-		"client_type": args["client_type"],
-		"public_key":  publicKeyB64,
+		"org_slug":     args["org_slug"],
+		"owner_email":  args["owner_email"],
+		"agent_name":   args["agent_name"],
+		"client_type":  args["client_type"],
+		"public_key":   publicKeyB64,
+		"invite_token": stringArg(args, "invite_token"),
 	}
 	challenge, err := s.callJSON(ctx, http.MethodPost, "/v1/agents/register/challenge", body, "")
 	if err != nil {
@@ -331,6 +369,44 @@ func (s *Server) handleResolveApproval(ctx context.Context, args map[string]any)
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/approvals/"+approvalID+"/resolve", map[string]any{
 		"decision": args["decision"],
 	})
+}
+
+func (s *Server) handleVerifyEmail(ctx context.Context, args map[string]any) (any, error) {
+	code := stringArg(args, "code")
+	if code == "" {
+		return nil, fmt.Errorf("code is required")
+	}
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/agents/verify-email", map[string]any{
+		"code": code,
+	})
+}
+
+func (s *Server) handleResendVerificationEmail(ctx context.Context, _ map[string]any) (any, error) {
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/agents/resend-verification", nil)
+}
+
+func (s *Server) handleRotateInviteToken(ctx context.Context, _ map[string]any) (any, error) {
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/rotate-invite-token", nil)
+}
+
+func (s *Server) handleListPendingAgents(ctx context.Context, _ map[string]any) (any, error) {
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/orgs/pending-agents", nil)
+}
+
+func (s *Server) handleReviewAgent(ctx context.Context, args map[string]any) (any, error) {
+	agentID := stringArg(args, "agent_id")
+	if agentID == "" {
+		return nil, fmt.Errorf("agent_id is required")
+	}
+	decision := stringArg(args, "decision")
+	if decision == "" {
+		return nil, fmt.Errorf("decision is required")
+	}
+	body := map[string]any{
+		"decision": decision,
+		"reason":   stringArg(args, "reason"),
+	}
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/agents/"+agentID+"/review", body)
 }
 
 func (s *Server) callAuthedJSON(ctx context.Context, method, path string, body any) (any, error) {

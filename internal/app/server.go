@@ -13,6 +13,7 @@ import (
 	"alice/internal/artifacts"
 	"alice/internal/audit"
 	"alice/internal/config"
+	"alice/internal/email"
 	"alice/internal/httpapi"
 	"alice/internal/policy"
 	"alice/internal/queries"
@@ -39,6 +40,8 @@ type repositories interface {
 	storage.RequestRepository
 	storage.ApprovalRepository
 	storage.AuditRepository
+	storage.EmailVerificationRepository
+	storage.AgentApprovalRepository
 	storage.Transactor
 }
 
@@ -92,7 +95,14 @@ func NewContainer(cfg config.Config) (services.Container, func() error, error) {
 }
 
 func buildContainer(repos repositories, cfg config.Config) services.Container {
-	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg, repos)
+	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg, repos).
+		WithApprovalRepository(repos)
+
+	// Wire up email sender when SMTP is configured.
+	if sender := email.NewSenderFromConfig(cfg); sender != nil {
+		agentService = agentService.WithEmailSender(sender, repos)
+	}
+
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService, repos, repos)

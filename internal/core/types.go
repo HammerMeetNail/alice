@@ -1,6 +1,23 @@
 package core
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// Agent status values.
+const (
+	AgentStatusActive                  = "active"
+	AgentStatusPendingEmailVerification = "pending_email_verification"
+	AgentStatusPendingAdminApproval    = "pending_admin_approval"
+	AgentStatusRejected                = "rejected"
+)
+
+// User role values.
+const (
+	UserRoleMember = "member"
+	UserRoleAdmin  = "admin"
+)
 
 type ArtifactType string
 
@@ -108,11 +125,23 @@ const (
 )
 
 type Organization struct {
-	OrgID     string    `json:"org_id"`
-	Name      string    `json:"name"`
-	Slug      string    `json:"slug"`
-	CreatedAt time.Time `json:"created_at"`
-	Status    string    `json:"status"`
+	OrgID             string    `json:"org_id"`
+	Name              string    `json:"name"`
+	Slug              string    `json:"slug"`
+	CreatedAt         time.Time `json:"created_at"`
+	Status            string    `json:"status"`
+	VerificationMode  string    `json:"verification_mode"`
+	InviteTokenHash   string    `json:"-"` // SHA-256 hex of the raw token; never exposed in JSON
+}
+
+// OrgRequiresInviteToken returns true when the org's verification mode includes "invite_token".
+func OrgRequiresInviteToken(mode string) bool {
+	return strings.Contains(mode, "invite_token")
+}
+
+// OrgRequiresAdminApproval returns true when the org's verification mode includes "admin_approval".
+func OrgRequiresAdminApproval(mode string) bool {
+	return strings.Contains(mode, "admin_approval")
 }
 
 type User struct {
@@ -124,6 +153,7 @@ type User struct {
 	ManagerUserID string    `json:"manager_user_id,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	Status        string    `json:"status"`
+	Role          string    `json:"role"` // "member" or "admin"
 }
 
 type Agent struct {
@@ -268,6 +298,17 @@ type Approval struct {
 	ResolvedAt  *time.Time    `json:"resolved_at,omitempty"`
 }
 
+type AgentApproval struct {
+	ApprovalID  string     `json:"approval_id"`
+	AgentID     string     `json:"agent_id"`
+	OrgID       string     `json:"org_id"`
+	RequestedAt time.Time  `json:"requested_at"`
+	ReviewedBy  string     `json:"reviewed_by,omitempty"` // user ID
+	ReviewedAt  *time.Time `json:"reviewed_at,omitempty"`
+	Decision    string     `json:"decision,omitempty"` // "approved" or "rejected"
+	Reason      string     `json:"reason,omitempty"`
+}
+
 type PolicyGrant struct {
 	PolicyGrantID             string         `json:"policy_grant_id"`
 	OrgID                     string         `json:"org_id"`
@@ -283,6 +324,19 @@ type PolicyGrant struct {
 	CreatedAt                 time.Time      `json:"created_at"`
 	ExpiresAt                 *time.Time     `json:"expires_at,omitempty"`
 	RevokedAt                 *time.Time     `json:"revoked_at,omitempty"`
+}
+
+// EmailVerification holds the state for a pending email OTP check.
+type EmailVerification struct {
+	VerificationID string     `json:"verification_id"`
+	AgentID        string     `json:"agent_id"`
+	OrgID          string     `json:"org_id"`
+	Email          string     `json:"email"`
+	CodeHash       string     `json:"-"` // SHA-256 of the 6-digit code; never exposed in JSON
+	CreatedAt      time.Time  `json:"created_at"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	VerifiedAt     *time.Time `json:"verified_at,omitempty"`
+	Attempts       int        `json:"attempts"`
 }
 
 type AuditEvent struct {

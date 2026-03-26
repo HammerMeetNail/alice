@@ -154,13 +154,17 @@ func (r *Runtime) ensureSession(ctx context.Context, state *State) (bool, error)
 		return false, nil
 	}
 
-	challenge, err := r.client.BeginRegistration(ctx, map[string]any{
+	beginBody := map[string]any{
 		"org_slug":    r.cfg.Agent.OrgSlug,
 		"owner_email": r.cfg.Agent.OwnerEmail,
 		"agent_name":  r.cfg.Agent.AgentName,
 		"client_type": r.cfg.Agent.ClientType,
 		"public_key":  state.PublicKey,
-	})
+	}
+	if r.cfg.Agent.InviteToken != "" {
+		beginBody["invite_token"] = r.cfg.Agent.InviteToken
+	}
+	challenge, err := r.client.BeginRegistration(ctx, beginBody)
 	if err != nil {
 		return false, err
 	}
@@ -183,6 +187,25 @@ func (r *Runtime) ensureSession(ctx context.Context, state *State) (bool, error)
 	state.OrgID = response.OrgID
 	state.AccessToken = response.AccessToken
 	state.TokenExpiresAt = response.ExpiresAt
+
+	if response.Status == "pending_email_verification" {
+		fmt.Fprintf(os.Stderr,
+			"[alice] email verification required for %s\n"+
+				"[alice] a 6-digit code has been sent to the registered email address.\n"+
+				"[alice] submit the code via: POST /v1/agents/verify-email {\"code\": \"<6-digit-code>\"}\n"+
+				"[alice] or use the verify_email MCP tool.\n",
+			response.AgentID,
+		)
+	}
+	if response.Status == "pending_admin_approval" {
+		fmt.Fprintf(os.Stderr,
+			"[alice] awaiting org admin approval for %s\n"+
+				"[alice] ask an org admin to run: alice review_agent %s approved\n",
+			response.AgentID,
+			response.AgentID,
+		)
+	}
+
 	return true, nil
 }
 

@@ -412,10 +412,19 @@ Register an agent and start an authenticated session. A keypair is generated aut
 | `client_type` | yes | Client type (e.g. `mcp`, `edge_agent`) |
 | `public_key` | no | Base64-encoded Ed25519 public key. Auto-generated if omitted. |
 | `private_key` | no | Base64-encoded Ed25519 private key. Auto-generated if omitted. |
+| `invite_token` | no | Invite token required when the org's verification mode includes `invite_token` |
 | `challenge_id` | no | Challenge ID for two-step completion |
 | `challenge_signature` | no | Base64-encoded signature for two-step completion |
 
 Registration always completes in a single call — the tool generates a keypair, submits the challenge, signs it internally, and stores the returned token automatically.
+
+When the org's verification mode requires it, registration may not immediately result in an `active` agent:
+
+- **Email OTP** (`email_otp` mode, requires SMTP on the server): the tool returns status `pending_email_verification`. Call `verify_email` with the code sent to your address, or `resend_verification_email` to request a new code.
+- **Admin approval** (`admin_approval` mode): after any other verification completes, status is `pending_admin_approval`. An org admin must call `review_agent` to approve before the agent can act.
+- **First registration** in a new org: a `first_invite_token` is returned in the response. Save this value — it is shown only once and must be passed as `invite_token` by all subsequent registrants.
+
+If the org's mode includes `invite_token`, pass the shared token as the `invite_token` parameter below.
 
 ### `publish_artifact`
 
@@ -561,6 +570,36 @@ Resolve a pending approval.
 | `approval_id` | yes | Approval ID |
 | `decision` | yes | `approved` or `denied` |
 
+### `verify_email`
+
+Submit an email OTP code to activate an agent that is in `pending_email_verification` status.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `code` | yes | 6-digit OTP code sent to the agent owner's email address |
+
+### `resend_verification_email`
+
+Request a new email OTP code. Rate-limited to one resend per 60 seconds.
+
+### `rotate_invite_token`
+
+Generate a new invite token for the caller's org. The new raw token is returned once and replaces the previous one immediately. Restricted to org admins.
+
+### `list_pending_agents`
+
+List agents in the caller's org that are waiting for admin approval (`pending_admin_approval` status). Restricted to org admins. Supports pagination (`limit`, `cursor`).
+
+### `review_agent`
+
+Approve or reject an agent awaiting admin approval. Restricted to org admins. Rejection immediately revokes all bearer tokens for the agent.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `agent_id` | yes | ID of the agent to review |
+| `decision` | yes | `approved` or `rejected` |
+| `reason` | no | Optional explanation recorded in the audit log |
+
 ---
 
 ## HTTP API reference
@@ -570,8 +609,10 @@ The coordination server (`cmd/server`) exposes these endpoints at `http://127.0.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/healthz` | none | Health check |
-| `POST` | `/v1/agents/register/challenge` | none | Begin registration — returns a challenge to sign |
+| `POST` | `/v1/agents/register/challenge` | none | Begin registration — returns a challenge to sign. Accepts optional `invite_token`. Returns `first_invite_token` on org creation. |
 | `POST` | `/v1/agents/register` | none | Complete registration — returns a bearer token |
+| `POST` | `/v1/agents/verify-email` | required | Submit OTP code to activate a `pending_email_verification` agent |
+| `POST` | `/v1/agents/resend-verification` | required | Resend email OTP (rate-limited to once per 60 s) |
 | `POST` | `/v1/artifacts` | required | Publish an artifact |
 | `POST` | `/v1/artifacts/:id/correct` | required | Publish a correction superseding a prior artifact |
 | `POST` | `/v1/policy-grants` | required | Create a permission grant |
@@ -586,6 +627,9 @@ The coordination server (`cmd/server`) exposes these endpoints at `http://127.0.
 | `GET` | `/v1/approvals` | required | List pending approvals |
 | `POST` | `/v1/approvals/:id/resolve` | required | Resolve an approval |
 | `GET` | `/v1/audit/summary` | required | List audit events for the authenticated agent. Accepts `?since=<RFC3339>` |
+| `POST` | `/v1/orgs/rotate-invite-token` | required (admin) | Rotate the org invite token; returns the new raw token once |
+| `GET` | `/v1/orgs/pending-agents` | required (admin) | List agents awaiting admin approval |
+| `POST` | `/v1/orgs/agents/:id/review` | required (admin) | Approve or reject an agent awaiting admin approval |
 
 List endpoints accept `?limit=N&cursor=<opaque>` for pagination. Default limit is 50, maximum is 200.
 
@@ -603,6 +647,14 @@ List endpoints accept `?limit=N&cursor=<opaque>` for pagination. Default limit i
 | `ALICE_MCP_ACCESS_TOKEN` | _(none)_ | Pre-load an existing bearer token into the MCP server on startup, skipping the registration step |
 | `ALICE_SERVER_URL` | _(none — uses embedded mode)_ | URL of a remote coordination server (e.g. `https://alice.example.com`). When set the MCP server forwards all calls over HTTP instead of running an embedded stack. No local database access is required. |
 | `ALICE_SERVER_TLS_CA` | _(none — uses system roots)_ | Path to a PEM file containing additional CA certificates to trust when connecting to `ALICE_SERVER_URL`. Use this for self-signed or internal CA certificates. |
+| `ALICE_SMTP_HOST` | _(none — OTP disabled)_ | SMTP server hostname for email OTP verification. Set to `noop` to log OTP codes to stderr instead of sending email (useful for development). |
+| `ALICE_SMTP_PORT` | `587` | SMTP server port. |
+| `ALICE_SMTP_USERNAME` | _(none)_ | SMTP authentication username. |
+| `ALICE_SMTP_PASSWORD` | _(none)_ | SMTP authentication password. |
+| `ALICE_SMTP_FROM` | _(none)_ | From address for OTP emails. |
+| `ALICE_SMTP_TLS` | `true` | Set `false` to disable STARTTLS (e.g. for local mail catchers). |
+| `ALICE_EMAIL_OTP_TTL` | `10m` | How long an OTP code is valid after issuance. |
+| `ALICE_EMAIL_OTP_MAX_ATTEMPTS` | `5` | Maximum wrong-code attempts before the verification record is locked. |
 
 ---
 
@@ -618,6 +670,7 @@ The edge agent reads a JSON config file passed via `-config`. All paths in the c
 | `owner_email` | Agent owner email. |
 | `agent_name` | Human-readable agent name. |
 | `client_type` | Client type identifier (e.g. `edge_agent`). |
+| `invite_token` | Optional. Invite token required when the org's verification mode includes `invite_token`. |
 
 ### `server`
 
@@ -706,6 +759,7 @@ Run from the repository root. Requires Podman and `podman-compose` (or `podman c
 | `make logs` | Tail coordination server logs |
 | `make test` | Run the full Go test suite (in-memory storage) |
 | `make test-postgres` | Start PostgreSQL and run the test suite with `ALICE_TEST_DATABASE_URL` set |
+| `make mailpit-ui` | Print the Mailpit web UI URL (`http://localhost:8025`) for inspecting OTP emails during local development |
 
 ### Running without containers
 

@@ -25,10 +25,11 @@ type Config struct {
 }
 
 type AgentConfig struct {
-	OrgSlug    string `json:"org_slug"`
-	OwnerEmail string `json:"owner_email"`
-	AgentName  string `json:"agent_name"`
-	ClientType string `json:"client_type"`
+	OrgSlug     string `json:"org_slug"`
+	OwnerEmail  string `json:"owner_email"`
+	AgentName   string `json:"agent_name"`
+	ClientType  string `json:"client_type"`
+	InviteToken string `json:"invite_token,omitempty"`
 }
 
 type ServerConfig struct {

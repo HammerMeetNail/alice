@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"alice/internal/audit"
 	"alice/internal/config"
 	"alice/internal/core"
+	"alice/internal/email"
 	"alice/internal/policy"
 	"alice/internal/queries"
 	"alice/internal/requests"
@@ -332,11 +334,19 @@ type testRepositories interface {
 	storage.RequestRepository
 	storage.ApprovalRepository
 	storage.AuditRepository
+	storage.EmailVerificationRepository
 	storage.Transactor
 }
 
 func buildTestHandler(cfg config.Config, repos testRepositories) http.Handler {
+	return buildTestHandlerWithSender(cfg, repos, nil)
+}
+
+func buildTestHandlerWithSender(cfg config.Config, repos testRepositories, sender email.Sender) http.Handler {
 	agentService := agents.NewService(repos, repos, repos, repos, repos, cfg, repos)
+	if sender != nil {
+		agentService = agentService.WithEmailSender(sender, repos)
+	}
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService, repos, repos)
@@ -353,6 +363,38 @@ func buildTestHandler(cfg config.Config, repos testRepositories) http.Handler {
 		Approvals: approvalService,
 		Audit:     auditService,
 	})
+}
+
+// testCapturingSender implements email.Sender, capturing sent messages.
+type testCapturingSender struct {
+	mu   sync.Mutex
+	sent []struct{ To, Subject, Body string }
+}
+
+func (s *testCapturingSender) Send(_ context.Context, to, subject, body string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent = append(s.sent, struct{ To, Subject, Body string }{to, subject, body})
+	return nil
+}
+
+func (s *testCapturingSender) LastCode() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.sent) == 0 {
+		return "", false
+	}
+	body := s.sent[len(s.sent)-1].Body
+	const prefix = "Your Alice verification code is: "
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			code := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if len(code) == 6 {
+				return code, true
+			}
+		}
+	}
+	return "", false
 }
 
 func runPermissionedQueryFlow(t *testing.T, handler http.Handler, fixture testFixture) {
@@ -671,4 +713,191 @@ func performJSONWithHeaders(t *testing.T, handler http.Handler, method, path str
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func newTestHandlerWithOTP(t *testing.T) (http.Handler, *testCapturingSender) {
+	t.Helper()
+	store := memory.New()
+	cfg := config.Config{
+		AuthChallengeTTL:    5 * time.Minute,
+		AuthTokenTTL:        time.Hour,
+		DefaultOrgName:      "Test Org",
+		EmailOTPTTL:         10 * time.Minute,
+		EmailOTPMaxAttempts: 5,
+	}
+	sender := &testCapturingSender{}
+	return buildTestHandlerWithSender(cfg, store, sender), sender
+}
+
+func TestEmailOTP_RegistrationReturnsPendingStatus(t *testing.T) {
+	handler, _ := newTestHandlerWithOTP(t)
+	fixture := newFixture(t)
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	challenge := issueRegistrationChallenge(t, handler, fixture.OrgSlug, fixture.AliceEmail, base64.StdEncoding.EncodeToString(publicKey))
+	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(challenge.Challenge)))
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/register", "", map[string]any{
+		"challenge_id":        challenge.ChallengeID,
+		"challenge_signature": signature,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["status"] != "pending_email_verification" {
+		t.Fatalf("expected pending_email_verification, got %v", payload["status"])
+	}
+}
+
+func TestEmailOTP_UnverifiedAgentGets403OnProtectedEndpoints(t *testing.T) {
+	handler, _ := newTestHandlerWithOTP(t)
+	fixture := newFixture(t)
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	challenge := issueRegistrationChallenge(t, handler, fixture.OrgSlug, fixture.AliceEmail, base64.StdEncoding.EncodeToString(publicKey))
+	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(challenge.Challenge)))
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/register", "", map[string]any{
+		"challenge_id":        challenge.ChallengeID,
+		"challenge_signature": signature,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var regPayload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&regPayload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	accessToken := regPayload["access_token"].(string)
+
+	// Protected endpoints should return 403.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/peers", accessToken, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unverified agent on /v1/peers, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var errPayload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&errPayload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+	if errPayload["error"] != "email_verification_required" {
+		t.Fatalf("expected email_verification_required error, got %v", errPayload["error"])
+	}
+}
+
+func TestEmailOTP_CorrectCodePromotesToActive(t *testing.T) {
+	handler, sender := newTestHandlerWithOTP(t)
+	fixture := newFixture(t)
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	challenge := issueRegistrationChallenge(t, handler, fixture.OrgSlug, fixture.AliceEmail, base64.StdEncoding.EncodeToString(publicKey))
+	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(challenge.Challenge)))
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/register", "", map[string]any{
+		"challenge_id":        challenge.ChallengeID,
+		"challenge_signature": signature,
+	})
+	var regPayload map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&regPayload)
+	accessToken := regPayload["access_token"].(string)
+
+	code, ok := sender.LastCode()
+	if !ok {
+		t.Fatal("expected OTP code in email")
+	}
+
+	rec = performJSON(t, handler, http.MethodPost, "/v1/agents/verify-email", accessToken, map[string]any{
+		"code": code,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("verify-email status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// After verification, protected endpoints should work.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/peers", accessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after verification on /v1/peers, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestEmailOTP_WrongCodeReturns401(t *testing.T) {
+	handler, _ := newTestHandlerWithOTP(t)
+	fixture := newFixture(t)
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	challenge := issueRegistrationChallenge(t, handler, fixture.OrgSlug, fixture.AliceEmail, base64.StdEncoding.EncodeToString(publicKey))
+	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(challenge.Challenge)))
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/register", "", map[string]any{
+		"challenge_id":        challenge.ChallengeID,
+		"challenge_signature": signature,
+	})
+	var regPayload map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&regPayload)
+	accessToken := regPayload["access_token"].(string)
+
+	rec = performJSON(t, handler, http.MethodPost, "/v1/agents/verify-email", accessToken, map[string]any{
+		"code": "000000",
+	})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong code, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestEmailOTP_VerificationExemptFromEmailCheck(t *testing.T) {
+	// The verify-email and resend-verification endpoints must be accessible
+	// even when the agent status is pending_email_verification.
+	handler, _ := newTestHandlerWithOTP(t)
+	fixture := newFixture(t)
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	challenge := issueRegistrationChallenge(t, handler, fixture.OrgSlug, fixture.AliceEmail, base64.StdEncoding.EncodeToString(publicKey))
+	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(challenge.Challenge)))
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/register", "", map[string]any{
+		"challenge_id":        challenge.ChallengeID,
+		"challenge_signature": signature,
+	})
+	var regPayload map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&regPayload)
+	accessToken := regPayload["access_token"].(string)
+
+	// verify-email with wrong code → 401 (not 403 email_verification_required).
+	rec = performJSON(t, handler, http.MethodPost, "/v1/agents/verify-email", accessToken, map[string]any{
+		"code": "000000",
+	})
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("verify-email should not be blocked by email verification check, got 403 body=%s", rec.Body.String())
+	}
+
+	// resend-verification → 429 (too soon) but NOT 403.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/agents/resend-verification", accessToken, nil)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("resend-verification should not be blocked by email verification check, got 403 body=%s", rec.Body.String())
+	}
 }

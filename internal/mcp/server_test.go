@@ -53,6 +53,8 @@ func TestToolDiscoveryAndQueryFlow(t *testing.T) {
 		"respond_to_request",
 		"list_pending_approvals",
 		"resolve_approval",
+		"verify_email",
+		"resend_verification_email",
 	} {
 		if !slices.Contains(names, expected) {
 			t.Fatalf("missing tool %q in %v", expected, names)
