@@ -147,9 +147,16 @@ func TestSaveGrant_Find_Revoke_List_Postgres(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	grantorUserID := id.New("user")
-	granteeUserID := id.New("user")
-	orgID := id.New("org")
+	org := core.Organization{OrgID: id.New("org"), Slug: "grant-" + id.New("s"), Name: "T", Status: "active"}
+	store.UpsertOrganization(ctx, org)
+	grantor := core.User{UserID: id.New("user"), OrgID: org.OrgID, Email: "grantor-" + id.New("x") + "@ex.com", Role: core.UserRoleMember}
+	grantee := core.User{UserID: id.New("user"), OrgID: org.OrgID, Email: "grantee-" + id.New("x") + "@ex.com", Role: core.UserRoleMember}
+	store.UpsertUser(ctx, grantor)
+	store.UpsertUser(ctx, grantee)
+
+	grantorUserID := grantor.UserID
+	granteeUserID := grantee.UserID
+	orgID := org.OrgID
 
 	grant := core.PolicyGrant{
 		PolicyGrantID:        id.New("grant"),
@@ -198,14 +205,21 @@ func TestSaveArtifact_Find_List_Postgres(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	userID := id.New("user")
-	orgID := id.New("org")
+	org := core.Organization{OrgID: id.New("org"), Slug: "art-" + id.New("s"), Name: "T", Status: "active"}
+	store.UpsertOrganization(ctx, org)
+	user := core.User{UserID: id.New("user"), OrgID: org.OrgID, Email: "artuser-" + id.New("x") + "@ex.com", Role: core.UserRoleMember}
+	store.UpsertUser(ctx, user)
+	agent := core.Agent{AgentID: id.New("agent"), OrgID: org.OrgID, OwnerUserID: user.UserID, Status: core.AgentStatusActive}
+	store.UpsertAgent(ctx, agent)
+
+	userID := user.UserID
+	orgID := org.OrgID
 
 	artifact := core.Artifact{
 		ArtifactID:     id.New("artifact"),
 		OrgID:          orgID,
 		OwnerUserID:    userID,
-		OwnerAgentID:   id.New("agent"),
+		OwnerAgentID:   agent.AgentID,
 		Type:           core.ArtifactTypeSummary,
 		Title:          "Test artifact",
 		Content:        "Content here",
@@ -267,11 +281,15 @@ func TestAppendAuditEvent_List_Postgres(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
+	org := core.Organization{OrgID: id.New("org"), Slug: "audit-" + id.New("s"), Name: "T", Status: "active"}
+	store.UpsertOrganization(ctx, org)
+
 	agentID := id.New("agent")
 	now := time.Now().UTC()
 
 	old := core.AuditEvent{
 		AuditEventID: id.New("audit"),
+		OrgID:        org.OrgID,
 		ActorAgentID: agentID,
 		EventKind:    "test.old",
 		SubjectType:  "query",
@@ -281,6 +299,7 @@ func TestAppendAuditEvent_List_Postgres(t *testing.T) {
 	}
 	recent := core.AuditEvent{
 		AuditEventID: id.New("audit"),
+		OrgID:        org.OrgID,
 		ActorAgentID: agentID,
 		EventKind:    "test.recent",
 		SubjectType:  "query",
@@ -288,8 +307,12 @@ func TestAppendAuditEvent_List_Postgres(t *testing.T) {
 		Decision:     "allow",
 		CreatedAt:    now,
 	}
-	store.AppendAuditEvent(ctx, old)
-	store.AppendAuditEvent(ctx, recent)
+	if _, err := store.AppendAuditEvent(ctx, old); err != nil {
+		t.Fatalf("AppendAuditEvent old: %v", err)
+	}
+	if _, err := store.AppendAuditEvent(ctx, recent); err != nil {
+		t.Fatalf("AppendAuditEvent recent: %v", err)
+	}
 
 	since := now.Add(-time.Hour)
 	events, err := store.ListAuditEvents(ctx, agentID, since, 50, 0)

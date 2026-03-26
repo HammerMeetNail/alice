@@ -7,9 +7,31 @@ import (
 	"time"
 
 	"alice/internal/core"
+	"alice/internal/storage"
 )
 
 func (s *Store) SaveAgentRegistrationChallenge(ctx context.Context, challenge core.AgentRegistrationChallenge) (core.AgentRegistrationChallenge, error) {
+	if challenge.UsedAt != nil {
+		// Atomic check-and-set: only mark as used if not already marked.
+		// This prevents concurrent CompleteRegistration calls from both succeeding.
+		result, err := s.db.ExecContext(ctx,
+			`UPDATE agent_registration_challenges SET used_at = $2 WHERE challenge_id = $1 AND used_at IS NULL`,
+			challenge.ChallengeID,
+			nullTimePtr(challenge.UsedAt),
+		)
+		if err != nil {
+			return core.AgentRegistrationChallenge{}, fmt.Errorf("mark registration challenge used: %w", err)
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return core.AgentRegistrationChallenge{}, fmt.Errorf("check rows affected: %w", err)
+		}
+		if n == 0 {
+			return core.AgentRegistrationChallenge{}, storage.ErrChallengeAlreadyUsed
+		}
+		return challenge, nil
+	}
+
 	_, err := s.db.ExecContext(
 		ctx,
 		`INSERT INTO agent_registration_challenges (
@@ -25,8 +47,7 @@ func (s *Store) SaveAgentRegistrationChallenge(ctx context.Context, challenge co
 		    public_key = EXCLUDED.public_key,
 		    nonce = EXCLUDED.nonce,
 		    created_at = EXCLUDED.created_at,
-		    expires_at = EXCLUDED.expires_at,
-		    used_at = EXCLUDED.used_at`,
+		    expires_at = EXCLUDED.expires_at`,
 		challenge.ChallengeID,
 		normalizeSlug(challenge.OrgSlug),
 		normalizeEmail(challenge.OwnerEmail),

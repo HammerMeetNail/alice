@@ -13,9 +13,11 @@ import (
 func TestAgentLifecycle(t *testing.T) {
 	base := newE2EServer(t)
 	slug := orgSlug(t)
+	aliceEmail := slug + "-alice@example.com"
+	bobEmail := slug + "-bob@example.com"
 
-	alice := registerAgent(t, base, slug, "alice@example.com")
-	bob := registerAgent(t, base, slug, "bob@example.com")
+	alice := registerAgent(t, base, slug, aliceEmail)
+	bob := registerAgent(t, base, slug, bobEmail)
 
 	// Bob publishes a status artifact.
 	doJSON(t, base, http.MethodPost, "/v1/artifacts", bob.AccessToken, map[string]any{
@@ -41,7 +43,7 @@ func TestAgentLifecycle(t *testing.T) {
 	// Bob grants Alice permission.
 	var grantResp map[string]any
 	doJSON(t, base, http.MethodPost, "/v1/policy-grants", bob.AccessToken, map[string]any{
-		"grantee_user_email":     "alice@example.com",
+		"grantee_user_email":     aliceEmail,
 		"scope_type":             "project",
 		"scope_ref":              "payments-api",
 		"allowed_artifact_types": []string{"summary"},
@@ -53,7 +55,7 @@ func TestAgentLifecycle(t *testing.T) {
 	// Alice queries Bob's status → should succeed with one artifact.
 	var queryResp map[string]any
 	doJSON(t, base, http.MethodPost, "/v1/queries", alice.AccessToken, map[string]any{
-		"to_user_email":   "bob@example.com",
+		"to_user_email":   bobEmail,
 		"purpose":         "status_check",
 		"question":        "What is Bob working on?",
 		"requested_types": []string{"summary"},
@@ -79,7 +81,7 @@ func TestAgentLifecycle(t *testing.T) {
 	// returns 0 artifacts (no matching grant for this purpose).
 	var mismatchResp map[string]any
 	doJSON(t, base, http.MethodPost, "/v1/queries", alice.AccessToken, map[string]any{
-		"to_user_email":   "bob@example.com",
+		"to_user_email":   bobEmail,
 		"purpose":         "dependency_check",
 		"question":        "Any blockers?",
 		"requested_types": []string{"summary"},

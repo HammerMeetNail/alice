@@ -21,7 +21,7 @@ import (
 func TestConcurrentRegistration(t *testing.T) {
 	base := newE2EServer(t)
 	slug := orgSlug(t)
-	email := "race@example.com"
+	email := slug + "-race@example.com"
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
