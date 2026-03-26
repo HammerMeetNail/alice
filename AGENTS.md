@@ -44,8 +44,14 @@ Run these commands from the repository root:
 - `make postgres-down`: stop only the PostgreSQL container
 - `make status`: show container status
 - `make logs`: tail server container logs
-- `make test`: run the Go test suite
+- `make test`: run the Go test suite (in-memory storage)
+- `make test-race`: run the test suite with the race detector enabled
+- `make test-cover`: run tests with a coverage report; fails if total coverage is below 80%
 - `make test-postgres`: start or reuse the PostgreSQL container, wait for health, and run the Go test suite with `ALICE_TEST_DATABASE_URL` set
+- `make e2e`: run end-to-end tests using an in-process HTTP server (no external dependencies required)
+- `make e2e-postgres`: start PostgreSQL and run the e2e tests against it
+- `make test-all`: run unit tests followed by e2e tests
+- `make ci`: run `test-cover` (with threshold check) followed by `e2e`
 - `make mailpit-ui`: print the Mailpit web UI URL (`http://localhost:8025`) for inspecting OTP emails during local development
 - `git diff -- README.md AGENTS.md docs/ examples/`: inspect documentation and example-config changes before committing
 

@@ -758,7 +758,13 @@ Run from the repository root. Requires Podman and `podman-compose` (or `podman c
 | `make status` | Show container status |
 | `make logs` | Tail coordination server logs |
 | `make test` | Run the full Go test suite (in-memory storage) |
+| `make test-race` | Run the test suite with the race detector enabled |
+| `make test-cover` | Run tests with coverage report; fails if coverage is below 80% |
 | `make test-postgres` | Start PostgreSQL and run the test suite with `ALICE_TEST_DATABASE_URL` set |
+| `make e2e` | Run end-to-end tests using an in-process HTTP server (no external deps) |
+| `make e2e-postgres` | Start PostgreSQL and run e2e tests against it |
+| `make test-all` | Run unit tests followed by e2e tests |
+| `make ci` | Run coverage check and e2e tests (full CI pipeline locally) |
 | `make mailpit-ui` | Print the Mailpit web UI URL (`http://localhost:8025`) for inspecting OTP emails during local development |
 
 ### Running without containers
@@ -788,16 +794,39 @@ Run the edge agent with the fixture example:
 go run ./cmd/edge-agent -config examples/edge-agent-config.json
 ```
 
-Run tests:
+Run unit tests:
 
 ```sh
 go test ./...
+# or with race detector:
+go test -race -count=1 ./...
+# or via make:
+make test
+make test-race
 ```
 
-Run tests against PostgreSQL:
+Run unit tests against PostgreSQL:
 
 ```sh
-ALICE_TEST_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable" go test ./...
+ALICE_TEST_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable" go test -race -count=1 ./...
+# or via make (starts PostgreSQL automatically):
+make test-postgres
+```
+
+Run end-to-end tests (in-process server, no external dependencies):
+
+```sh
+go test -tags e2e -race -count=1 -timeout 5m ./tests/e2e/...
+# or via make:
+make e2e
+```
+
+Run end-to-end tests against PostgreSQL:
+
+```sh
+ALICE_TEST_DATABASE_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable" go test -tags e2e -race -count=1 -timeout 5m ./tests/e2e/...
+# or via make (starts PostgreSQL automatically):
+make e2e-postgres
 ```
 
 ---
