@@ -169,6 +169,14 @@ func (r *Runtime) ensureSession(ctx context.Context, state *State) (bool, error)
 		return false, err
 	}
 
+	if challenge.FirstInviteToken != "" {
+		fmt.Fprintf(os.Stderr,
+			"[alice] org invite token (save now; shown once): %s\n"+
+				"[alice] share this token with teammates registering to the same org.\n",
+			challenge.FirstInviteToken,
+		)
+	}
+
 	privateKeyBytes, err := decodeBase64(state.PrivateKey)
 	if err != nil {
 		return false, fmt.Errorf("decode private key: %w", err)
@@ -200,7 +208,16 @@ func (r *Runtime) ensureSession(ctx context.Context, state *State) (bool, error)
 	if response.Status == "pending_admin_approval" {
 		fmt.Fprintf(os.Stderr,
 			"[alice] awaiting org admin approval for %s\n"+
-				"[alice] ask an org admin to run: alice review_agent %s approved\n",
+				"[alice] ask an org admin to call MCP tool `review_agent` with:\n"+
+				"[alice]   agent_id: %s\n"+
+				"[alice]   decision: approved\n"+
+				"[alice]   confirm: true\n"+
+				"[alice] or via HTTP:\n"+
+				"[alice]   curl -X POST \"$ALICE_SERVER_URL/v1/orgs/agents/%s/review\" \\\n"+
+				"[alice]     -H \"Authorization: Bearer $ADMIN_TOKEN\" \\\n"+
+				"[alice]     -H \"Content-Type: application/json\" \\\n"+
+				"[alice]     -d '{\"decision\":\"approved\",\"reason\":\"ok\"}'\n",
+			response.AgentID,
 			response.AgentID,
 			response.AgentID,
 		)

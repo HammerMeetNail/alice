@@ -14,7 +14,9 @@ Privacy-first coordination platform for personal AI agents.
 - [Complete two-person workflow](#complete-two-person-workflow)
 - [MCP tool reference](#mcp-tool-reference)
 - [HTTP API reference](#http-api-reference)
-- [Server environment variables](#server-environment-variables)
+- [Coordination server environment variables](#coordination-server-environment-variables)
+- [MCP server environment variables](#mcp-server-environment-variables)
+- [Edge agent environment variables](#edge-agent-environment-variables)
 - [Edge agent config reference](#edge-agent-config-reference)
 - [Local development commands](#local-development-commands)
 
@@ -36,7 +38,7 @@ For single-user testing, `cmd/mcp-server` alone is enough — it runs entirely i
 
 ## Quick start: single user with Claude Code
 
-This requires only Go 1.21+ and no database.
+This requires only Go 1.23.x and no database.
 
 ### 1. Clone and build
 
@@ -130,11 +132,20 @@ Each user points their MCP server at the coordination server with `ALICE_SERVER_
 ```sh
 claude mcp add alice \
   -e "ALICE_SERVER_URL=http://127.0.0.1:8080" \
-  -e "ALICE_AUTH_TOKEN_TTL=24h" \
   -- "$(pwd)/alice-mcp-server"
 ```
 
 Replace `http://127.0.0.1:8080` with the actual URL of your coordination server. For HTTPS with a self-signed or internal CA certificate, also pass `-e "ALICE_SERVER_TLS_CA=/path/to/ca.pem"`.
+
+In remote mode, token TTL is controlled by the coordination server process — `ALICE_AUTH_TOKEN_TTL` must be set on the server, not on each user's MCP client:
+
+```sh
+# on the server
+ALICE_AUTH_TOKEN_TTL=24h ./alice-server
+
+# on each user machine (MCP client) — no TTL setting needed here
+ALICE_SERVER_URL=https://alice.example.com ./alice-mcp-server
+```
 
 Both users' MCP servers talk to the same coordination server, so artifacts, grants, queries, and requests are visible across sessions and survive process restarts.
 
@@ -188,7 +199,7 @@ The edge agent runs locally per user, connects to GitHub, Jira, and Google Calen
 ### Prerequisites
 
 - The coordination server must be running and reachable (e.g. `make local` or a standalone `go run ./cmd/server`)
-- Go 1.21+
+- Go 1.23.x
 
 ### 1. Create a config file
 
@@ -338,7 +349,6 @@ Both Alice and Bob configure their MCP server (run from the repository root):
 ```sh
 claude mcp add alice \
   -e "ALICE_SERVER_URL=http://127.0.0.1:8080" \
-  -e "ALICE_AUTH_TOKEN_TTL=24h" \
   -- "$(pwd)/alice-mcp-server"
 ```
 
@@ -635,7 +645,9 @@ List endpoints accept `?limit=N&cursor=<opaque>` for pagination. Default limit i
 
 ---
 
-## Server environment variables
+## Coordination server environment variables
+
+Set these on the `cmd/server` process.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -643,10 +655,7 @@ List endpoints accept `?limit=N&cursor=<opaque>` for pagination. Default limit i
 | `ALICE_LISTEN_ADDR` | `:8080` | TCP address the HTTP server binds to |
 | `ALICE_DEFAULT_ORG_NAME` | `Alice Development Org` | Display name used when auto-creating an org on first registration |
 | `ALICE_AUTH_CHALLENGE_TTL` | `5m` | How long a registration challenge is valid before it expires |
-| `ALICE_AUTH_TOKEN_TTL` | `15m` | How long a bearer token is valid after issuance |
-| `ALICE_MCP_ACCESS_TOKEN` | _(none)_ | Pre-load an existing bearer token into the MCP server on startup, skipping the registration step |
-| `ALICE_SERVER_URL` | _(none — uses embedded mode)_ | URL of a remote coordination server (e.g. `https://alice.example.com`). When set the MCP server forwards all calls over HTTP instead of running an embedded stack. No local database access is required. |
-| `ALICE_SERVER_TLS_CA` | _(none — uses system roots)_ | Path to a PEM file containing additional CA certificates to trust when connecting to `ALICE_SERVER_URL`. Use this for self-signed or internal CA certificates. |
+| `ALICE_AUTH_TOKEN_TTL` | `15m` | How long a bearer token is valid after issuance. In remote mode this must be set on the server, not on each user's MCP client. |
 | `ALICE_SMTP_HOST` | _(none — OTP disabled)_ | SMTP server hostname for email OTP verification. Set to `noop` to log OTP codes to stderr instead of sending email (useful for development). |
 | `ALICE_SMTP_PORT` | `587` | SMTP server port. |
 | `ALICE_SMTP_USERNAME` | _(none)_ | SMTP authentication username. |
@@ -655,6 +664,29 @@ List endpoints accept `?limit=N&cursor=<opaque>` for pagination. Default limit i
 | `ALICE_SMTP_TLS` | `true` | Set `false` to disable STARTTLS (e.g. for local mail catchers). |
 | `ALICE_EMAIL_OTP_TTL` | `10m` | How long an OTP code is valid after issuance. |
 | `ALICE_EMAIL_OTP_MAX_ATTEMPTS` | `5` | Maximum wrong-code attempts before the verification record is locked. |
+
+## MCP server environment variables
+
+Set these on the `cmd/mcp-server` process (per user machine).
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALICE_SERVER_URL` | _(none — uses embedded mode)_ | URL of a remote coordination server (e.g. `https://alice.example.com`). When set the MCP server forwards all calls over HTTP instead of running an embedded stack. No local database access is required. |
+| `ALICE_SERVER_TLS_CA` | _(none — uses system roots)_ | Path to a PEM file containing additional CA certificates to trust when connecting to `ALICE_SERVER_URL`. Use this for self-signed or internal CA certificates. |
+| `ALICE_MCP_ACCESS_TOKEN` | _(none)_ | Pre-load an existing bearer token into the MCP server on startup, skipping the registration step. |
+| `ALICE_DATABASE_URL` | _(none)_ | PostgreSQL connection string. Only needed when running the MCP server in standalone mode (without `ALICE_SERVER_URL`) and you want durable storage shared across MCP server instances. |
+| `ALICE_AUTH_TOKEN_TTL` | `15m` | Token TTL in embedded (local) mode only. In remote mode, set this on the coordination server instead. |
+
+## Edge agent environment variables
+
+Set these when running the `cmd/edge-agent` process.
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALICE_GITHUB_TOKEN` | _(none)_ | GitHub personal access token used by the edge agent's GitHub connector. |
+| `ALICE_JIRA_TOKEN` | _(none)_ | Jira API token used by the edge agent's Jira connector. |
+| `ALICE_GCAL_TOKEN` | _(none)_ | Google Calendar OAuth access token used by the edge agent's calendar connector. |
+| `ALICE_EDGE_CREDENTIAL_KEY` | _(none)_ | AES-GCM encryption key for the connector credentials file at rest. |
 
 ---
 

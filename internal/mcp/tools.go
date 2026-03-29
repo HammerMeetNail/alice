@@ -88,6 +88,7 @@ func (s *Server) registerTools() map[string]toolDefinition {
 				"allowed_artifact_types": arraySchema(map[string]any{"type": "string"}, "Allowed artifact types."),
 				"max_sensitivity":        stringSchema("Maximum allowed sensitivity."),
 				"allowed_purposes":       arraySchema(map[string]any{"type": "string"}, "Allowed query purposes."),
+				"confirm":                map[string]any{"type": "boolean", "description": "Set true to confirm you want to create this grant."},
 			}),
 			Handler: s.handleGrantPermission,
 		},
@@ -96,6 +97,7 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			Description: "Revoke a previously created permission grant. Only the grantor can revoke.",
 			InputSchema: objectSchema(map[string]any{
 				"policy_grant_id": stringSchema("Grant identifier to revoke."),
+				"confirm":         map[string]any{"type": "boolean", "description": "Set true to confirm you want to revoke this grant."},
 			}),
 			Handler: s.handleRevokePermission,
 		},
@@ -123,20 +125,28 @@ func (s *Server) registerTools() map[string]toolDefinition {
 		"list_incoming_requests": {
 			Name:        "list_incoming_requests",
 			Description: "List incoming requests for the authenticated agent.",
-			InputSchema: objectSchema(map[string]any{}),
-			Handler:     s.handleListIncomingRequests,
+			InputSchema: objectSchema(map[string]any{
+				"limit":  map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor": stringSchema("Opaque pagination cursor from a previous response."),
+			}),
+			Handler: s.handleListIncomingRequests,
 		},
 		"list_sent_requests": {
 			Name:        "list_sent_requests",
 			Description: "List requests sent by the authenticated agent, including their current state.",
-			InputSchema: objectSchema(map[string]any{}),
-			Handler:     s.handleListSentRequests,
+			InputSchema: objectSchema(map[string]any{
+				"limit":  map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor": stringSchema("Opaque pagination cursor from a previous response."),
+			}),
+			Handler: s.handleListSentRequests,
 		},
 		"get_audit_summary": {
 			Name:        "get_audit_summary",
 			Description: "Retrieve a summary of recent audit events for the authenticated agent.",
 			InputSchema: objectSchema(map[string]any{
-				"since": stringSchema("Optional RFC3339 timestamp to filter events after this time."),
+				"since":  stringSchema("Optional RFC3339 timestamp to filter events after this time."),
+				"limit":  map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor": stringSchema("Opaque pagination cursor from a previous response."),
 			}),
 			Handler: s.handleGetAuditSummary,
 		},
@@ -153,8 +163,11 @@ func (s *Server) registerTools() map[string]toolDefinition {
 		"list_pending_approvals": {
 			Name:        "list_pending_approvals",
 			Description: "List approvals pending for the authenticated agent.",
-			InputSchema: objectSchema(map[string]any{}),
-			Handler:     s.handleListPendingApprovals,
+			InputSchema: objectSchema(map[string]any{
+				"limit":  map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor": stringSchema("Opaque pagination cursor from a previous response."),
+			}),
+			Handler: s.handleListPendingApprovals,
 		},
 		"resolve_approval": {
 			Name:        "resolve_approval",
@@ -182,14 +195,19 @@ func (s *Server) registerTools() map[string]toolDefinition {
 		"rotate_invite_token": {
 			Name:        "rotate_invite_token",
 			Description: "Rotate the org's invite token, invalidating the previous one. Caller must belong to the org.",
-			InputSchema: objectSchema(map[string]any{}),
-			Handler:     s.handleRotateInviteToken,
+			InputSchema: objectSchema(map[string]any{
+				"confirm": map[string]any{"type": "boolean", "description": "Set true to confirm you want to rotate the invite token."},
+			}),
+			Handler: s.handleRotateInviteToken,
 		},
 		"list_pending_agents": {
 			Name:        "list_pending_agents",
 			Description: "List agents awaiting admin approval in the caller's org. Caller must be an org admin.",
-			InputSchema: objectSchema(map[string]any{}),
-			Handler:     s.handleListPendingAgents,
+			InputSchema: objectSchema(map[string]any{
+				"limit":  map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor": stringSchema("Opaque pagination cursor from a previous response."),
+			}),
+			Handler: s.handleListPendingAgents,
 		},
 		"review_agent": {
 			Name:        "review_agent",
@@ -198,6 +216,7 @@ func (s *Server) registerTools() map[string]toolDefinition {
 				"agent_id": stringSchema("Agent ID to review."),
 				"decision": stringSchema("'approved' or 'rejected'."),
 				"reason":   stringSchema("Optional reason for the decision."),
+				"confirm":  map[string]any{"type": "boolean", "description": "Set true to confirm you want to approve or reject this agent."},
 			}),
 			Handler: s.handleReviewAgent,
 		},
@@ -308,10 +327,16 @@ func (s *Server) handleGetQueryResult(ctx context.Context, args map[string]any) 
 }
 
 func (s *Server) handleGrantPermission(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/policy-grants", args)
 }
 
 func (s *Server) handleRevokePermission(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
 	grantID := stringArg(args, "policy_grant_id")
 	if grantID == "" {
 		return nil, fmt.Errorf("policy_grant_id is required")
@@ -327,20 +352,16 @@ func (s *Server) handleSendRequestToPeer(ctx context.Context, args map[string]an
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/requests", args)
 }
 
-func (s *Server) handleListIncomingRequests(ctx context.Context, _ map[string]any) (any, error) {
-	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/requests/incoming", nil)
+func (s *Server) handleListIncomingRequests(ctx context.Context, args map[string]any) (any, error) {
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/requests/incoming"+paginationQuery(args, ""), nil)
 }
 
-func (s *Server) handleListSentRequests(ctx context.Context, _ map[string]any) (any, error) {
-	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/requests/sent", nil)
+func (s *Server) handleListSentRequests(ctx context.Context, args map[string]any) (any, error) {
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/requests/sent"+paginationQuery(args, ""), nil)
 }
 
 func (s *Server) handleGetAuditSummary(ctx context.Context, args map[string]any) (any, error) {
-	path := "/v1/audit/summary"
-	if since := stringArg(args, "since"); since != "" {
-		path += "?since=" + since
-	}
-	return s.callAuthedJSON(ctx, http.MethodGet, path, nil)
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/audit/summary"+paginationQuery(args, stringArg(args, "since")), nil)
 }
 
 func (s *Server) handleRespondToRequest(ctx context.Context, args map[string]any) (any, error) {
@@ -356,8 +377,8 @@ func (s *Server) handleRespondToRequest(ctx context.Context, args map[string]any
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/requests/"+requestID+"/respond", body)
 }
 
-func (s *Server) handleListPendingApprovals(ctx context.Context, _ map[string]any) (any, error) {
-	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/approvals", nil)
+func (s *Server) handleListPendingApprovals(ctx context.Context, args map[string]any) (any, error) {
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/approvals"+paginationQuery(args, ""), nil)
 }
 
 func (s *Server) handleResolveApproval(ctx context.Context, args map[string]any) (any, error) {
@@ -385,15 +406,21 @@ func (s *Server) handleResendVerificationEmail(ctx context.Context, _ map[string
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/agents/resend-verification", nil)
 }
 
-func (s *Server) handleRotateInviteToken(ctx context.Context, _ map[string]any) (any, error) {
+func (s *Server) handleRotateInviteToken(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/rotate-invite-token", nil)
 }
 
-func (s *Server) handleListPendingAgents(ctx context.Context, _ map[string]any) (any, error) {
-	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/orgs/pending-agents", nil)
+func (s *Server) handleListPendingAgents(ctx context.Context, args map[string]any) (any, error) {
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/orgs/pending-agents"+paginationQuery(args, ""), nil)
 }
 
 func (s *Server) handleReviewAgent(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
 	agentID := stringArg(args, "agent_id")
 	if agentID == "" {
 		return nil, fmt.Errorf("agent_id is required")
@@ -407,6 +434,35 @@ func (s *Server) handleReviewAgent(ctx context.Context, args map[string]any) (an
 		"reason":   stringArg(args, "reason"),
 	}
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/agents/"+agentID+"/review", body)
+}
+
+// paginationQuery builds a query string with optional limit, cursor, and a
+// pre-existing since parameter (may be empty). The returned string is either
+// empty or starts with "?".
+func paginationQuery(args map[string]any, since string) string {
+	params := ""
+	add := func(k, v string) {
+		if params == "" {
+			params = "?" + k + "=" + v
+		} else {
+			params += "&" + k + "=" + v
+		}
+	}
+	if since != "" {
+		add("since", since)
+	}
+	if limit, ok := args["limit"]; ok {
+		switch v := limit.(type) {
+		case float64:
+			add("limit", fmt.Sprintf("%d", int(v)))
+		case int:
+			add("limit", fmt.Sprintf("%d", v))
+		}
+	}
+	if cursor := stringArg(args, "cursor"); cursor != "" {
+		add("cursor", cursor)
+	}
+	return params
 }
 
 func (s *Server) callAuthedJSON(ctx context.Context, method, path string, body any) (any, error) {
@@ -482,8 +538,11 @@ func (s *Server) callJSON(ctx context.Context, method, path string, body any, ac
 	}
 
 	if statusCode >= http.StatusBadRequest {
-		if message := stringArg(payload, "error"); message != "" {
-			return nil, fmt.Errorf("%s", message)
+		if errCode := stringArg(payload, "error"); errCode != "" {
+			if detail := stringArg(payload, "message"); detail != "" {
+				return nil, fmt.Errorf("%s: %s", errCode, detail)
+			}
+			return nil, fmt.Errorf("%s", errCode)
 		}
 		return nil, fmt.Errorf("HTTP %d", statusCode)
 	}

@@ -148,13 +148,13 @@ func TestToolValidation_MissingRequired(t *testing.T) {
 		want string
 	}{
 		{"get_query_result", map[string]any{}, "query_id is required"},
-		{"revoke_permission", map[string]any{}, "policy_grant_id is required"},
+		{"revoke_permission", map[string]any{"confirm": true}, "policy_grant_id is required"},
 		{"submit_correction", map[string]any{}, "artifact_id is required"},
 		{"respond_to_request", map[string]any{}, "request_id is required"},
 		{"resolve_approval", map[string]any{}, "approval_id is required"},
 		{"verify_email", map[string]any{}, "code is required"},
-		{"review_agent", map[string]any{}, "agent_id is required"},
-		{"review_agent", map[string]any{"agent_id": "agent_123"}, "decision is required"},
+		{"review_agent", map[string]any{"confirm": true}, "agent_id is required"},
+		{"review_agent", map[string]any{"confirm": true, "agent_id": "agent_123"}, "decision is required"},
 	}
 
 	for _, tc := range cases {

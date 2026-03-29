@@ -21,10 +21,11 @@ type Client struct {
 }
 
 type RegisterChallengeResponse struct {
-	ChallengeID string    `json:"challenge_id"`
-	Challenge   string    `json:"challenge"`
-	Algorithm   string    `json:"algorithm"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	ChallengeID      string    `json:"challenge_id"`
+	Challenge        string    `json:"challenge"`
+	Algorithm        string    `json:"algorithm"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	FirstInviteToken string    `json:"first_invite_token,omitempty"`
 }
 
 type RegisterResponse struct {
@@ -121,8 +122,11 @@ func (c *Client) doJSON(ctx context.Context, method, path, accessToken string, b
 	if resp.StatusCode >= http.StatusBadRequest {
 		var errorPayload map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errorPayload)
-		if message, _ := errorPayload["error"].(string); strings.TrimSpace(message) != "" {
-			return fmt.Errorf("%s", message)
+		if errCode, _ := errorPayload["error"].(string); strings.TrimSpace(errCode) != "" {
+			if detail, _ := errorPayload["message"].(string); strings.TrimSpace(detail) != "" {
+				return fmt.Errorf("%s: %s", errCode, detail)
+			}
+			return fmt.Errorf("%s", errCode)
 		}
 		return fmt.Errorf("request failed with status %d", resp.StatusCode)
 	}

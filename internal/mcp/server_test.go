@@ -122,6 +122,7 @@ func TestToolDiscoveryAndQueryFlow(t *testing.T) {
 		"allowed_artifact_types": []string{"summary"},
 		"max_sensitivity":        "medium",
 		"allowed_purposes":       []string{"status_check"},
+		"confirm":                true,
 	}))
 
 	peers := mustStructuredContent(t, callTool(t, aliceServer, "list_allowed_peers", map[string]any{}))
@@ -278,6 +279,7 @@ func TestToolFlowRemoteServer(t *testing.T) {
 		"allowed_artifact_types": []string{"summary"},
 		"max_sensitivity":        "low",
 		"allowed_purposes":       []string{"status_check"},
+		"confirm":                true,
 	}))
 
 	queryResp := mustStructuredContent(t, callTool(t, aliceServer, "query_peer_status", map[string]any{
