@@ -293,7 +293,7 @@ func TestRuntimeRunOnceSupersedesUpdatedGitHubArtifact(t *testing.T) {
 		"scope_type":             "project",
 		"scope_ref":              "payments-api",
 		"allowed_artifact_types": []string{"summary"},
-		"max_sensitivity":        "medium",
+		"max_sensitivity":        "high",
 		"allowed_purposes":       []string{"status_check"},
 	})
 
