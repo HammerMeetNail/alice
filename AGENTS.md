@@ -6,6 +6,7 @@ The repository contains a fully runnable coordination server plus product and im
 - `docs/technical-spec.md`: system architecture, scope, and MVP boundaries
 - `docs/threat-model.md`: security goals, trust boundaries, and threat analysis
 - `docs/implementation-plan.md`: current implementation status, encoded assumptions, and the next recommended steps
+- `docs/roadmap.md`: tracked work items organized by priority
 - `cmd/server/`: coordination server HTTP entrypoint
 - `cmd/mcp-server/`: stdio MCP entrypoint for Claude Code and OpenCode; includes a built-in local git tracker that silently publishes status artifacts when `ALICE_TRACK_REPOS` is set
 - `cmd/edge-agent/`: per-user edge runtime with four operating modes: default poll-and-publish, `-bootstrap-connector` (OAuth PKCE), `-register-watches` (provider-side push channel setup), and `-serve-webhooks` (webhook intake server)
