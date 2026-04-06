@@ -17,7 +17,7 @@ Tracked work items for alice, organized by priority.
 - [ ] Rich org graph (manager relationships, team membership)
 - [x] `VerificationMode` management API (`POST /v1/orgs/verification-mode`)
 - [ ] Operator phase (safe execution of approved low-risk actions)
-- [ ] Field-level artifact redaction
+- [x] Field-level artifact redaction
 - [ ] Advanced risk policy engine
 - [x] Fine-grained audit queries (filter by event kind, actor, subject)
 - [ ] Admin UI

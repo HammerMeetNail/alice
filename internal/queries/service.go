@@ -105,11 +105,17 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 			continue
 		}
 
+		content := artifact.Content
+		if core.SensitivityAtCeiling(artifact.Sensitivity, matchedGrant.MaxSensitivity) {
+			content = "[content redacted: sensitivity at grant ceiling]"
+			redactions = append(redactions, fmt.Sprintf("artifact:%s: content redacted (sensitivity %q at grant ceiling %q)", artifact.ArtifactID, artifact.Sensitivity, matchedGrant.MaxSensitivity))
+		}
+
 		filtered = append(filtered, core.QueryArtifact{
 			ArtifactID:  artifact.ArtifactID,
 			Type:        artifact.Type,
 			Title:       artifact.Title,
-			Content:     artifact.Content,
+			Content:     content,
 			Sensitivity: artifact.Sensitivity,
 			Confidence:  artifact.Confidence,
 		})

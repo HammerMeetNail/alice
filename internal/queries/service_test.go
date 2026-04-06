@@ -2,6 +2,7 @@ package queries_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,6 +289,84 @@ func TestQueryEvaluate_ExpiredGrant(t *testing.T) {
 	_, err := svc.Evaluate(ctx, query)
 	if err != queries.ErrPermissionDenied {
 		t.Fatalf("expected ErrPermissionDenied for expired grant, got %v", err)
+	}
+}
+
+func TestQueryEvaluate_FieldLevelRedaction_AtCeiling(t *testing.T) {
+	store, fromUserID, toUserID, _ := setupQueryTest(t)
+	ctx := context.Background()
+
+	// Publish a medium-sensitivity artifact
+	now := time.Now().UTC()
+	medArtifact := core.Artifact{
+		ArtifactID:     id.New("artifact"),
+		OwnerUserID:    toUserID,
+		Type:           core.ArtifactTypeSummary,
+		Title:          "Semi-sensitive summary",
+		Content:        "This should be redacted.",
+		Sensitivity:    core.SensitivityMedium,
+		Confidence:     0.85,
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		CreatedAt:      now,
+		SourceRefs:     []core.SourceReference{{SourceSystem: "test", SourceType: "manual", SourceID: "3", ObservedAt: now}},
+	}
+	store.SaveArtifact(ctx, medArtifact)
+
+	fromAgent, _, _ := store.FindAgentByUserID(ctx, fromUserID)
+	toAgent, _, _ := store.FindAgentByUserID(ctx, toUserID)
+
+	// Grant ceiling = medium, so medium artifact is at ceiling → content redacted
+	grant := makeGrant(fromAgent.OrgID, toUserID, fromUserID,
+		[]core.ArtifactType{core.ArtifactTypeSummary}, core.SensitivityMedium,
+		[]core.QueryPurpose{core.QueryPurposeStatusCheck}, "")
+	store.SaveGrant(ctx, grant)
+
+	svc := queries.NewService(store, store, store, store, store)
+	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
+		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
+
+	resp, err := svc.Evaluate(ctx, query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The medium artifact should be included but with redacted content
+	var found bool
+	for _, a := range resp.Artifacts {
+		if a.ArtifactID == medArtifact.ArtifactID {
+			found = true
+			if a.Content != "[content redacted: sensitivity at grant ceiling]" {
+				t.Errorf("expected redacted content, got %q", a.Content)
+			}
+			// Title should still be visible
+			if a.Title != "Semi-sensitive summary" {
+				t.Errorf("expected title preserved, got %q", a.Title)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("medium-sensitivity artifact should be included (with redacted content) when at ceiling")
+	}
+
+	// Redactions should mention this artifact
+	if len(resp.Redactions) == 0 {
+		t.Fatal("expected at least one redaction entry")
+	}
+	foundRedaction := false
+	for _, r := range resp.Redactions {
+		if strings.Contains(r, medArtifact.ArtifactID) && strings.Contains(r, "content redacted") {
+			foundRedaction = true
+		}
+	}
+	if !foundRedaction {
+		t.Errorf("expected redaction entry for artifact %s, got %v", medArtifact.ArtifactID, resp.Redactions)
+	}
+
+	// The low-sensitivity artifact from setup should NOT be redacted (low != ceiling for low)
+	for _, a := range resp.Artifacts {
+		if a.Sensitivity == core.SensitivityLow && a.Content == "[content redacted: sensitivity at grant ceiling]" {
+			t.Error("low-sensitivity artifact should not be redacted when ceiling is medium")
+		}
 	}
 }
 

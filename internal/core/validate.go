@@ -273,6 +273,12 @@ func SensitivityAllowed(actual, ceiling Sensitivity) bool {
 	return sensitivityOrder[actual] <= sensitivityOrder[ceiling]
 }
 
+// SensitivityAtCeiling returns true when the artifact's sensitivity exactly
+// equals the grant ceiling — included but eligible for field-level redaction.
+func SensitivityAtCeiling(actual, ceiling Sensitivity) bool {
+	return sensitivityOrder[actual] == sensitivityOrder[ceiling] && actual != SensitivityLow
+}
+
 var riskLevelOrder = map[RiskLevel]int{
 	RiskLevelL0: 0,
 	RiskLevelL1: 1,
