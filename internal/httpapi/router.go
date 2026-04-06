@@ -15,6 +15,7 @@ import (
 	"alice/internal/agents"
 	"alice/internal/app/services"
 	"alice/internal/approvals"
+	"alice/internal/audit"
 	"alice/internal/core"
 	"alice/internal/id"
 	"alice/internal/queries"
@@ -112,6 +113,7 @@ func (r *router) routes() {
 	r.mux.Handle("POST /v1/approvals/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleResolveApproval))))
 	r.mux.Handle("GET /v1/audit/summary", r.requireVerifiedAuth(http.HandlerFunc(r.handleAuditSummary)))
 	r.mux.Handle("POST /v1/orgs/rotate-invite-token", r.requireVerifiedAuth(http.HandlerFunc(r.handleRotateInviteToken)))
+	r.mux.Handle("POST /v1/orgs/verification-mode", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleUpdateVerificationMode))))
 	r.mux.Handle("GET /v1/orgs/pending-agents", r.requireVerifiedAuth(http.HandlerFunc(r.handleListPendingAgents)))
 	r.mux.Handle("POST /v1/orgs/agents/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleReviewAgent))))
 }
@@ -653,7 +655,11 @@ func (r *router) handleAuditSummary(w http.ResponseWriter, req *http.Request) {
 	}
 
 	limit, offset := parsePagination(req)
-	events, err := r.services.Audit.Summary(req.Context(), agent.AgentID, since, limit, offset)
+	events, err := r.services.Audit.Summary(req.Context(), agent.AgentID, since, limit, offset, audit.SummaryFilter{
+		EventKind:   req.URL.Query().Get("event_kind"),
+		SubjectType: req.URL.Query().Get("subject_type"),
+		Decision:    req.URL.Query().Get("decision"),
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load audit summary")
 		return
@@ -1014,6 +1020,48 @@ func (r *router) handleRotateInviteToken(w http.ResponseWriter, req *http.Reques
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"invite_token": rawToken,
+	})
+}
+
+type updateVerificationModeRequest struct {
+	VerificationMode string `json:"verification_mode"`
+}
+
+func (r *router) handleUpdateVerificationMode(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	var input updateVerificationModeRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeDecodeError(w, err)
+		return
+	}
+
+	org, err := r.services.Agents.UpdateVerificationMode(req.Context(), agent, input.VerificationMode)
+	if err != nil {
+		switch {
+		case errors.Is(err, agents.ErrNotOrgAdmin):
+			writeError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, agents.ErrUnknownAgentOwner):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeServiceError(w, err, "update verification mode failed")
+		}
+		return
+	}
+
+	if _, auditErr := r.services.Audit.Record(req.Context(), "org.verification_mode_updated", "org", agent.OrgID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
+		"verification_mode": org.VerificationMode,
+	}); auditErr != nil {
+		slog.Error("audit record failed", "op", "update_verification_mode", "err", auditErr)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"org_id":            org.OrgID,
+		"verification_mode": org.VerificationMode,
 	})
 }
 

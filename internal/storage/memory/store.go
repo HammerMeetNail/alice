@@ -618,25 +618,35 @@ func (s *Store) AppendAuditEvent(_ context.Context, event core.AuditEvent) (core
 	return event, nil
 }
 
-func (s *Store) ListAuditEvents(_ context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error) {
+func (s *Store) ListAuditEvents(_ context.Context, filter storage.AuditFilter) ([]core.AuditEvent, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	events := make([]core.AuditEvent, 0)
 	for _, event := range s.auditEvents {
-		if !since.IsZero() && event.CreatedAt.Before(since) {
+		if !filter.Since.IsZero() && event.CreatedAt.Before(filter.Since) {
 			continue
 		}
-		if agentID == "" || event.ActorAgentID == agentID || event.TargetAgentID == agentID {
-			events = append(events, event)
+		if filter.AgentID != "" && event.ActorAgentID != filter.AgentID && event.TargetAgentID != filter.AgentID {
+			continue
 		}
+		if filter.EventKind != "" && event.EventKind != filter.EventKind {
+			continue
+		}
+		if filter.SubjectType != "" && event.SubjectType != filter.SubjectType {
+			continue
+		}
+		if filter.Decision != "" && event.Decision != filter.Decision {
+			continue
+		}
+		events = append(events, event)
 	}
 
 	sort.SliceStable(events, func(i, j int) bool {
 		return events[i].CreatedAt.Before(events[j].CreatedAt)
 	})
 
-	return pageSlice(events, limit, offset), nil
+	return pageSlice(events, filter.Limit, filter.Offset), nil
 }
 
 // --- EmailVerificationRepository ---

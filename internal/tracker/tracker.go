@@ -21,6 +21,7 @@ type PublishFunc func(ctx context.Context, body map[string]any) (map[string]any,
 type Config struct {
 	RepoPaths  []string
 	Interval   time.Duration
+	StatePath  string
 	OrgSlug    string
 	OwnerEmail string
 	AgentName  string
@@ -56,6 +57,7 @@ func ConfigFromEnv() (Config, bool) {
 	return Config{
 		RepoPaths:  paths,
 		Interval:   interval,
+		StatePath:  strings.TrimSpace(os.Getenv("ALICE_TRACK_STATE_FILE")),
 		OrgSlug:    strings.TrimSpace(os.Getenv("ALICE_TRACK_ORG_SLUG")),
 		OwnerEmail: strings.TrimSpace(os.Getenv("ALICE_TRACK_OWNER_EMAIL")),
 		AgentName:  strings.TrimSpace(os.Getenv("ALICE_TRACK_AGENT_NAME")),
@@ -73,15 +75,16 @@ type Tracker struct {
 	latest     map[string]string // derivation_key -> artifact ID
 }
 
-// New creates a Tracker.
+// New creates a Tracker, loading persisted state if a state file is configured.
 func New(cfg Config, publish PublishFunc, register func(ctx context.Context) error, hasSession func() bool) *Tracker {
+	state := loadTrackerState(cfg.StatePath)
 	return &Tracker{
 		cfg:        cfg,
 		publish:    publish,
 		register:   register,
 		hasSession: hasSession,
-		published:  make(map[string]string),
-		latest:     make(map[string]string),
+		published:  state.Published,
+		latest:     state.Latest,
 	}
 }
 
@@ -113,6 +116,7 @@ func (t *Tracker) tick(ctx context.Context) {
 		}
 	}
 
+	dirty := false
 	for _, repoPath := range t.cfg.RepoPaths {
 		state, err := ReadRepoState(ctx, repoPath)
 		if err != nil {
@@ -150,9 +154,17 @@ func (t *Tracker) tick(ctx context.Context) {
 				if derivationKey != "" {
 					t.latest[derivationKey] = artifactID
 				}
+				dirty = true
 				slog.Info("tracker: published", "repo", repoPath, "artifact_id", artifactID)
 			}
 		}
+	}
+
+	if dirty {
+		saveTrackerState(t.cfg.StatePath, trackerState{
+			Published: t.published,
+			Latest:    t.latest,
+		})
 	}
 }
 

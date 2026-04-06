@@ -411,14 +411,14 @@ func TestAppendAuditEvent_ListAuditEvents(t *testing.T) {
 	store.AppendAuditEvent(ctx, recent)
 
 	// Without filter: both returned.
-	all, err := store.ListAuditEvents(ctx, agentID, time.Time{}, 50, 0)
+	all, err := store.ListAuditEvents(ctx, storage.AuditFilter{AgentID: agentID, Limit: 50})
 	if err != nil || len(all) != 2 {
 		t.Fatalf("expected 2 events, got %d err=%v", len(all), err)
 	}
 
 	// With since filter: only recent.
 	since := now.Add(-time.Hour)
-	filtered, err := store.ListAuditEvents(ctx, agentID, since, 50, 0)
+	filtered, err := store.ListAuditEvents(ctx, storage.AuditFilter{AgentID: agentID, Since: since, Limit: 50})
 	if err != nil || len(filtered) != 1 {
 		t.Fatalf("expected 1 event after since filter, got %d err=%v", len(filtered), err)
 	}
@@ -491,15 +491,15 @@ func TestPageSlice_ListAuditEvents_Pagination(t *testing.T) {
 		})
 	}
 
-	page1, _ := store.ListAuditEvents(ctx, agentID, time.Time{}, 2, 0)
+	page1, _ := store.ListAuditEvents(ctx, storage.AuditFilter{AgentID: agentID, Limit: 2, Offset: 0})
 	if len(page1) != 2 {
 		t.Fatalf("page1: expected 2, got %d", len(page1))
 	}
-	page2, _ := store.ListAuditEvents(ctx, agentID, time.Time{}, 2, 2)
+	page2, _ := store.ListAuditEvents(ctx, storage.AuditFilter{AgentID: agentID, Limit: 2, Offset: 2})
 	if len(page2) != 2 {
 		t.Fatalf("page2: expected 2, got %d", len(page2))
 	}
-	page3, _ := store.ListAuditEvents(ctx, agentID, time.Time{}, 2, 4)
+	page3, _ := store.ListAuditEvents(ctx, storage.AuditFilter{AgentID: agentID, Limit: 2, Offset: 4})
 	if len(page3) != 1 {
 		t.Fatalf("page3: expected 1, got %d", len(page3))
 	}

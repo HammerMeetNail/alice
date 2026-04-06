@@ -135,6 +135,39 @@ func (s *Service) BeginRegistration(ctx context.Context, orgSlug, ownerEmail, ag
 	}, nil
 }
 
+// UpdateVerificationMode changes the org's verification mode. The caller must be an org admin.
+func (s *Service) UpdateVerificationMode(ctx context.Context, agent core.Agent, mode string) (core.Organization, error) {
+	if err := core.ValidateVerificationMode(mode); err != nil {
+		return core.Organization{}, err
+	}
+
+	user, ok, err := s.users.FindUserByID(ctx, agent.OwnerUserID)
+	if err != nil {
+		return core.Organization{}, fmt.Errorf("find owner user: %w", err)
+	}
+	if !ok {
+		return core.Organization{}, ErrUnknownAgentOwner
+	}
+	if user.Role != core.UserRoleAdmin {
+		return core.Organization{}, ErrNotOrgAdmin
+	}
+
+	if err := s.orgs.UpdateOrgVerificationMode(ctx, agent.OrgID, mode); err != nil {
+		return core.Organization{}, fmt.Errorf("update org verification mode: %w", err)
+	}
+
+	org, ok, err := s.orgs.FindOrganizationByID(ctx, agent.OrgID)
+	if err != nil {
+		return core.Organization{}, fmt.Errorf("find org after update: %w", err)
+	}
+	if !ok {
+		return core.Organization{}, fmt.Errorf("org not found after update")
+	}
+
+	slog.Info("org verification mode updated", "org_id", agent.OrgID, "mode", mode)
+	return org, nil
+}
+
 // RotateInviteToken generates a new invite token for an org, replacing the previous one.
 // The caller's agent must belong to the org.
 func (s *Service) RotateInviteToken(ctx context.Context, orgID, callerAgentID string) (string, error) {

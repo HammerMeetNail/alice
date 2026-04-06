@@ -231,6 +231,37 @@ func ValidateApprovalResolutionInput(approvalID string, decision ApprovalState) 
 	}
 }
 
+// validVerificationComponents is the set of recognised verification mode components.
+var validVerificationComponents = map[string]bool{
+	"email_otp":      true,
+	"invite_token":   true,
+	"admin_approval": true,
+}
+
+// ValidateVerificationMode ensures the mode string contains only valid
+// comma-separated components from {email_otp, invite_token, admin_approval}.
+func ValidateVerificationMode(mode string) error {
+	trimmed := strings.TrimSpace(mode)
+	if trimmed == "" {
+		return invalid("verification_mode is required")
+	}
+	seen := make(map[string]bool)
+	for _, part := range strings.Split(trimmed, ",") {
+		component := strings.TrimSpace(part)
+		if component == "" {
+			return invalidf("verification_mode contains empty component")
+		}
+		if !validVerificationComponents[component] {
+			return invalidf("invalid verification_mode component %q", component)
+		}
+		if seen[component] {
+			return invalidf("duplicate verification_mode component %q", component)
+		}
+		seen[component] = true
+	}
+	return nil
+}
+
 var sensitivityOrder = map[Sensitivity]int{
 	SensitivityLow:        0,
 	SensitivityMedium:     1,

@@ -716,6 +716,7 @@ Set these on the `cmd/mcp-server` process (per user machine).
 | `ALICE_TRACK_ORG_SLUG` | _(none)_ | Org slug for auto-registration when the tracker starts. Not needed if `ALICE_MCP_ACCESS_TOKEN` is set. |
 | `ALICE_TRACK_OWNER_EMAIL` | _(none)_ | Owner email for auto-registration when the tracker starts. |
 | `ALICE_TRACK_AGENT_NAME` | _(none)_ | Agent name for auto-registration when the tracker starts. |
+| `ALICE_TRACK_STATE_FILE` | _(none)_ | Path to a JSON file for persisting tracker state between restarts. Prevents redundant re-publishes. |
 
 ## Edge agent environment variables
 

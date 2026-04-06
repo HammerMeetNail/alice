@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"time"
 
 	"alice/internal/core"
+	"alice/internal/storage"
 )
 
 func (s *Store) AppendAuditEvent(ctx context.Context, event core.AuditEvent) (core.AuditEvent, error) {
@@ -47,10 +47,10 @@ func (s *Store) AppendAuditEvent(ctx context.Context, event core.AuditEvent) (co
 	return event, nil
 }
 
-func (s *Store) ListAuditEvents(ctx context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error) {
+func (s *Store) ListAuditEvents(ctx context.Context, filter storage.AuditFilter) ([]core.AuditEvent, error) {
 	var sinceArg any
-	if !since.IsZero() {
-		sinceArg = since
+	if !filter.Since.IsZero() {
+		sinceArg = filter.Since
 	}
 
 	rows, err := s.db.QueryContext(
@@ -60,11 +60,17 @@ func (s *Store) ListAuditEvents(ctx context.Context, agentID string, since time.
 		FROM audit_events
 		WHERE ($1 = '' OR actor_agent_id = $1 OR target_agent_id = $1)
 		  AND ($2::timestamptz IS NULL OR created_at >= $2)
+		  AND ($5 = '' OR event_kind = $5)
+		  AND ($6 = '' OR subject_type = $6)
+		  AND ($7 = '' OR decision = $7)
 		ORDER BY created_at ASC
 		LIMIT $3 OFFSET $4`,
-		agentID,
+		filter.AgentID,
 		sinceArg,
-		limit, offset,
+		filter.Limit, filter.Offset,
+		filter.EventKind,
+		filter.SubjectType,
+		filter.Decision,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query audit events: %w", err)

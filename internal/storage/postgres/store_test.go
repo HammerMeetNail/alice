@@ -315,7 +315,7 @@ func TestAppendAuditEvent_List_Postgres(t *testing.T) {
 	}
 
 	since := now.Add(-time.Hour)
-	events, err := store.ListAuditEvents(ctx, agentID, since, 50, 0)
+	events, err := store.ListAuditEvents(ctx, storage.AuditFilter{AgentID: agentID, Since: since, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}

@@ -106,9 +106,21 @@ type EmailVerificationRepository interface {
 	IncrementVerificationAttempts(ctx context.Context, verificationID string) error
 }
 
+// AuditFilter groups the parameters accepted by ListAuditEvents.
+// Non-empty string fields are combined as AND conditions.
+type AuditFilter struct {
+	AgentID     string
+	Since       time.Time
+	EventKind   string
+	SubjectType string
+	Decision    string
+	Limit       int
+	Offset      int
+}
+
 type AuditRepository interface {
 	AppendAuditEvent(ctx context.Context, event core.AuditEvent) (core.AuditEvent, error)
-	ListAuditEvents(ctx context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error)
+	ListAuditEvents(ctx context.Context, filter AuditFilter) ([]core.AuditEvent, error)
 }
 
 // StoreTx is the combined repository surface available within a transaction scope.

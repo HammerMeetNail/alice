@@ -144,9 +144,12 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			Name:        "get_audit_summary",
 			Description: "Retrieve a summary of recent audit events for the authenticated agent.",
 			InputSchema: objectSchema(map[string]any{
-				"since":  stringSchema("Optional RFC3339 timestamp to filter events after this time."),
-				"limit":  map[string]any{"type": "integer", "description": "Max items to return."},
-				"cursor": stringSchema("Opaque pagination cursor from a previous response."),
+				"since":        stringSchema("Optional RFC3339 timestamp to filter events after this time."),
+				"event_kind":   stringSchema("Optional event kind filter (e.g. agent.registered, query.evaluated)."),
+				"subject_type": stringSchema("Optional subject type filter (e.g. query, request, artifact)."),
+				"decision":     stringSchema("Optional decision filter (e.g. approved, denied, allowed)."),
+				"limit":        map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor":       stringSchema("Opaque pagination cursor from a previous response."),
 			}),
 			Handler: s.handleGetAuditSummary,
 		},
@@ -219,6 +222,15 @@ func (s *Server) registerTools() map[string]toolDefinition {
 				"confirm":  map[string]any{"type": "boolean", "description": "Set true to confirm you want to approve or reject this agent."},
 			}),
 			Handler: s.handleReviewAgent,
+		},
+		"update_verification_mode": {
+			Name:        "update_verification_mode",
+			Description: "Update the org's verification mode. Caller must be an org admin.",
+			InputSchema: objectSchema(map[string]any{
+				"verification_mode": stringSchema("Comma-separated verification modes: email_otp, invite_token, admin_approval."),
+				"confirm":           map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleUpdateVerificationMode,
 		},
 	}
 }
@@ -361,7 +373,17 @@ func (s *Server) handleListSentRequests(ctx context.Context, args map[string]any
 }
 
 func (s *Server) handleGetAuditSummary(ctx context.Context, args map[string]any) (any, error) {
-	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/audit/summary"+paginationQuery(args, stringArg(args, "since")), nil)
+	q := paginationQuery(args, stringArg(args, "since"))
+	for _, key := range []string{"event_kind", "subject_type", "decision"} {
+		if v := stringArg(args, key); v != "" {
+			if q == "" {
+				q = "?" + key + "=" + v
+			} else {
+				q += "&" + key + "=" + v
+			}
+		}
+	}
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/audit/summary"+q, nil)
 }
 
 func (s *Server) handleRespondToRequest(ctx context.Context, args map[string]any) (any, error) {
@@ -404,6 +426,19 @@ func (s *Server) handleVerifyEmail(ctx context.Context, args map[string]any) (an
 
 func (s *Server) handleResendVerificationEmail(ctx context.Context, _ map[string]any) (any, error) {
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/agents/resend-verification", nil)
+}
+
+func (s *Server) handleUpdateVerificationMode(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
+	mode := stringArg(args, "verification_mode")
+	if mode == "" {
+		return nil, fmt.Errorf("verification_mode is required")
+	}
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/verification-mode", map[string]any{
+		"verification_mode": mode,
+	})
 }
 
 func (s *Server) handleRotateInviteToken(ctx context.Context, args map[string]any) (any, error) {

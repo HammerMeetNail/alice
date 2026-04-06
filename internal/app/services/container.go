@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"alice/internal/agents"
+	"alice/internal/audit"
 	"alice/internal/core"
 )
 
@@ -19,6 +20,7 @@ type AgentService interface {
 	VerifyEmail(ctx context.Context, agentID, code string) error
 	ResendVerificationEmail(ctx context.Context, agentID string) error
 	RotateInviteToken(ctx context.Context, orgID, callerAgentID string) (string, error)
+	UpdateVerificationMode(ctx context.Context, agent core.Agent, mode string) (core.Organization, error)
 	ListPendingAgentApprovals(ctx context.Context, orgID, callerAgentID string, limit, offset int) ([]core.AgentApproval, error)
 	ReviewAgentApproval(ctx context.Context, orgID, targetAgentID, callerAgentID, decision, reason string) error
 }
@@ -54,7 +56,7 @@ type ApprovalService interface {
 
 type AuditService interface {
 	Record(ctx context.Context, eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision string, riskLevel core.RiskLevel, policyBasis []string, metadata map[string]any) (core.AuditEvent, error)
-	Summary(ctx context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error)
+	Summary(ctx context.Context, agentID string, since time.Time, limit, offset int, filter audit.SummaryFilter) ([]core.AuditEvent, error)
 }
 
 type Container struct {

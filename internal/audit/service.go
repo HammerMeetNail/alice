@@ -10,6 +10,13 @@ import (
 	"alice/internal/storage"
 )
 
+// SummaryFilter holds optional filter criteria for the audit summary.
+type SummaryFilter struct {
+	EventKind   string
+	SubjectType string
+	Decision    string
+}
+
 type Service struct {
 	repo storage.AuditRepository
 }
@@ -40,6 +47,14 @@ func (s *Service) Record(ctx context.Context, eventKind, subjectType, subjectID,
 	return saved, nil
 }
 
-func (s *Service) Summary(ctx context.Context, agentID string, since time.Time, limit, offset int) ([]core.AuditEvent, error) {
-	return s.repo.ListAuditEvents(ctx, agentID, since, limit, offset)
+func (s *Service) Summary(ctx context.Context, agentID string, since time.Time, limit, offset int, filter SummaryFilter) ([]core.AuditEvent, error) {
+	return s.repo.ListAuditEvents(ctx, storage.AuditFilter{
+		AgentID:     agentID,
+		Since:       since,
+		EventKind:   filter.EventKind,
+		SubjectType: filter.SubjectType,
+		Decision:    filter.Decision,
+		Limit:       limit,
+		Offset:      offset,
+	})
 }
