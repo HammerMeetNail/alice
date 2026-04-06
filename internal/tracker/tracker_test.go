@@ -53,7 +53,7 @@ func TestTracker_Tick_PublishesArtifact(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	tr.tick(ctx)
+	tr.Tick(ctx)
 
 	mu.Lock()
 	count := len(published)
@@ -103,9 +103,9 @@ func TestTracker_Tick_DeduplicatesUnchangedState(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	tr.tick(ctx)
-	tr.tick(ctx)
-	tr.tick(ctx)
+	tr.Tick(ctx)
+	tr.Tick(ctx)
+	tr.Tick(ctx)
 
 	if callCount != 1 {
 		t.Errorf("expected 1 publish call (deduped), got %d", callCount)
@@ -151,11 +151,11 @@ func TestTracker_Tick_RepublishesOnChange(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	tr.tick(ctx)
+	tr.Tick(ctx)
 
 	// Modify a file to change git state
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644)
-	tr.tick(ctx)
+	tr.Tick(ctx)
 
 	if artifactSeq != 2 {
 		t.Errorf("expected 2 publish calls after state change, got %d", artifactSeq)
@@ -181,7 +181,7 @@ func TestTracker_Tick_SkipsWhenNoSession(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	tr.tick(ctx)
+	tr.Tick(ctx)
 
 	if callCount != 0 {
 		t.Errorf("expected 0 publish calls when registration fails, got %d", callCount)
@@ -229,10 +229,10 @@ func TestTracker_Tick_SupersedesOnChange(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	tr.tick(ctx)
+	tr.Tick(ctx)
 
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644)
-	tr.tick(ctx)
+	tr.Tick(ctx)
 
 	if len(bodies) != 2 {
 		t.Fatalf("expected 2 publish calls, got %d", len(bodies))

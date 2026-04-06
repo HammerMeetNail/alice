@@ -25,7 +25,7 @@ Tracked work items for alice, organized by priority.
 ## quality / operational
 
 - [ ] Test coverage to 80% threshold
-- [ ] E2E tracker integration test
+- [x] E2E tracker integration test
 - [x] Drop unused `capabilities` column from PostgreSQL
 - [ ] Dedicated audit event sink (beyond slog)
 - [ ] CORS/CSRF (when a browser-facing surface exists)

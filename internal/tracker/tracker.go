@@ -92,7 +92,7 @@ func New(cfg Config, publish PublishFunc, register func(ctx context.Context) err
 func (t *Tracker) Run(ctx context.Context) {
 	slog.Info("tracker started", "repos", t.cfg.RepoPaths, "interval", t.cfg.Interval)
 
-	t.tick(ctx)
+	t.Tick(ctx)
 
 	ticker := time.NewTicker(t.cfg.Interval)
 	defer ticker.Stop()
@@ -103,12 +103,12 @@ func (t *Tracker) Run(ctx context.Context) {
 			slog.Info("tracker stopped")
 			return
 		case <-ticker.C:
-			t.tick(ctx)
+			t.Tick(ctx)
 		}
 	}
 }
 
-func (t *Tracker) tick(ctx context.Context) {
+func (t *Tracker) Tick(ctx context.Context) {
 	if !t.hasSession() {
 		if err := t.register(ctx); err != nil {
 			slog.Warn("tracker: registration failed, skipping tick", "err", err)

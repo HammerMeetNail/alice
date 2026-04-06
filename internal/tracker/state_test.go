@@ -120,7 +120,7 @@ func TestTracker_PersistsState(t *testing.T) {
 		func(ctx context.Context) error { return nil },
 		func() bool { return true },
 	)
-	t1.tick(context.Background())
+	t1.Tick(context.Background())
 
 	if callCount != 1 {
 		t.Fatalf("expected 1 publish, got %d", callCount)
@@ -133,7 +133,7 @@ func TestTracker_PersistsState(t *testing.T) {
 		func(ctx context.Context) error { return nil },
 		func() bool { return true },
 	)
-	t2.tick(context.Background())
+	t2.Tick(context.Background())
 
 	if callCount != 1 {
 		t.Errorf("expected no re-publish after state reload, got %d total", callCount)
