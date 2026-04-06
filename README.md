@@ -10,6 +10,7 @@ Privacy-first coordination platform for personal AI agents.
 - [Quick start: single user with Claude Code](#quick-start-single-user-with-claude-code)
 - [Multi-user setup](#multi-user-setup)
 - [Connecting with OpenCode](#connecting-with-opencode)
+- [Local git tracking](#local-git-tracking)
 - [Edge agent: connecting real data sources](#edge-agent-connecting-real-data-sources)
 - [Complete two-person workflow](#complete-two-person-workflow)
 - [MCP tool reference](#mcp-tool-reference)
@@ -29,7 +30,7 @@ There are three binaries:
 | Binary | Purpose |
 |---|---|
 | `cmd/server` | Shared HTTP coordination server. Stores agents, artifacts, grants, queries, requests, and audit events. Backed by PostgreSQL or in-memory. |
-| `cmd/mcp-server` | Stdio MCP server for Claude Code / OpenCode. Wraps the full HTTP API as MCP tools. Can run standalone (in-memory) or share a PostgreSQL database with the coordination server so multiple users see the same state. |
+| `cmd/mcp-server` | Stdio MCP server for Claude Code / OpenCode. Wraps the full HTTP API as MCP tools. Can run standalone (in-memory) or share a PostgreSQL database with the coordination server so multiple users see the same state. Includes a built-in local git tracker that silently publishes status artifacts in the background. |
 | `cmd/edge-agent` | Per-user runtime. Connects to GitHub, Jira, and Google Calendar, derives artifacts locally, and publishes them to the coordination server via HTTP. |
 
 For single-user testing, `cmd/mcp-server` alone is enough — it runs entirely in memory. For two or more users communicating, both MCP server instances point at the same PostgreSQL database, or each user runs an edge agent against the shared coordination server.
@@ -189,6 +190,40 @@ Add alice to OpenCode's MCP configuration. OpenCode stores its config at `~/.con
 ```
 
 After restarting OpenCode, the alice tools appear in the tool list. The registration and usage flow is identical to Claude Code — ask the assistant to call `register_agent` with your details to begin.
+
+---
+
+## Local git tracking
+
+The MCP server includes a built-in tracker that silently monitors local git repositories and publishes status artifacts to the coordination server. Enable it by setting `ALICE_TRACK_REPOS` to a comma-separated list of repository paths.
+
+### With Claude Code (remote mode)
+
+```sh
+claude mcp add alice \
+  -e ALICE_SERVER_URL=http://localhost:8080 \
+  -e ALICE_TRACK_REPOS=/path/to/repo1,/path/to/repo2 \
+  -e ALICE_TRACK_INTERVAL=5m \
+  -e ALICE_TRACK_ORG_SLUG=myteam \
+  -e ALICE_TRACK_OWNER_EMAIL=you@company.com \
+  -e ALICE_TRACK_AGENT_NAME="my-tracker" \
+  -- /path/to/alice-mcp-server
+```
+
+### With Claude Code (embedded mode)
+
+```sh
+claude mcp add alice \
+  -e ALICE_TRACK_REPOS=/path/to/repo \
+  -e ALICE_TRACK_ORG_SLUG=myteam \
+  -e ALICE_TRACK_OWNER_EMAIL=you@company.com \
+  -e ALICE_TRACK_AGENT_NAME="my-tracker" \
+  -- /path/to/alice-mcp-server
+```
+
+The tracker reads the current branch, recent commits, modified files, and staged files from each repository. When the git state changes, it publishes a new `status_delta` artifact that supersedes the previous one. Unchanged state is deduplicated and not re-published.
+
+If the user has already registered via the `register_agent` MCP tool, the tracker reuses that session. Otherwise, it auto-registers using the `ALICE_TRACK_*` environment variables.
 
 ---
 
@@ -676,6 +711,11 @@ Set these on the `cmd/mcp-server` process (per user machine).
 | `ALICE_MCP_ACCESS_TOKEN` | _(none)_ | Pre-load an existing bearer token into the MCP server on startup, skipping the registration step. |
 | `ALICE_DATABASE_URL` | _(none)_ | PostgreSQL connection string. Only needed when running the MCP server in standalone mode (without `ALICE_SERVER_URL`) and you want durable storage shared across MCP server instances. |
 | `ALICE_AUTH_TOKEN_TTL` | `15m` | Token TTL in embedded (local) mode only. In remote mode, set this on the coordination server instead. |
+| `ALICE_TRACK_REPOS` | _(none)_ | Comma-separated list of local git repository paths to track. When set, the MCP server periodically reads git state and publishes status artifacts. |
+| `ALICE_TRACK_INTERVAL` | `5m` | How often the tracker publishes local git status. Accepts Go duration strings (e.g. `2m`, `10m`). |
+| `ALICE_TRACK_ORG_SLUG` | _(none)_ | Org slug for auto-registration when the tracker starts. Not needed if `ALICE_MCP_ACCESS_TOKEN` is set. |
+| `ALICE_TRACK_OWNER_EMAIL` | _(none)_ | Owner email for auto-registration when the tracker starts. |
+| `ALICE_TRACK_AGENT_NAME` | _(none)_ | Agent name for auto-registration when the tracker starts. |
 
 ## Edge agent environment variables
 

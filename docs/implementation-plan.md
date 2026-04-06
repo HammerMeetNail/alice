@@ -22,6 +22,7 @@ The repository is no longer design-only. The current implementation includes:
 - an in-memory storage layer that remains available as a fallback when `ALICE_DATABASE_URL` is not set
 - a signed registration challenge flow with short-lived bearer-token issuance for agents
 - an MCP wrapper layer that maps the current tool surface onto the existing HTTP route contracts
+- a built-in local git tracker in the MCP server process (`internal/tracker/`) that reads local repository state (branch, commits, modified files) and publishes `status_delta` artifacts on a configurable interval with content deduplication and supersedes-chain support; enabled via `ALICE_TRACK_REPOS` environment variable
 - a normalized edge connector event layer shared by fixture and live connector ingestion
 - an edge runtime path that can register, publish artifacts, derive artifacts from GitHub/Jira/calendar fixture files, bootstrap GitHub/Jira/Calendar connectors through a local OAuth loopback callback, persist bootstrapped connector credentials in a dedicated local credential store, optionally encrypt that store with a local key, refresh expired OAuth credentials when refresh tokens are available, poll live GitHub/Jira/Calendar metadata through env-backed token auth, token-file loading, or bootstrapped local credentials, page through multi-response connector APIs, retry transient 429/5xx connector failures with short backoff, accept signed local GitHub `pull_request` webhooks, accept shared-secret Jira issue webhooks, accept shared-secret Google Calendar change notifications that trigger incremental event fetches, persist webhook delivery receipts and Google Calendar channel message numbers to suppress duplicate or replayed webhook deliveries, persist local connector cursor state, persist the latest published artifact ID per logical derivation slot, persist project signal state so blocker-resolution and commitment-completion transitions can supersede stale blocker and commitment artifacts, derive project-level aggregate status/blocker/commitment artifacts plus transition-aware status deltas, retrieve watched query results, and poll incoming requests
 - HTTP routes for:
@@ -445,6 +446,26 @@ Remaining open items:
 2. **`team_scope` / `manager_scope` visibility modes** — require an org graph not yet in scope
 3. **`VerificationMode` management API** — no route currently lets an org admin change their org's `verification_mode` after creation; a `POST /v1/orgs/verification-mode` route and MCP tool would complete the configuration surface
 4. **MCP tool coverage** — `list_pending_agents` and `review_agent` tools were added in step t; confirm `TestToolFlowRemoteServer` exercises them
+
+### step u: local git tracker in MCP server
+
+Status: **complete** (2026-04-06)
+
+**Problem:** The client-side experience required explicit tool calls or a separate edge agent process to publish any status. There was no passive tracking of the user's current work. The MCP server ran silently alongside the LLM session but did not observe or report local development activity.
+
+**What was implemented:**
+
+1. **`internal/tracker/git.go`:** `ReadRepoState` reads local git state by shelling out to `git` via `os/exec`: current branch (`rev-parse --abbrev-ref HEAD`), recent 5 commits (`log --format`), modified files (`diff --name-only`), staged files (`diff --name-only --cached`), untracked files (`ls-files --others --exclude-standard`). All git calls use `exec.CommandContext` for cancellation support.
+
+2. **`internal/tracker/derive.go`:** `DeriveArtifacts` produces a single `status_delta` artifact per repository with structured payload containing branch, commits, modified/staged/untracked files. Sensitivity is `low`, visibility is `explicit_grants_only`. Derivation key follows the edge agent convention (`local_git:<path>`).
+
+3. **`internal/tracker/tracker.go`:** `Tracker` struct with `Run(ctx)` background loop. Wakes on configurable interval (default 5m), reads git state for each configured repo, derives artifacts, deduplicates via SHA-256 content digest (excluding time-varying `SourceRefs`), and publishes new artifacts. Updated artifacts supersede previous ones via `SupersedesArtifactID`. `ConfigFromEnv` reads `ALICE_TRACK_REPOS` (comma-separated paths), `ALICE_TRACK_INTERVAL`, `ALICE_TRACK_ORG_SLUG`, `ALICE_TRACK_OWNER_EMAIL`, `ALICE_TRACK_AGENT_NAME`. The tracker takes a `PublishFunc` and session helpers via function injection for testability.
+
+4. **`internal/mcp/server.go`:** Added `PublishArtifact`, `AutoRegister`, `HasSession` exported methods and `TrackerRegistration` type. These are thin wrappers around existing private methods, providing the interface the tracker needs.
+
+5. **`cmd/mcp-server/main.go`:** `startTracker` function reads env config, constructs tracker, and starts it in a background goroutine. Works in both embedded and remote modes. Shares a root `context.WithCancel` with `ServeStdio` for graceful shutdown.
+
+6. **Tests:** `git_test.go` tests `ReadRepoState` against real temporary git repos (branch, commits, modified files, staged files, non-repo error). `derive_test.go` tests artifact derivation fields and file list truncation. `tracker_test.go` tests publish, deduplication, re-publish on change, supersedes chain, and skip-when-no-session. All tests pass alongside the existing suite.
 
 ### previously completed steps (for reference)
 

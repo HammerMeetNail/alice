@@ -302,6 +302,47 @@ func writeMessage(writer *bufio.Writer, payload any) error {
 	return writer.WriteByte('\n')
 }
 
+// PublishArtifact publishes an artifact via the coordination server.
+func (s *Server) PublishArtifact(ctx context.Context, body map[string]any) (map[string]any, error) {
+	result, err := s.callAuthedJSON(ctx, http.MethodPost, "/v1/artifacts", body)
+	if err != nil {
+		return nil, err
+	}
+	if m, ok := result.(map[string]any); ok {
+		return m, nil
+	}
+	return map[string]any{}, nil
+}
+
+// AutoRegister performs agent registration if no session exists.
+func (s *Server) AutoRegister(ctx context.Context, reg TrackerRegistration) error {
+	if s.getAccessToken() != "" {
+		return nil
+	}
+	_, err := s.handleRegisterAgent(ctx, map[string]any{
+		"org_slug":     reg.OrgSlug,
+		"owner_email":  reg.OwnerEmail,
+		"agent_name":   reg.AgentName,
+		"client_type":  reg.ClientType,
+		"invite_token": reg.InviteToken,
+	})
+	return err
+}
+
+// HasSession reports whether the server holds an authenticated access token.
+func (s *Server) HasSession() bool {
+	return s.getAccessToken() != ""
+}
+
+// TrackerRegistration holds the fields needed for auto-registration.
+type TrackerRegistration struct {
+	OrgSlug     string
+	OwnerEmail  string
+	AgentName   string
+	ClientType  string
+	InviteToken string
+}
+
 func (s *Server) setAccessToken(accessToken string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
