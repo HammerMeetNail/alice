@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"alice/internal/agents"
@@ -108,7 +110,18 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 	queryService := queries.NewService(repos, artifactService, policyService, repos, repos)
 	requestService := requests.NewService(repos, repos, repos)
 	approvalService := approvals.NewService(repos, repos, repos, repos)
-	auditService := audit.NewService(repos)
+
+	var auditSinks []audit.Sink
+	if cfg.AuditLogFile != "" {
+		f, err := os.OpenFile(cfg.AuditLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			slog.Error("failed to open audit log file", "path", cfg.AuditLogFile, "err", err)
+		} else {
+			auditSinks = append(auditSinks, audit.NewJSONSink(f))
+			slog.Info("audit log file configured", "path", cfg.AuditLogFile)
+		}
+	}
+	auditService := audit.NewService(repos, auditSinks...)
 
 	return services.Container{
 		Agents:    agentService,

@@ -27,5 +27,5 @@ Tracked work items for alice, organized by priority.
 - [x] Test coverage to 70% threshold (testable packages, excluding cmd/postgres/app)
 - [x] E2E tracker integration test
 - [x] Drop unused `capabilities` column from PostgreSQL
-- [ ] Dedicated audit event sink (beyond slog)
+- [x] Dedicated audit event sink (NDJSON file sink via `ALICE_AUDIT_LOG_FILE`)
 - [ ] CORS/CSRF (when a browser-facing surface exists)

@@ -26,6 +26,10 @@ type Config struct {
 	// Email OTP settings.
 	EmailOTPTTL         time.Duration
 	EmailOTPMaxAttempts int
+
+	// AuditLogFile is the path to an NDJSON audit log file. When set, all audit
+	// events are written to this file in addition to the database.
+	AuditLogFile string
 }
 
 func FromEnv() Config {
@@ -50,6 +54,8 @@ func FromEnv() Config {
 
 		EmailOTPTTL:         durationFromEnv("ALICE_EMAIL_OTP_TTL", 10*time.Minute),
 		EmailOTPMaxAttempts: intFromEnv("ALICE_EMAIL_OTP_MAX_ATTEMPTS", 5),
+
+		AuditLogFile: strings.TrimSpace(os.Getenv("ALICE_AUDIT_LOG_FILE")),
 	}
 }
 

@@ -1,7 +1,10 @@
 package audit_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,5 +137,56 @@ func TestSummary_FilterByEventKind(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 agent event, got %d", len(events))
+	}
+}
+
+func TestJSONSink(t *testing.T) {
+	var buf bytes.Buffer
+	sink := audit.NewJSONSink(&buf)
+
+	event := core.AuditEvent{
+		AuditEventID: "audit_test",
+		EventKind:    "test.event",
+		OrgID:        "org_1",
+		ActorAgentID: "agent_1",
+		Decision:     "allowed",
+		CreatedAt:    time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC),
+	}
+
+	if err := sink.Emit(context.Background(), event); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "test.event") {
+		t.Fatalf("expected event kind in output, got %q", output)
+	}
+
+	var decoded core.AuditEvent
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("decode NDJSON line: %v", err)
+	}
+	if decoded.AuditEventID != "audit_test" {
+		t.Fatalf("AuditEventID mismatch: %s", decoded.AuditEventID)
+	}
+}
+
+func TestRecord_WithSink(t *testing.T) {
+	var buf bytes.Buffer
+	sink := audit.NewJSONSink(&buf)
+	svc := audit.NewService(memory.New(), sink)
+	ctx := context.Background()
+
+	_, err := svc.Record(ctx, "test.event", "query", id.New("query"),
+		id.New("org"), id.New("agent"), "", "allowed", core.RiskLevelL0, nil, nil)
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	if buf.Len() == 0 {
+		t.Fatal("expected sink to receive event")
+	}
+	if !strings.Contains(buf.String(), "test.event") {
+		t.Fatalf("expected event kind in sink output")
 	}
 }
