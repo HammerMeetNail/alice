@@ -504,3 +504,256 @@ func TestPageSlice_ListAuditEvents_Pagination(t *testing.T) {
 		t.Fatalf("page3: expected 1, got %d", len(page3))
 	}
 }
+
+func TestFindOrgBySlug(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	org := core.Organization{OrgID: id.New("org"), Slug: "test-org", Name: "Test Org"}
+	store.UpsertOrganization(ctx, org)
+
+	found, err := store.FindOrgBySlug(ctx, "test-org")
+	if err != nil {
+		t.Fatalf("FindOrgBySlug: err=%v", err)
+	}
+	if found.OrgID != org.OrgID {
+		t.Fatalf("OrgID mismatch: %s vs %s", found.OrgID, org.OrgID)
+	}
+
+	_, err = store.FindOrgBySlug(ctx, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent slug")
+	}
+}
+
+func TestSaveAndFindArtifact(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	now := time.Now().UTC()
+	artifact := core.Artifact{
+		ArtifactID:     id.New("artifact"),
+		OwnerUserID:    id.New("user"),
+		OrgID:          id.New("org"),
+		Type:           core.ArtifactTypeSummary,
+		Title:          "Test artifact",
+		Content:        "Content here",
+		Sensitivity:    core.SensitivityLow,
+		Confidence:     0.9,
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		CreatedAt:      now,
+		SourceRefs: []core.SourceReference{
+			{SourceSystem: "test", SourceType: "manual", SourceID: "1", ObservedAt: now},
+		},
+	}
+
+	saved, err := store.SaveArtifact(ctx, artifact)
+	if err != nil {
+		t.Fatalf("SaveArtifact: %v", err)
+	}
+	if saved.ArtifactID != artifact.ArtifactID {
+		t.Fatalf("ArtifactID mismatch")
+	}
+
+	found, ok, err := store.FindArtifactByID(ctx, artifact.ArtifactID)
+	if err != nil || !ok {
+		t.Fatalf("FindArtifactByID: ok=%v err=%v", ok, err)
+	}
+	if found.Title != "Test artifact" {
+		t.Fatalf("Title mismatch: %q", found.Title)
+	}
+
+	_, ok, _ = store.FindArtifactByID(ctx, "nonexistent")
+	if ok {
+		t.Fatal("expected not found for nonexistent ID")
+	}
+
+	artifacts, err := store.ListArtifactsByOwner(ctx, artifact.OwnerUserID)
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("ListArtifactsByOwner: len=%d err=%v", len(artifacts), err)
+	}
+}
+
+func TestFindGrant(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	grant := core.PolicyGrant{
+		PolicyGrantID:        id.New("grant"),
+		OrgID:                id.New("org"),
+		GrantorUserID:        id.New("user"),
+		GranteeUserID:        id.New("user"),
+		ScopeType:            "project",
+		ScopeRef:             "proj1",
+		AllowedArtifactTypes: []core.ArtifactType{core.ArtifactTypeSummary},
+		MaxSensitivity:       core.SensitivityLow,
+		AllowedPurposes:      []core.QueryPurpose{core.QueryPurposeStatusCheck},
+		CreatedAt:            time.Now().UTC(),
+	}
+	store.SaveGrant(ctx, grant)
+
+	found, ok, err := store.FindGrant(ctx, grant.PolicyGrantID)
+	if err != nil || !ok {
+		t.Fatalf("FindGrant: ok=%v err=%v", ok, err)
+	}
+	if found.PolicyGrantID != grant.PolicyGrantID {
+		t.Fatalf("GrantID mismatch")
+	}
+
+	_, ok, _ = store.FindGrant(ctx, "nonexistent")
+	if ok {
+		t.Fatal("expected not found")
+	}
+}
+
+func TestListIncomingGrantsForUser(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	granteeUserID := id.New("user")
+	grant := core.PolicyGrant{
+		PolicyGrantID:        id.New("grant"),
+		OrgID:                id.New("org"),
+		GrantorUserID:        id.New("user"),
+		GranteeUserID:        granteeUserID,
+		ScopeType:            "project",
+		ScopeRef:             "proj1",
+		AllowedArtifactTypes: []core.ArtifactType{core.ArtifactTypeSummary},
+		MaxSensitivity:       core.SensitivityLow,
+		AllowedPurposes:      []core.QueryPurpose{core.QueryPurposeStatusCheck},
+		CreatedAt:            time.Now().UTC(),
+	}
+	store.SaveGrant(ctx, grant)
+
+	grants, err := store.ListIncomingGrantsForUser(ctx, granteeUserID, 50, 0)
+	if err != nil || len(grants) != 1 {
+		t.Fatalf("ListIncomingGrantsForUser: len=%d err=%v", len(grants), err)
+	}
+}
+
+func TestFindAndUpdateRequest(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	now := time.Now().UTC()
+	req := core.Request{
+		RequestID:      id.New("request"),
+		OrgID:          id.New("org"),
+		FromAgentID:    id.New("agent"),
+		FromUserID:     id.New("user"),
+		ToAgentID:      id.New("agent"),
+		ToUserID:       id.New("user"),
+		RequestType:    "ask_for_review",
+		Title:          "Please review",
+		Content:        "Review my PR",
+		State:          "pending",
+		CreatedAt:      now,
+	}
+	store.SaveRequest(ctx, req)
+
+	found, ok, err := store.FindRequest(ctx, req.RequestID)
+	if err != nil || !ok {
+		t.Fatalf("FindRequest: ok=%v err=%v", ok, err)
+	}
+	if found.Title != "Please review" {
+		t.Fatalf("Title mismatch")
+	}
+
+	_, ok, _ = store.FindRequest(ctx, "nonexistent")
+	if ok {
+		t.Fatal("expected not found")
+	}
+
+	updated, ok, err := store.UpdateRequestState(ctx, req.RequestID, core.RequestStateAccepted, core.ApprovalStateNotRequired, "lgtm")
+	if err != nil || !ok {
+		t.Fatalf("UpdateRequestState: ok=%v err=%v", ok, err)
+	}
+	if updated.State != core.RequestStateAccepted {
+		t.Fatalf("expected accepted state, got %q", updated.State)
+	}
+}
+
+func TestFindApproval(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	approval := core.Approval{
+		ApprovalID:  id.New("approval"),
+		OrgID:       id.New("org"),
+		AgentID:     id.New("agent"),
+		OwnerUserID: id.New("user"),
+		SubjectType: "request",
+		SubjectID:   id.New("request"),
+		Reason:      "needs approval",
+		State:       core.ApprovalStatePending,
+		CreatedAt:   time.Now().UTC(),
+	}
+	store.SaveApproval(ctx, approval)
+
+	found, ok, err := store.FindApproval(ctx, approval.ApprovalID)
+	if err != nil || !ok {
+		t.Fatalf("FindApproval: ok=%v err=%v", ok, err)
+	}
+	if found.Reason != "needs approval" {
+		t.Fatalf("Reason mismatch")
+	}
+
+	_, ok, _ = store.FindApproval(ctx, "nonexistent")
+	if ok {
+		t.Fatal("expected not found")
+	}
+}
+
+func TestWithTx(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	err := store.WithTx(ctx, func(tx storage.StoreTx) error {
+		org := core.Organization{OrgID: id.New("org"), Slug: "tx-org", Name: "TX Org"}
+		tx.UpsertOrganization(ctx, org)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+
+	// Verify the org was created
+	found, err := store.FindOrgBySlug(ctx, "tx-org")
+	if err != nil {
+		t.Fatalf("FindOrgBySlug: %v", err)
+	}
+	if found.Name != "TX Org" {
+		t.Fatalf("Name mismatch: %q", found.Name)
+	}
+}
+
+func TestFindAgentRegistrationChallenge(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	now := time.Now().UTC()
+	challenge := core.AgentRegistrationChallenge{
+		ChallengeID: id.New("challenge"),
+		OrgSlug:     "test-org",
+		OwnerEmail:  "test@example.com",
+		AgentName:   "test-agent",
+		ClientType:  "mcp",
+		PublicKey:    "dGVzdA==",
+		Nonce:        "test-nonce",
+		ExpiresAt:   now.Add(5 * time.Minute),
+	}
+	store.SaveAgentRegistrationChallenge(ctx, challenge)
+
+	found, ok, err := store.FindAgentRegistrationChallenge(ctx, challenge.ChallengeID)
+	if err != nil || !ok {
+		t.Fatalf("FindAgentRegistrationChallenge: ok=%v err=%v", ok, err)
+	}
+	if found.Nonce != "test-nonce" {
+		t.Fatalf("Nonce mismatch: %q", found.Nonce)
+	}
+
+	_, ok, _ = store.FindAgentRegistrationChallenge(ctx, "nonexistent")
+	if ok {
+		t.Fatal("expected not found")
+	}
+}

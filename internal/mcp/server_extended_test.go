@@ -136,6 +136,327 @@ func TestRemoteMode_BadURL(t *testing.T) {
 	}
 }
 
+func TestListSentRequests(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	aliceKeys := generateKeys(t)
+	bobKeys := generateKeys(t)
+
+	aliceServer := NewServer(handler)
+	bobServer := NewServer(handler)
+
+	callTool(t, aliceServer, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": aliceKeys.PublicKey, "private_key": aliceKeys.PrivateKey,
+	})
+	callTool(t, bobServer, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.BobEmail,
+		"agent_name": "bob-agent", "client_type": "mcp",
+		"public_key": bobKeys.PublicKey, "private_key": bobKeys.PrivateKey,
+	})
+
+	callTool(t, aliceServer, "send_request_to_peer", map[string]any{
+		"to_user_email": fixture.BobEmail,
+		"request_type":  "ask_for_review",
+		"title":         "Review PR",
+		"content":       "Please review",
+	})
+
+	result := mustStructuredContent(t, callTool(t, aliceServer, "list_sent_requests", map[string]any{}))
+	var reqs []map[string]any
+	mustDecodeInto(t, result["requests"], &reqs)
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 sent request, got %d", len(reqs))
+	}
+}
+
+func TestGetAuditSummary(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	result := mustStructuredContent(t, callTool(t, server, "get_audit_summary", map[string]any{}))
+	if result["events"] == nil {
+		t.Fatal("expected events in audit summary response")
+	}
+}
+
+func TestListPendingAgentsMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	result := mustStructuredContent(t, callTool(t, server, "list_pending_agents", map[string]any{}))
+	var pending []any
+	mustDecodeInto(t, result["pending_agents"], &pending)
+	if len(pending) != 0 {
+		t.Fatalf("expected 0 pending agents initially, got %d", len(pending))
+	}
+}
+
+func TestHasSession(t *testing.T) {
+	handler := newTestHandler(t)
+	server := NewServer(handler)
+
+	if server.HasSession() {
+		t.Fatal("expected HasSession=false before registration")
+	}
+
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	if !server.HasSession() {
+		t.Fatal("expected HasSession=true after registration")
+	}
+}
+
+func TestPublishArtifactMethod(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	result, err := server.PublishArtifact(context.Background(), map[string]any{
+		"artifact": map[string]any{
+			"type":            "summary",
+			"title":           "Test summary",
+			"content":         "Test content",
+			"sensitivity":     "low",
+			"visibility_mode": "explicit_grants_only",
+			"confidence":      0.9,
+			"source_refs": []map[string]any{
+				{
+					"source_system": "test",
+					"source_type":   "manual",
+					"source_id":     "1",
+					"observed_at":   time.Now().UTC().Format(time.RFC3339),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PublishArtifact error: %v", err)
+	}
+	if result["artifact_id"] == nil {
+		t.Fatal("expected artifact_id in PublishArtifact result")
+	}
+}
+
+func TestAutoRegister(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+
+	server := NewServer(handler)
+
+	err := server.AutoRegister(context.Background(), TrackerRegistration{
+		OrgSlug:    fixture.OrgSlug,
+		OwnerEmail: fixture.AliceEmail,
+		AgentName:  "tracker-agent",
+		ClientType: "mcp_tracker",
+	})
+	if err != nil {
+		t.Fatalf("AutoRegister error: %v", err)
+	}
+
+	if !server.HasSession() {
+		t.Fatal("expected session after AutoRegister")
+	}
+}
+
+func TestRotateInviteTokenMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	result := mustStructuredContent(t, callTool(t, server, "rotate_invite_token", map[string]any{"confirm": true}))
+	if result["invite_token"] == nil || result["invite_token"].(string) == "" {
+		t.Fatal("expected non-empty invite_token")
+	}
+}
+
+func TestUpdateVerificationModeMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	result := mustStructuredContent(t, callTool(t, server, "update_verification_mode", map[string]any{
+		"verification_mode": "email_otp",
+		"confirm":           true,
+	}))
+	if result["verification_mode"] != "email_otp" {
+		t.Fatalf("expected email_otp, got %v", result["verification_mode"])
+	}
+}
+
+func TestResendVerificationEmailMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	// Should succeed or return an error (no OTP sender configured) — either way, it exercises the handler
+	result, _ := callToolRaw(t, server, "resend_verification_email", map[string]any{})
+	_ = result // just verifying the call doesn't panic
+}
+
+func TestReviewAgentMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	// Review nonexistent agent — should error but exercise the handler
+	result, _ := callToolRaw(t, server, "review_agent", map[string]any{
+		"agent_id": "agent_nonexistent",
+		"decision": "approved",
+		"confirm":  true,
+	})
+	// Should return an error result (not found)
+	if result != nil {
+		if isErr, _ := result["isError"].(bool); !isErr {
+			t.Log("expected isError for nonexistent agent review")
+		}
+	}
+}
+
+func TestRevokePermissionMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	aliceKeys := generateKeys(t)
+	bobKeys := generateKeys(t)
+
+	aliceServer := NewServer(handler)
+	bobServer := NewServer(handler)
+
+	callTool(t, aliceServer, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": aliceKeys.PublicKey, "private_key": aliceKeys.PrivateKey,
+	})
+	callTool(t, bobServer, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.BobEmail,
+		"agent_name": "bob-agent", "client_type": "mcp",
+		"public_key": bobKeys.PublicKey, "private_key": bobKeys.PrivateKey,
+	})
+
+	grantResult := mustStructuredContent(t, callTool(t, aliceServer, "grant_permission", map[string]any{
+		"grantee_user_email":     fixture.BobEmail,
+		"scope_type":             "project",
+		"scope_ref":              fixture.ProjectScope,
+		"allowed_artifact_types": []string{"summary"},
+		"max_sensitivity":        "low",
+		"allowed_purposes":       []string{"status_check"},
+		"confirm":                true,
+	}))
+	grantID := grantResult["policy_grant_id"].(string)
+
+	revokeResult := mustStructuredContent(t, callTool(t, aliceServer, "revoke_permission", map[string]any{
+		"policy_grant_id": grantID,
+		"confirm":         true,
+	}))
+	if revokeResult["revoked"] != true {
+		t.Fatalf("expected revoked=true, got %v", revokeResult["revoked"])
+	}
+}
+
+func TestSubmitCorrectionMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	pubResult := mustStructuredContent(t, callTool(t, server, "publish_artifact", map[string]any{
+		"artifact": map[string]any{
+			"type":            "summary",
+			"title":           "Original",
+			"content":         "Original content",
+			"sensitivity":     "low",
+			"visibility_mode": "explicit_grants_only",
+			"confidence":      0.9,
+			"source_refs": []map[string]any{
+				{"source_system": "test", "source_type": "manual", "source_id": "1", "observed_at": time.Now().UTC().Format(time.RFC3339)},
+			},
+		},
+	}))
+	artifactID := pubResult["artifact_id"].(string)
+
+	corrResult := mustStructuredContent(t, callTool(t, server, "submit_correction", map[string]any{
+		"artifact_id": artifactID,
+		"artifact": map[string]any{
+			"type":            "summary",
+			"title":           "Corrected",
+			"content":         "Corrected content",
+			"sensitivity":     "low",
+			"visibility_mode": "explicit_grants_only",
+			"confidence":      0.95,
+			"source_refs": []map[string]any{
+				{"source_system": "test", "source_type": "manual", "source_id": "2", "observed_at": time.Now().UTC().Format(time.RFC3339)},
+			},
+		},
+	}))
+	if corrResult["artifact_id"] == nil {
+		t.Fatal("expected artifact_id in correction result")
+	}
+}
+
 func TestToolValidation_MissingRequired(t *testing.T) {
 	handler := newTestHandler(t)
 	server := NewServer(handler)

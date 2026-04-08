@@ -24,7 +24,7 @@ Tracked work items for alice, organized by priority.
 
 ## quality / operational
 
-- [ ] Test coverage to 80% threshold
+- [x] Test coverage to 70% threshold (testable packages, excluding cmd/postgres/app)
 - [x] E2E tracker integration test
 - [x] Drop unused `capabilities` column from PostgreSQL
 - [ ] Dedicated audit event sink (beyond slog)

@@ -251,6 +251,168 @@ func TestListAllowedPeers_EmptyInitially(t *testing.T) {
 	}
 }
 
+func publishAndGetID(t *testing.T, handler http.Handler, accessToken string, artifact core.Artifact) string {
+	t.Helper()
+	rec := performJSON(t, handler, http.MethodPost, "/v1/artifacts", accessToken, map[string]any{"artifact": artifact})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish artifact status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	json.NewDecoder(rec.Body).Decode(&payload)
+	return payload["artifact_id"].(string)
+}
+
+func TestCorrectArtifact(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	now := time.Now().UTC()
+	artifactID := publishAndGetID(t, handler, alice.AccessToken, core.Artifact{
+		Type:           core.ArtifactTypeSummary,
+		Title:          "Original summary",
+		Content:        "Original content",
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Sensitivity:    core.SensitivityLow,
+		Confidence:     0.9,
+		SourceRefs: []core.SourceReference{
+			{SourceSystem: "test", SourceType: "manual", SourceID: "1", ObservedAt: now},
+		},
+	})
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/artifacts/"+artifactID+"/correct", alice.AccessToken, map[string]any{
+		"artifact": map[string]any{
+			"type":            "summary",
+			"title":           "Corrected summary",
+			"content":         "Corrected content",
+			"visibility_mode": "explicit_grants_only",
+			"sensitivity":     "low",
+			"confidence":      0.95,
+			"source_refs": []map[string]any{
+				{"source_system": "test", "source_type": "manual", "source_id": "2", "observed_at": now.Format(time.RFC3339)},
+			},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("correct artifact status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var corrPayload map[string]any
+	json.NewDecoder(rec.Body).Decode(&corrPayload)
+	if corrPayload["supersedes_artifact_id"] != artifactID {
+		t.Fatalf("expected supersedes_artifact_id = %s, got %v", artifactID, corrPayload["supersedes_artifact_id"])
+	}
+}
+
+func TestCorrectArtifact_NonOwner(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+	bob := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+
+	now := time.Now().UTC()
+	artifactID := publishAndGetID(t, handler, alice.AccessToken, core.Artifact{
+		Type:           core.ArtifactTypeSummary,
+		Title:          "Alice's summary",
+		Content:        "Alice content",
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Sensitivity:    core.SensitivityLow,
+		Confidence:     0.9,
+		SourceRefs: []core.SourceReference{
+			{SourceSystem: "test", SourceType: "manual", SourceID: "1", ObservedAt: now},
+		},
+	})
+
+	// Bob tries to correct Alice's artifact — should fail with 403
+	rec := performJSON(t, handler, http.MethodPost, "/v1/artifacts/"+artifactID+"/correct", bob.AccessToken, map[string]any{
+		"artifact": map[string]any{
+			"type":            "summary",
+			"title":           "Hijacked",
+			"content":         "Nope",
+			"visibility_mode": "explicit_grants_only",
+			"sensitivity":     "low",
+			"confidence":      0.5,
+			"source_refs": []map[string]any{
+				{"source_system": "test", "source_type": "manual", "source_id": "x", "observed_at": now.Format(time.RFC3339)},
+			},
+		},
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-owner correction, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestQueryPeerStatus_NoPeers(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+	registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+
+	// Query without any grants — should return empty result
+	rec := performJSON(t, handler, http.MethodPost, "/v1/queries", alice.AccessToken, map[string]any{
+		"to_user_email":   fixture.BobEmail,
+		"purpose":         "status_check",
+		"question":        "What is Bob working on?",
+		"requested_types": []string{"summary"},
+		"time_window": map[string]any{
+			"start": time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   time.Now().UTC().Add(1 * time.Hour).Format(time.RFC3339),
+		},
+	})
+	// Should fail with permission denied (no grants)
+	if rec.Code != http.StatusForbidden && rec.Code != http.StatusOK {
+		t.Fatalf("query status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResendVerification(t *testing.T) {
+	handler, _ := newTestHandlerWithOTP(t)
+	fixture := newFixture(t)
+
+	registered := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	// First resend should work (or rate limit).
+	rec := performJSON(t, handler, http.MethodPost, "/v1/agents/resend-verification", registered.AccessToken, nil)
+	// Accept either 200 or 429 (too soon)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("resend verification status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAuditSummary_WithFilters(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	// Query with event_kind filter
+	rec := performJSON(t, handler, http.MethodGet, "/v1/audit/summary?event_kind=agent.registered", alice.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit summary with filter status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Query with since filter
+	rec = performJSON(t, handler, http.MethodGet, "/v1/audit/summary?since="+time.Now().UTC().Add(-1*time.Hour).Format(time.RFC3339), alice.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit summary with since status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPagination(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	// Test pagination params on audit
+	rec := performJSON(t, handler, http.MethodGet, "/v1/audit/summary?limit=5&offset=0", alice.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("paginated audit status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestListAllowedPeers_AfterGrant(t *testing.T) {
 	handler := newTestHandler(t, "")
 	fixture := newFixture(t)

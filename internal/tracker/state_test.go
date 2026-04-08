@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestTrackerState_RoundTrip(t *testing.T) {
@@ -90,6 +91,76 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func TestConfigFromEnv_NoRepos(t *testing.T) {
+	t.Setenv("ALICE_TRACK_REPOS", "")
+	_, ok := ConfigFromEnv()
+	if ok {
+		t.Fatal("expected ConfigFromEnv to return false when ALICE_TRACK_REPOS is empty")
+	}
+}
+
+func TestConfigFromEnv_WithRepos(t *testing.T) {
+	t.Setenv("ALICE_TRACK_REPOS", "/tmp/repo1,/tmp/repo2")
+	t.Setenv("ALICE_TRACK_INTERVAL", "10s")
+	t.Setenv("ALICE_TRACK_STATE_FILE", "/tmp/state.json")
+	t.Setenv("ALICE_TRACK_ORG_SLUG", "test-org")
+	t.Setenv("ALICE_TRACK_OWNER_EMAIL", "test@example.com")
+	t.Setenv("ALICE_TRACK_AGENT_NAME", "test-agent")
+
+	cfg, ok := ConfigFromEnv()
+	if !ok {
+		t.Fatal("expected ConfigFromEnv to return true")
+	}
+	if len(cfg.RepoPaths) != 2 {
+		t.Fatalf("expected 2 repo paths, got %d", len(cfg.RepoPaths))
+	}
+	if cfg.Interval.String() != "10s" {
+		t.Fatalf("expected 10s interval, got %s", cfg.Interval)
+	}
+	if cfg.OrgSlug != "test-org" {
+		t.Fatalf("expected test-org, got %s", cfg.OrgSlug)
+	}
+}
+
+func TestTracker_RunCancellation(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	repoDir := t.TempDir()
+	gitRun(t, repoDir, "init", "-b", "main")
+	os.WriteFile(filepath.Join(repoDir, "f.go"), []byte("package f\n"), 0644)
+	gitRun(t, repoDir, "add", "f.go")
+	gitRun(t, repoDir, "commit", "-m", "init")
+
+	publishFn := func(_ context.Context, body map[string]any) (map[string]any, error) {
+		return map[string]any{"artifact_id": "art_001"}, nil
+	}
+
+	tracker := New(
+		Config{RepoPaths: []string{repoDir}, Interval: time.Hour},
+		publishFn,
+		func(ctx context.Context) error { return nil },
+		func() bool { return true },
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		tracker.Run(ctx)
+		close(done)
+	}()
+
+	// Cancel immediately and verify Run returns
+	cancel()
+	select {
+	case <-done:
+		// success
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
 	}
 }
 

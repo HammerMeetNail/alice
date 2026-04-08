@@ -865,6 +865,138 @@ func TestEmailOTP_WrongCodeReturns401(t *testing.T) {
 	}
 }
 
+func TestRotateInviteToken(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	admin := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/orgs/rotate-invite-token", admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate invite token status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode rotate response: %v", err)
+	}
+	if payload["invite_token"] == nil || payload["invite_token"].(string) == "" {
+		t.Fatal("expected non-empty invite_token in response")
+	}
+
+	// Rotate again — should get a different token.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/rotate-invite-token", admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second rotate status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload2 map[string]any
+	json.NewDecoder(rec.Body).Decode(&payload2)
+	if payload2["invite_token"].(string) == payload["invite_token"].(string) {
+		t.Fatal("expected different token on second rotation")
+	}
+}
+
+func TestUpdateVerificationMode(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	admin := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/orgs/verification-mode", admin.AccessToken, map[string]any{
+		"verification_mode": "email_otp",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update verification mode status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["verification_mode"] != "email_otp" {
+		t.Fatalf("expected verification_mode = email_otp, got %v", payload["verification_mode"])
+	}
+
+	// Invalid mode should fail.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/verification-mode", admin.AccessToken, map[string]any{
+		"verification_mode": "invalid_mode",
+	})
+	if rec.Code == http.StatusOK {
+		t.Fatal("expected error for invalid verification mode")
+	}
+}
+
+func TestListPendingAgents(t *testing.T) {
+	handler := newTestHandlerWithApprovals(t)
+	fixture := newFixture(t)
+
+	admin := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	rec := performJSON(t, handler, http.MethodGet, "/v1/orgs/pending-agents", admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list pending agents status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	pendingAgents := payload["pending_agents"].([]any)
+	if len(pendingAgents) != 0 {
+		t.Fatalf("expected 0 pending agents, got %d", len(pendingAgents))
+	}
+}
+
+func TestReviewAgent(t *testing.T) {
+	handler := newTestHandlerWithApprovals(t)
+	fixture := newFixture(t)
+
+	admin := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	// Set org to admin_approval mode.
+	rec := performJSON(t, handler, http.MethodPost, "/v1/orgs/verification-mode", admin.AccessToken, map[string]any{
+		"verification_mode": "admin_approval",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set verification mode status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Register Bob — should succeed but agent will be pending_admin_approval.
+	bob := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+
+	// Bob should be blocked from protected routes.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/peers", bob.AccessToken, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for pending agent, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// List pending — Bob should appear.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/orgs/pending-agents", admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list pending status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var listPayload map[string]any
+	json.NewDecoder(rec.Body).Decode(&listPayload)
+	pending := listPayload["pending_agents"].([]any)
+	if len(pending) == 0 {
+		t.Fatal("expected at least one pending agent")
+	}
+	pendingAgent := pending[0].(map[string]any)
+	targetAgentID := pendingAgent["agent_id"].(string)
+
+	// Approve Bob.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/agents/"+targetAgentID+"/review", admin.AccessToken, map[string]any{
+		"decision": "approved",
+		"reason":   "looks good",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("review agent status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Bob should now be able to access protected routes.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/peers", bob.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after approval, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestEmailOTP_VerificationExemptFromEmailCheck(t *testing.T) {
 	// The verify-email and resend-verification endpoints must be accessible
 	// even when the agent status is pending_email_verification.

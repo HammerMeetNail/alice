@@ -277,3 +277,217 @@ func TestValidateApprovalResolutionInput(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateAgentRegistration(t *testing.T) {
+	t.Run("valid input", func(t *testing.T) {
+		if err := core.ValidateAgentRegistration("acme", "alice@example.com", "agent-1", "mcp", "ed25519-pub-key"); err != nil {
+			t.Fatalf("valid input failed: %v", err)
+		}
+	})
+
+	cases := []struct {
+		name      string
+		orgSlug   string
+		email     string
+		agentName string
+		client    string
+		pubKey    string
+		wantMsg   string
+	}{
+		{"empty org_slug", "", "alice@example.com", "agent-1", "mcp", "key", "org_slug is required"},
+		{"whitespace org_slug", "  ", "alice@example.com", "agent-1", "mcp", "key", "org_slug is required"},
+		{"empty owner_email", "acme", "", "agent-1", "mcp", "key", "owner_email is required"},
+		{"whitespace owner_email", "acme", "  ", "agent-1", "mcp", "key", "owner_email is required"},
+		{"empty agent_name", "acme", "alice@example.com", "", "mcp", "key", "agent_name is required"},
+		{"whitespace agent_name", "acme", "alice@example.com", "  ", "mcp", "key", "agent_name is required"},
+		{"empty client_type", "acme", "alice@example.com", "agent-1", "", "key", "client_type is required"},
+		{"whitespace client_type", "acme", "alice@example.com", "agent-1", "  ", "key", "client_type is required"},
+		{"empty public_key", "acme", "alice@example.com", "agent-1", "mcp", "", "public_key is required"},
+		{"whitespace public_key", "acme", "alice@example.com", "agent-1", "mcp", "  ", "public_key is required"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := core.ValidateAgentRegistration(c.orgSlug, c.email, c.agentName, c.client, c.pubKey)
+			if !core.IsValidationError(err) {
+				t.Fatalf("expected ValidationError, got %v", err)
+			}
+			if err.Error() != c.wantMsg {
+				t.Fatalf("got %q, want %q", err.Error(), c.wantMsg)
+			}
+		})
+	}
+}
+
+func TestValidateRegistrationCompletion(t *testing.T) {
+	t.Run("valid input", func(t *testing.T) {
+		if err := core.ValidateRegistrationCompletion("challenge-abc", "sig-xyz"); err != nil {
+			t.Fatalf("valid input failed: %v", err)
+		}
+	})
+
+	cases := []struct {
+		name    string
+		chalID  string
+		sig     string
+		wantMsg string
+	}{
+		{"empty challenge_id", "", "sig", "challenge_id is required"},
+		{"whitespace challenge_id", "  ", "sig", "challenge_id is required"},
+		{"empty challenge_signature", "chal", "", "challenge_signature is required"},
+		{"whitespace challenge_signature", "chal", "  ", "challenge_signature is required"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := core.ValidateRegistrationCompletion(c.chalID, c.sig)
+			if !core.IsValidationError(err) {
+				t.Fatalf("expected ValidationError, got %v", err)
+			}
+			if err.Error() != c.wantMsg {
+				t.Fatalf("got %q, want %q", err.Error(), c.wantMsg)
+			}
+		})
+	}
+}
+
+func TestValidateRequestInput(t *testing.T) {
+	t.Run("valid input", func(t *testing.T) {
+		if err := core.ValidateRequestInput("bob@example.com", "review", "Code Review", "Please review PR #42"); err != nil {
+			t.Fatalf("valid input failed: %v", err)
+		}
+	})
+
+	cases := []struct {
+		name        string
+		toEmail     string
+		requestType string
+		title       string
+		content     string
+		wantMsg     string
+	}{
+		{"empty to_user_email", "", "review", "Title", "Content", "to_user_email is required"},
+		{"whitespace to_user_email", "  ", "review", "Title", "Content", "to_user_email is required"},
+		{"empty request_type", "bob@example.com", "", "Title", "Content", "request_type is required"},
+		{"whitespace request_type", "bob@example.com", "  ", "Title", "Content", "request_type is required"},
+		{"empty title", "bob@example.com", "review", "", "Content", "title is required"},
+		{"whitespace title", "bob@example.com", "review", "  ", "Content", "title is required"},
+		{"empty content", "bob@example.com", "review", "Title", "", "content is required"},
+		{"whitespace content", "bob@example.com", "review", "Title", "  ", "content is required"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := core.ValidateRequestInput(c.toEmail, c.requestType, c.title, c.content)
+			if !core.IsValidationError(err) {
+				t.Fatalf("expected ValidationError, got %v", err)
+			}
+			if err.Error() != c.wantMsg {
+				t.Fatalf("got %q, want %q", err.Error(), c.wantMsg)
+			}
+		})
+	}
+}
+
+func TestValidateVerificationMode(t *testing.T) {
+	cases := []struct {
+		name    string
+		mode    string
+		wantErr bool
+		wantMsg string
+	}{
+		{"single email_otp", "email_otp", false, ""},
+		{"single invite_token", "invite_token", false, ""},
+		{"single admin_approval", "admin_approval", false, ""},
+		{"combo email_otp,invite_token", "email_otp,invite_token", false, ""},
+		{"combo all three", "email_otp,invite_token,admin_approval", false, ""},
+		{"empty string", "", true, "verification_mode is required"},
+		{"whitespace only", "  ", true, "verification_mode is required"},
+		{"invalid component", "sms_otp", true, `invalid verification_mode component "sms_otp"`},
+		{"duplicate component", "email_otp,email_otp", true, `duplicate verification_mode component "email_otp"`},
+		{"empty component from trailing comma", "email_otp,", true, "verification_mode contains empty component"},
+		{"empty component from leading comma", ",email_otp", true, "verification_mode contains empty component"},
+		{"empty component in middle", "email_otp,,invite_token", true, "verification_mode contains empty component"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := core.ValidateVerificationMode(c.mode)
+			if c.wantErr {
+				if !core.IsValidationError(err) {
+					t.Fatalf("expected ValidationError, got %v", err)
+				}
+				if err.Error() != c.wantMsg {
+					t.Fatalf("got %q, want %q", err.Error(), c.wantMsg)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestSensitivityAtCeiling(t *testing.T) {
+	cases := []struct {
+		name    string
+		actual  core.Sensitivity
+		ceiling core.Sensitivity
+		want    bool
+	}{
+		{"medium equals medium", core.SensitivityMedium, core.SensitivityMedium, true},
+		{"high equals high", core.SensitivityHigh, core.SensitivityHigh, true},
+		{"restricted equals restricted", core.SensitivityRestricted, core.SensitivityRestricted, true},
+		{"low equals low is false", core.SensitivityLow, core.SensitivityLow, false},
+		{"high above medium", core.SensitivityHigh, core.SensitivityMedium, false},
+		{"low below medium", core.SensitivityLow, core.SensitivityMedium, false},
+		{"medium below high", core.SensitivityMedium, core.SensitivityHigh, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := core.SensitivityAtCeiling(c.actual, c.ceiling)
+			if got != c.want {
+				t.Errorf("SensitivityAtCeiling(%s, %s) = %v, want %v", c.actual, c.ceiling, got, c.want)
+			}
+		})
+	}
+}
+
+func TestOrgRequiresInviteToken(t *testing.T) {
+	cases := []struct {
+		mode string
+		want bool
+	}{
+		{"invite_token", true},
+		{"email_otp,invite_token", true},
+		{"email_otp,invite_token,admin_approval", true},
+		{"email_otp", false},
+		{"admin_approval", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		t.Run(c.mode, func(t *testing.T) {
+			if got := core.OrgRequiresInviteToken(c.mode); got != c.want {
+				t.Errorf("OrgRequiresInviteToken(%q) = %v, want %v", c.mode, got, c.want)
+			}
+		})
+	}
+}
+
+func TestOrgRequiresAdminApproval(t *testing.T) {
+	cases := []struct {
+		mode string
+		want bool
+	}{
+		{"admin_approval", true},
+		{"email_otp,admin_approval", true},
+		{"email_otp,invite_token,admin_approval", true},
+		{"email_otp", false},
+		{"invite_token", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		t.Run(c.mode, func(t *testing.T) {
+			if got := core.OrgRequiresAdminApproval(c.mode); got != c.want {
+				t.Errorf("OrgRequiresAdminApproval(%q) = %v, want %v", c.mode, got, c.want)
+			}
+		})
+	}
+}

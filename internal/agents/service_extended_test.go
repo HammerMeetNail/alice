@@ -110,6 +110,52 @@ func TestFindAgentByUserID_NotFound(t *testing.T) {
 	}
 }
 
+func TestUpdateVerificationMode_Admin(t *testing.T) {
+	svc, _ := newAgentServiceWithApprovals()
+	ctx := context.Background()
+
+	pubKeyB64, _, privKey := generateKeyPair(t)
+	res, _ := svc.BeginRegistration(ctx, "verifmodeorg", "admin@example.com", "Admin", "edge", pubKeyB64, "")
+	sig := signChallenge(t, res.Payload, privKey)
+	complete, err := svc.CompleteRegistration(ctx, res.Challenge.ChallengeID, sig)
+	if err != nil {
+		t.Fatalf("CompleteRegistration: %v", err)
+	}
+
+	org, err := svc.UpdateVerificationMode(ctx, complete.Agent, "email_otp")
+	if err != nil {
+		t.Fatalf("UpdateVerificationMode: %v", err)
+	}
+	if org.VerificationMode != "email_otp" {
+		t.Fatalf("expected email_otp, got %q", org.VerificationMode)
+	}
+}
+
+func TestUpdateVerificationMode_NonAdmin(t *testing.T) {
+	svc, _ := newAgentServiceWithApprovals()
+	ctx := context.Background()
+
+	// Register admin.
+	pubKeyB64, _, privKey := generateKeyPair(t)
+	res, _ := svc.BeginRegistration(ctx, "verifmode2", "admin@example.com", "Admin", "edge", pubKeyB64, "")
+	sig := signChallenge(t, res.Payload, privKey)
+	svc.CompleteRegistration(ctx, res.Challenge.ChallengeID, sig)
+
+	// Register member.
+	pubKeyB64b, _, privKeyB := generateKeyPair(t)
+	resB, _ := svc.BeginRegistration(ctx, "verifmode2", "member@example.com", "Member", "edge", pubKeyB64b, "")
+	sigB := signChallenge(t, resB.Payload, privKeyB)
+	completeB, err := svc.CompleteRegistration(ctx, resB.Challenge.ChallengeID, sigB)
+	if err != nil {
+		t.Fatalf("CompleteRegistration B: %v", err)
+	}
+
+	_, err = svc.UpdateVerificationMode(ctx, completeB.Agent, "email_otp")
+	if err != agents.ErrNotOrgAdmin {
+		t.Fatalf("expected ErrNotOrgAdmin, got %v", err)
+	}
+}
+
 func TestListPendingAgentApprovals_NotAdmin(t *testing.T) {
 	svc, _ := newAgentServiceWithApprovals()
 	ctx := context.Background()
