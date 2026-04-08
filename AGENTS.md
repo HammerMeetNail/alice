@@ -48,7 +48,7 @@ Run these commands from the repository root:
 - `make logs`: tail server container logs
 - `make test`: run the Go test suite (in-memory storage)
 - `make test-race`: run the test suite with the race detector enabled
-- `make test-cover`: run tests with a coverage report; fails if total coverage is below 80%
+- `make test-cover`: run tests with a coverage report; fails if testable-package coverage (excluding `cmd/`, `postgres/`, `app/`) is below 70%
 - `make test-postgres`: start or reuse the PostgreSQL container, wait for health, and run the Go test suite with `ALICE_TEST_DATABASE_URL` set
 - `make e2e`: run end-to-end tests using an in-process HTTP server (no external dependencies required)
 - `make e2e-postgres`: start PostgreSQL and run the e2e tests against it
