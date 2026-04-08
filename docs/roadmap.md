@@ -9,7 +9,7 @@ Tracked work items for alice, organized by priority.
 - [ ] Additional tracker connectors (Jira, GitHub API, Google Calendar) inside MCP server process
 - [ ] Model-assisted artifact derivation (LLM summarization instead of heuristic rules)
 - [x] Tracker state persistence (dedup state is in-memory; restarts re-publish)
-- [ ] Richer local derivation (e.g. "working on auth refactor" vs raw git state)
+- [x] Richer local derivation (infers work focus from branch names/commits, activity level)
 
 ## spec features
 

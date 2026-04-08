@@ -71,8 +71,12 @@ func TestDeriveArtifacts_EmptyRepo(t *testing.T) {
 	if len(artifacts) != 1 {
 		t.Fatalf("expected 1 artifact, got %d", len(artifacts))
 	}
-	if !strings.Contains(artifacts[0].Content, "On branch main.") {
+	if !strings.Contains(artifacts[0].Content, "branch main") {
 		t.Errorf("Content %q should mention branch", artifacts[0].Content)
+	}
+	// Empty repo on main = idle
+	if !strings.Contains(artifacts[0].Title, "idle") {
+		t.Errorf("Title %q should contain idle for clean repo", artifacts[0].Title)
 	}
 }
 
@@ -81,5 +85,66 @@ func TestFormatFileList_Truncation(t *testing.T) {
 	result := formatFileList(files)
 	if !strings.Contains(result, "(+2 more)") {
 		t.Errorf("expected truncation, got %q", result)
+	}
+}
+
+func TestInferWorkFocus(t *testing.T) {
+	cases := []struct {
+		name   string
+		state  RepoState
+		expect string
+	}{
+		{"feature branch", RepoState{Branch: "feature/auth-refactor"}, "auth refactor"},
+		{"fix branch", RepoState{Branch: "fix/login-bug"}, "login bug"},
+		{"plain branch", RepoState{Branch: "my-cool-feature"}, "my cool feature"},
+		{"main with commits", RepoState{
+			Branch:        "main",
+			RecentCommits: []CommitInfo{{Subject: "feat: Add user dashboard"}},
+		}, "Add user dashboard"},
+		{"main empty", RepoState{Branch: "main"}, "main branch"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inferWorkFocus(tc.state)
+			if got != tc.expect {
+				t.Errorf("inferWorkFocus = %q, want %q", got, tc.expect)
+			}
+		})
+	}
+}
+
+func TestInferActivityLevel(t *testing.T) {
+	active := RepoState{ModifiedFiles: []string{"a.go"}}
+	if inferActivityLevel(active) != "active" {
+		t.Error("expected active with modified files")
+	}
+
+	staged := RepoState{StagedFiles: []string{"b.go"}}
+	if inferActivityLevel(staged) != "active" {
+		t.Error("expected active with staged files")
+	}
+
+	idle := RepoState{Branch: "main"}
+	if inferActivityLevel(idle) != "idle" {
+		t.Error("expected idle with no changes")
+	}
+}
+
+func TestSummarizeCommitSubjects(t *testing.T) {
+	commits := []CommitInfo{
+		{Subject: "fix: Resolve auth timeout"},
+	}
+	got := summarizeCommitSubjects(commits)
+	if got != "Resolve auth timeout" {
+		t.Errorf("summarizeCommitSubjects = %q, want %q", got, "Resolve auth timeout")
+	}
+
+	// Long subject should be truncated
+	long := []CommitInfo{
+		{Subject: "This is a very long commit subject that should be truncated to sixty characters total maximum"},
+	}
+	got = summarizeCommitSubjects(long)
+	if len(got) > 63 { // 57 + "..."
+		t.Errorf("expected truncation, got %d chars: %q", len(got), got)
 	}
 }
