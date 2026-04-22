@@ -953,7 +953,7 @@ These risks must be acknowledged in docs, UI copy, policy defaults, and deployme
 
 ## 21. Implementation vulnerabilities identified (2026-03-23)
 
-A full code review on 2026-03-23 identified the following concrete vulnerabilities in the current implementation. These are grouped by severity and include file-level locations for remediation. Each is tracked in `docs/implementation-plan.md` with a corresponding hardening step.
+A full code review on 2026-03-23 identified the following concrete vulnerabilities. These are grouped by severity and include file-level locations for remediation. All of them have since been addressed; see the git log for the commits that fixed each item. Any hardening still to come lives in `docs/roadmap.md` and the relevant `docs/plans/*.md` file.
 
 ### 21.1 HIGH severity
 

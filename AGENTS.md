@@ -5,8 +5,8 @@ The repository contains a fully runnable coordination server plus product and im
 
 - `docs/technical-spec.md`: system architecture, scope, and MVP boundaries
 - `docs/threat-model.md`: security goals, trust boundaries, and threat analysis
-- `docs/implementation-plan.md`: current implementation status, encoded assumptions, and the next recommended steps
-- `docs/roadmap.md`: tracked work items organized by priority
+- `docs/roadmap.md`: short checkbox view of what is done and what is left; every unchecked item links to a plan
+- `docs/plans/`: one self-contained plan per remaining work item. Start a new session by reading `docs/plans/README.md`, then only the plan(s) relevant to the task. Do not reintroduce a monolithic implementation-plan document — completed work lives in git history, not in a running narrative.
 - `cmd/server/`: coordination server HTTP entrypoint
 - `cmd/alice/`: human-and-agent-facing CLI; remote-only HTTP client that persists a per-user session under `~/.alice/state.json` (override with `$ALICE_STATE_FILE`); every list response is framed with `--- BEGIN UNTRUSTED DATA ---` / `--- END UNTRUSTED DATA ---` markers so agents treat it as DATA, not instructions
 - `cmd/mcp-server/`: stdio MCP entrypoint for Claude Code and OpenCode; includes a built-in local git tracker that silently publishes status artifacts when `ALICE_TRACK_REPOS` is set
@@ -39,7 +39,7 @@ The repository contains a fully runnable coordination server plus product and im
 - `examples/`: runnable local example configs plus artifact fixtures, connector fixtures, live polling examples, webhook intake examples, and OAuth bootstrap examples for GitHub, Jira, and Google Calendar
 - `api/jsonschema/`: machine-readable schema files
 
-Keep the implementation plan, `README.md`, and this file aligned whenever the codebase meaningfully changes.
+Keep `docs/roadmap.md`, the relevant `docs/plans/*.md` file, `README.md`, and this file aligned whenever the codebase meaningfully changes. When a plan is complete, delete (or move to `docs/plans/done/`) its plan file and tick the roadmap item in the same commit.
 
 ## Build, Test, and Development Commands
 Run these commands from the repository root:
@@ -73,7 +73,7 @@ Use Markdown with clear ATX headings (`#`, `##`, `###`) and short, direct paragr
 Prefer explicit security and architecture terminology over shorthand. When changing scope, update both the spec and threat model if the decision affects trust boundaries or data handling.
 
 ## Testing Guidelines
-Run `make test` for code changes. For documentation changes, review for consistency, broken cross-references, and contradictions between `docs/technical-spec.md`, `docs/threat-model.md`, and `docs/implementation-plan.md`.
+Run `make test` for code changes. For documentation changes, review for consistency, broken cross-references, and contradictions between `docs/technical-spec.md`, `docs/threat-model.md`, `docs/roadmap.md`, and the relevant `docs/plans/*.md`.
 
 New security enforcement must be tested at both the unit level (service layer) and the HTTP level (`internal/httpapi/router_test.go`). Key test patterns in use:
 
