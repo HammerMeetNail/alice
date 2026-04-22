@@ -54,6 +54,114 @@ func TestSend(t *testing.T) {
 	}
 }
 
+type fakeAnswerer struct {
+	result requests.AutoAnswerResult
+}
+
+func (f *fakeAnswerer) Evaluate(_ context.Context, _ core.Request) requests.AutoAnswerResult {
+	return f.result
+}
+
+type recordedAudit struct {
+	eventKind     string
+	subjectID     string
+	actorAgentID  string
+	targetAgentID string
+	metadata      map[string]any
+}
+
+type fakeAuditRecorder struct {
+	events []recordedAudit
+}
+
+func (f *fakeAuditRecorder) Record(_ context.Context, eventKind, _, subjectID, _, actorAgentID, targetAgentID, _ string, _ core.RiskLevel, _ []string, metadata map[string]any) (core.AuditEvent, error) {
+	f.events = append(f.events, recordedAudit{
+		eventKind:     eventKind,
+		subjectID:     subjectID,
+		actorAgentID:  actorAgentID,
+		targetAgentID: targetAgentID,
+		metadata:      metadata,
+	})
+	return core.AuditEvent{}, nil
+}
+
+// TestSend_AutoAnsweredEmitsAuditEvent confirms that when the gatekeeper
+// auto-answers a request, the requests service records a
+// `request.auto_answered` audit event with the supporting artifact IDs and
+// aggregate confidence. Without the audit trail the gatekeeper would be
+// acting on the user's behalf invisibly.
+func TestSend_AutoAnsweredEmitsAuditEvent(t *testing.T) {
+	store := memory.New()
+	answerer := &fakeAnswerer{result: requests.AutoAnswerResult{
+		Answered:    true,
+		Summary:     "Auto-answered from 1 derived artifact.",
+		ArtifactIDs: []string{"artifact_abc", "artifact_def"},
+		Confidence:  0.82,
+	}}
+	audit := &fakeAuditRecorder{}
+	svc := requests.NewService(store, store, store).
+		WithAutoAnswerer(answerer).
+		WithAuditRecorder(audit)
+
+	ctx := context.Background()
+	orgID := id.New("org")
+	fromAgent := id.New("agent")
+	toAgent := id.New("agent")
+
+	saved, err := svc.Send(ctx, makeRequest(fromAgent, toAgent, orgID))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if saved.State != core.RequestStateAutoAnswered {
+		t.Fatalf("expected auto_answered, got %s", saved.State)
+	}
+	if len(audit.events) != 1 {
+		t.Fatalf("expected one audit event, got %d", len(audit.events))
+	}
+	event := audit.events[0]
+	if event.eventKind != "request.auto_answered" {
+		t.Fatalf("unexpected event kind %q", event.eventKind)
+	}
+	if event.actorAgentID != toAgent {
+		t.Fatalf("expected actor=recipient agent %q, got %q", toAgent, event.actorAgentID)
+	}
+	if event.targetAgentID != fromAgent {
+		t.Fatalf("expected target=sender agent %q, got %q", fromAgent, event.targetAgentID)
+	}
+	if event.subjectID != saved.RequestID {
+		t.Fatalf("expected subject=request id %q, got %q", saved.RequestID, event.subjectID)
+	}
+	if event.metadata["artifact_count"].(int) != 2 {
+		t.Fatalf("expected artifact_count=2, got %v", event.metadata["artifact_count"])
+	}
+	if conf, _ := event.metadata["confidence"].(float64); conf != 0.82 {
+		t.Fatalf("expected confidence=0.82, got %v", event.metadata["confidence"])
+	}
+}
+
+// TestSend_AutoAnswerDeferredSkipsAuditEvent confirms no
+// `request.auto_answered` event is emitted when the gatekeeper declines to
+// answer.
+func TestSend_AutoAnswerDeferredSkipsAuditEvent(t *testing.T) {
+	store := memory.New()
+	audit := &fakeAuditRecorder{}
+	svc := requests.NewService(store, store, store).
+		WithAutoAnswerer(&fakeAnswerer{result: requests.AutoAnswerResult{Answered: false, Reason: "no grant"}}).
+		WithAuditRecorder(audit)
+
+	ctx := context.Background()
+	saved, err := svc.Send(ctx, makeRequest(id.New("agent"), id.New("agent"), id.New("org")))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if saved.State != core.RequestStatePending {
+		t.Fatalf("expected pending state, got %s", saved.State)
+	}
+	if len(audit.events) != 0 {
+		t.Fatalf("expected no audit events, got %d", len(audit.events))
+	}
+}
+
 func TestListIncoming(t *testing.T) {
 	svc := newService()
 	ctx := context.Background()

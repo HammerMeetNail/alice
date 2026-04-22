@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"alice/internal/core"
@@ -28,11 +29,20 @@ type AutoAnswerResult struct {
 	Reason      string
 }
 
+// AuditRecorder is the subset of the audit surface the requests service needs
+// to record auto-answer decisions. The audit.Service implements it directly.
+// Declared here so the requests package doesn't import audit (and so tests
+// can supply fakes).
+type AuditRecorder interface {
+	Record(ctx context.Context, eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision string, riskLevel core.RiskLevel, policyBasis []string, metadata map[string]any) (core.AuditEvent, error)
+}
+
 type Service struct {
 	requests   storage.RequestRepository
 	approvals  storage.ApprovalRepository
 	tx         storage.Transactor
 	autoAnswer AutoAnswerer
+	audit      AuditRecorder
 }
 
 func NewService(requests storage.RequestRepository, approvals storage.ApprovalRepository, tx storage.Transactor) *Service {
@@ -48,6 +58,16 @@ func NewService(requests storage.RequestRepository, approvals storage.ApprovalRe
 // derived artifacts before leaving them pending for the human.
 func (s *Service) WithAutoAnswerer(a AutoAnswerer) *Service {
 	s.autoAnswer = a
+	return s
+}
+
+// WithAuditRecorder attaches an audit recorder. When set alongside an
+// AutoAnswerer, successful auto-answers are recorded as
+// `request.auto_answered` events carrying the supporting artifact IDs and
+// aggregate confidence — the gatekeeper is acting on the recipient's behalf,
+// so the decision needs the same audit trail as a human response.
+func (s *Service) WithAuditRecorder(a AuditRecorder) *Service {
+	s.audit = a
 	return s
 }
 
@@ -79,12 +99,36 @@ func (s *Service) Send(ctx context.Context, request core.Request) (core.Request,
 				saved.RequestID, core.RequestStateAutoAnswered,
 				saved.ApprovalState, message)
 			if updateErr == nil && ok {
+				s.recordAutoAnswer(ctx, updated, answer)
 				return updated, nil
 			}
 		}
 	}
 
 	return saved, nil
+}
+
+// recordAutoAnswer best-effort emits a `request.auto_answered` audit event.
+// Failure is logged but never propagated — the request has already been
+// answered and the caller should not see a 500 because of an audit sink
+// issue.
+func (s *Service) recordAutoAnswer(ctx context.Context, req core.Request, answer AutoAnswerResult) {
+	if s.audit == nil {
+		return
+	}
+	metadata := map[string]any{
+		"request_type":  req.RequestType,
+		"confidence":    answer.Confidence,
+		"artifact_ids":  answer.ArtifactIDs,
+		"artifact_count": len(answer.ArtifactIDs),
+		"summary_bytes": len(answer.Summary),
+	}
+	if _, err := s.audit.Record(ctx,
+		"request.auto_answered", "request", req.RequestID,
+		req.OrgID, req.ToAgentID, req.FromAgentID,
+		"allow", req.RiskLevel, nil, metadata); err != nil {
+		slog.Error("audit record failed", "op", "request_auto_answered", "request_id", req.RequestID, "err", err)
+	}
 }
 
 func (s *Service) ListIncoming(ctx context.Context, agentID string, limit, offset int) ([]core.Request, error) {

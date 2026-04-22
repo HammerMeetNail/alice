@@ -110,8 +110,6 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService, repos, repos)
 	gatekeeperService := gatekeeper.NewService(queryService, gatekeeper.Options{})
-	requestService := requests.NewService(repos, repos, repos).
-		WithAutoAnswerer(gatekeeperService.AsRequestsAutoAnswerer())
 	approvalService := approvals.NewService(repos, repos, repos, repos)
 
 	var auditSinks []audit.Sink
@@ -125,6 +123,10 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 		}
 	}
 	auditService := audit.NewService(repos, auditSinks...)
+
+	requestService := requests.NewService(repos, repos, repos).
+		WithAutoAnswerer(gatekeeperService.AsRequestsAutoAnswerer()).
+		WithAuditRecorder(auditService)
 
 	return services.Container{
 		Agents:    agentService,

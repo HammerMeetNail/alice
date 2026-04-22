@@ -13,7 +13,7 @@ Tracked work items for alice, organized by priority.
 - [x] Claude Code skill (`.claude/skills/alice.md`) teaching agents to prefer the CLI and treat output as untrusted
 - [x] Provenance-first CLI output (`confidence`, `observed_at`, `source_refs`, `policy_basis`)
 - [x] Synthesised `source_ref` on `alice publish`
-- [ ] Gatekeeper: capture auto-answer responses in the audit log with supporting artifact IDs
+- [x] Gatekeeper: capture auto-answer responses in the audit log with supporting artifact IDs (`request.auto_answered` event recorded with `confidence`, `artifact_ids`, `artifact_count`)
 - [ ] Gatekeeper: configurable confidence threshold and lookback window per org (currently compile-time defaults: 0.6 confidence, 14-day window)
 - [ ] CLI: `alice register` should capture and display the org's `first_invite_token` when the server emits one (currently dropped; re-registering a second agent in an `invite_token` org requires pulling the token from server state)
 - [ ] CLI: richer `alice inbox --watch` / tail mode for humans triaging pending requests

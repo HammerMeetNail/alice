@@ -144,6 +144,15 @@ func TestCLIEndToEnd(t *testing.T) {
 		t.Fatalf("expected auto-answer response_message, got %q", msg)
 	}
 
+	// --- bob's audit trail should carry the auto-answer event ---
+	stdout, stderr, code = runCLI(t, "--state", bobState, "--json", "audit")
+	if code != 0 {
+		t.Fatalf("bob audit failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "request.auto_answered") {
+		t.Fatalf("expected bob's audit log to contain request.auto_answered event, got: %s", stdout)
+	}
+
 	// --- whoami must not leak the private key or token in human-readable mode ---
 	stdout, _, code = runCLI(t, "--state", aliceState, "whoami")
 	if code != 0 {
