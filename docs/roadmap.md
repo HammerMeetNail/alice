@@ -19,7 +19,7 @@ Tracked work items for alice, organized by priority.
 - [x] CLI: `alice register` surfaces the org's `first_invite_token` on first registration — shown in text mode and included in `--json` output for automation
 - [ ] CLI: richer `alice inbox --watch` / tail mode for humans triaging pending requests
 - [ ] CLI: shell completion (`alice completion bash|zsh|fish`)
-- [ ] Claude Code hook: harden the UserPromptSubmit regex in `examples/claude-code-hooks.json` against false positives (e.g. "what is X working on" in code comments)
+- [x] Claude Code hook: harden the UserPromptSubmit regex in `examples/claude-code-hooks.json` against false positives (requires a nearby `?` so un-terminated code comments don't trigger)
 
 ## tracker evolution
 
