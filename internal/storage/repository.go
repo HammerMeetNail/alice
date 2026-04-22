@@ -27,6 +27,11 @@ type OrganizationRepository interface {
 	FindOrganizationByID(ctx context.Context, orgID string) (core.Organization, bool, error)
 	UpdateOrgVerificationMode(ctx context.Context, orgID, mode string) error
 	SetOrgInviteTokenHash(ctx context.Context, orgID, hash string) error
+	// UpdateGatekeeperTuning sets (or clears, when either pointer is nil) the
+	// per-org gatekeeper overrides. A nil threshold clears the persisted
+	// override; same for window. Callers use this to express "revert to the
+	// server-wide default".
+	UpdateGatekeeperTuning(ctx context.Context, orgID string, threshold *float64, window *time.Duration) error
 	FindOrgBySlug(ctx context.Context, slug string) (core.Organization, error)
 }
 

@@ -168,6 +168,63 @@ func (s *Service) UpdateVerificationMode(ctx context.Context, agent core.Agent, 
 	return org, nil
 }
 
+// GatekeeperTuning is a scrubbed view of an org's gatekeeper overrides
+// returned to admins. nil pointers mean "no override configured; the
+// server-wide default applies".
+type GatekeeperTuning struct {
+	ConfidenceThreshold *float64       `json:"confidence_threshold,omitempty"`
+	LookbackWindow      *time.Duration `json:"-"`
+}
+
+// UpdateGatekeeperTuning sets per-org overrides for the gatekeeper
+// auto-answer path. Either pointer may be nil to clear that specific
+// override. Caller must be an org admin.
+func (s *Service) UpdateGatekeeperTuning(ctx context.Context, agent core.Agent, threshold *float64, window *time.Duration) (core.Organization, error) {
+	if threshold != nil {
+		if *threshold <= 0 || *threshold > 1 {
+			return core.Organization{}, core.ValidationError{Message: "confidence_threshold must be in the range (0, 1]"}
+		}
+	}
+	if window != nil {
+		if *window <= 0 {
+			return core.Organization{}, core.ValidationError{Message: "lookback_window must be a positive duration"}
+		}
+		if *window > 365*24*time.Hour {
+			return core.Organization{}, core.ValidationError{Message: "lookback_window must not exceed 365 days"}
+		}
+	}
+
+	user, ok, err := s.users.FindUserByID(ctx, agent.OwnerUserID)
+	if err != nil {
+		return core.Organization{}, fmt.Errorf("find owner user: %w", err)
+	}
+	if !ok {
+		return core.Organization{}, ErrUnknownAgentOwner
+	}
+	if user.Role != core.UserRoleAdmin {
+		return core.Organization{}, ErrNotOrgAdmin
+	}
+
+	if err := s.orgs.UpdateGatekeeperTuning(ctx, agent.OrgID, threshold, window); err != nil {
+		return core.Organization{}, fmt.Errorf("update gatekeeper tuning: %w", err)
+	}
+
+	org, ok, err := s.orgs.FindOrganizationByID(ctx, agent.OrgID)
+	if err != nil {
+		return core.Organization{}, fmt.Errorf("find org after update: %w", err)
+	}
+	if !ok {
+		return core.Organization{}, fmt.Errorf("org not found after update")
+	}
+
+	slog.Info("gatekeeper tuning updated",
+		"org_id", agent.OrgID,
+		"confidence_threshold", threshold,
+		"lookback_window", window,
+	)
+	return org, nil
+}
+
 // RotateInviteToken generates a new invite token for an org, replacing the previous one.
 // The caller's agent must belong to the org.
 func (s *Service) RotateInviteToken(ctx context.Context, orgID, callerAgentID string) (string, error) {

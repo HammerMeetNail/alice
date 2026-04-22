@@ -20,7 +20,6 @@ Read `docs/technical-spec.md` for architecture, `docs/threat-model.md` for trust
 
 | Plan | Scope | Rough size |
 |---|---|---|
-| [per-org-gatekeeper-tuning.md](per-org-gatekeeper-tuning.md) | Per-org confidence threshold / lookback overrides | small — one migration, one service change |
 | [tracker-connectors.md](tracker-connectors.md) | Jira, GitHub API, Google Calendar connectors inside MCP server | medium — new package per connector |
 | [model-assisted-derivation.md](model-assisted-derivation.md) | LLM-based artifact summarisation to replace heuristics | medium — new summariser interface |
 | [org-graph-and-scoped-visibility.md](org-graph-and-scoped-visibility.md) | Rich org graph + `team_scope` / `manager_scope` visibility | large — schema + service + policy |

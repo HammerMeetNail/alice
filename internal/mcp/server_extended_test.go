@@ -328,6 +328,56 @@ func TestUpdateVerificationModeMCP(t *testing.T) {
 	}
 }
 
+func TestSetGatekeeperTuningMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	// Set both overrides.
+	result := mustStructuredContent(t, callTool(t, server, "set_gatekeeper_tuning", map[string]any{
+		"confidence_threshold": 0.75,
+		"lookback_window":      "168h",
+		"confirm":              true,
+	}))
+	if got, _ := result["confidence_threshold"].(float64); got != 0.75 {
+		t.Fatalf("expected confidence_threshold=0.75, got %v", result["confidence_threshold"])
+	}
+	if result["lookback_window"] != "168h0m0s" {
+		t.Fatalf("expected lookback_window=168h0m0s, got %v", result["lookback_window"])
+	}
+
+	// Without confirm, the handler refuses. Tool-level errors surface as
+	// isError=true in the result, not as a JSON-RPC-level error.
+	noConfirm, rpcErr := callToolRaw(t, server, "set_gatekeeper_tuning", map[string]any{
+		"confidence_threshold": 0.9,
+	})
+	if rpcErr != nil {
+		t.Fatalf("unexpected JSON-RPC protocol error: %+v", rpcErr)
+	}
+	if isErr, _ := noConfirm["isError"].(bool); !isErr {
+		t.Fatalf("expected isError=true when confirm is absent, got %v", noConfirm)
+	}
+
+	// Clear reverts both overrides.
+	result = mustStructuredContent(t, callTool(t, server, "set_gatekeeper_tuning", map[string]any{
+		"clear":   true,
+		"confirm": true,
+	}))
+	if result["confidence_threshold"] != nil {
+		t.Fatalf("expected nil confidence_threshold, got %v", result["confidence_threshold"])
+	}
+	if result["lookback_window"] != nil {
+		t.Fatalf("expected nil lookback_window, got %v", result["lookback_window"])
+	}
+}
+
 func TestResendVerificationEmailMCP(t *testing.T) {
 	handler := newTestHandler(t)
 	fixture := newFixture(t)

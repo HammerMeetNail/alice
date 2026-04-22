@@ -161,6 +161,31 @@ func (s *Store) SetOrgInviteTokenHash(_ context.Context, orgID, hash string) err
 	return nil
 }
 
+func (s *Store) UpdateGatekeeperTuning(_ context.Context, orgID string, threshold *float64, window *time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.organizations[orgID]
+	if !ok {
+		return storage.ErrOrgNotFound
+	}
+	// Copy the pointers so callers can't mutate stored state by holding onto the input.
+	if threshold != nil {
+		v := *threshold
+		org.GatekeeperConfidenceThreshold = &v
+	} else {
+		org.GatekeeperConfidenceThreshold = nil
+	}
+	if window != nil {
+		d := *window
+		org.GatekeeperLookbackWindow = &d
+	} else {
+		org.GatekeeperLookbackWindow = nil
+	}
+	s.organizations[orgID] = org
+	return nil
+}
+
 func (s *Store) UpsertUser(_ context.Context, user core.User) (core.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

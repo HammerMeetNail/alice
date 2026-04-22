@@ -10,7 +10,7 @@ Quick status view. Every unchecked item points at a plan in `docs/plans/` that a
 - [x] Gatekeeper auto-answer for informational request types with purpose-fallback, confidence gating, audit emission
 - [x] Server-wide configurable gatekeeper threshold / lookback via `ALICE_GATEKEEPER_*` env vars
 - [x] `alice inbox --watch`, `alice completion bash|zsh|fish`, Claude Code skill + hardened hook regex
-- [ ] Per-org gatekeeper tuning — [plans/per-org-gatekeeper-tuning.md](plans/per-org-gatekeeper-tuning.md)
+- [x] Per-org gatekeeper tuning (confidence threshold + lookback window, admin-gated CLI / MCP / HTTP)
 
 ## tracker evolution
 

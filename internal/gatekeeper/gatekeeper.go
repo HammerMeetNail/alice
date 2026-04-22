@@ -30,10 +30,18 @@ const DefaultConfidenceThreshold = 0.6
 // synthesised query asks "what has the recipient been doing lately?".
 const DefaultLookbackWindow = 14 * 24 * time.Hour
 
+// OrgLookup is the minimal slice of storage.OrganizationRepository the
+// gatekeeper needs to pick up per-org overrides on the request path. Passing
+// nil disables per-org lookups; the server-wide options then apply uniformly.
+type OrgLookup interface {
+	FindOrganizationByID(ctx context.Context, orgID string) (core.Organization, bool, error)
+}
+
 // Service evaluates incoming requests and decides whether they can be
 // answered from the recipient's already-published artifacts.
 type Service struct {
 	queries             *queries.Service
+	orgs                OrgLookup
 	confidenceThreshold float64
 	lookbackWindow      time.Duration
 }
@@ -60,6 +68,16 @@ func NewService(q *queries.Service, opts Options) *Service {
 		confidenceThreshold: threshold,
 		lookbackWindow:      window,
 	}
+}
+
+// WithOrgLookup attaches an org repository so Evaluate can pick up per-org
+// overrides for the confidence threshold and lookback window. Returns the
+// receiver for fluent wiring.
+func (s *Service) WithOrgLookup(orgs OrgLookup) *Service {
+	if s != nil {
+		s.orgs = orgs
+	}
+	return s
 }
 
 // AutoAnswer is the gatekeeper's verdict on a single request.
@@ -102,6 +120,8 @@ func (s *Service) Evaluate(ctx context.Context, request core.Request) AutoAnswer
 		return AutoAnswer{Reason: "empty question"}
 	}
 
+	threshold, window := s.resolveTuning(ctx, request.OrgID)
+
 	now := time.Now().UTC()
 	baseQuery := core.Query{
 		QueryID:     id.New("query"),
@@ -118,7 +138,7 @@ func (s *Service) Evaluate(ctx context.Context, request core.Request) AutoAnswer
 			core.ArtifactTypeCommitment,
 		},
 		TimeWindow: core.TimeWindow{
-			Start: now.Add(-s.lookbackWindow),
+			Start: now.Add(-window),
 			End:   now,
 		},
 		RiskLevel: core.RiskLevelL0,
@@ -173,13 +193,13 @@ func (s *Service) Evaluate(ctx context.Context, request core.Request) AutoAnswer
 	if len(response.Artifacts) == 0 {
 		return AutoAnswer{Reason: "no matching artifacts in lookback window"}
 	}
-	if response.Confidence < s.confidenceThreshold {
+	if response.Confidence < threshold {
 		return AutoAnswer{
 			Answered:    false,
 			Confidence:  response.Confidence,
 			ArtifactIDs: artifactIDs(response.Artifacts),
 			Reason: fmt.Sprintf("aggregate confidence %.2f below threshold %.2f",
-				response.Confidence, s.confidenceThreshold),
+				response.Confidence, threshold),
 		}
 	}
 
@@ -189,6 +209,35 @@ func (s *Service) Evaluate(ctx context.Context, request core.Request) AutoAnswer
 		ArtifactIDs: artifactIDs(response.Artifacts),
 		Confidence:  response.Confidence,
 	}
+}
+
+// resolveTuning merges per-org overrides (if any) on top of the Service's
+// server-wide defaults. When the org lookup is unconfigured or returns an
+// error we log at debug level and fall back to the wider defaults — a broken
+// lookup must never stop the gatekeeper from running entirely.
+func (s *Service) resolveTuning(ctx context.Context, orgID string) (threshold float64, window time.Duration) {
+	threshold = s.confidenceThreshold
+	window = s.lookbackWindow
+	if s.orgs == nil || strings.TrimSpace(orgID) == "" {
+		return threshold, window
+	}
+	org, ok, err := s.orgs.FindOrganizationByID(ctx, orgID)
+	if err != nil || !ok {
+		return threshold, window
+	}
+	if org.GatekeeperConfidenceThreshold != nil {
+		v := *org.GatekeeperConfidenceThreshold
+		if v > 0 && v <= 1 {
+			threshold = v
+		}
+	}
+	if org.GatekeeperLookbackWindow != nil {
+		d := *org.GatekeeperLookbackWindow
+		if d > 0 {
+			window = d
+		}
+	}
+	return threshold, window
 }
 
 // purposesForRequestType returns the QueryPurposes to try when synthesising

@@ -195,6 +195,102 @@ func TestCLIEndToEnd(t *testing.T) {
 	}
 }
 
+// TestCLITuning exercises `alice tuning` end-to-end, confirming the per-org
+// override plumbing survives the full CLI → HTTP → service → storage round
+// trip. Alice is the first registrant so she is admin; Bob is a member whose
+// call must fail with an authorization error.
+func TestCLITuning(t *testing.T) {
+	container, closeFn, err := app.NewContainer(config.Config{
+		DefaultOrgName:   "CLI Tuning Org",
+		AuthChallengeTTL: 5 * time.Minute,
+		AuthTokenTTL:     15 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("build app container: %v", err)
+	}
+	if closeFn != nil {
+		t.Cleanup(func() { _ = closeFn() })
+	}
+	srv := httptest.NewServer(httpapi.NewRouter(container))
+	t.Cleanup(srv.Close)
+
+	tmp := t.TempDir()
+	aliceState := filepath.Join(tmp, "alice.json")
+	bobState := filepath.Join(tmp, "bob.json")
+	orgSlug := "cli-tuning-" + time.Now().UTC().Format("20060102150405.000000000")
+
+	aliceRegisterOut := runOK(t, "alice register",
+		"--server", srv.URL, "--state", aliceState, "--json",
+		"register",
+		"--server", srv.URL,
+		"--org", orgSlug,
+		"--email", "alice@example.com",
+		"--agent", "alice-cli",
+	)
+	inviteToken := extractFirstInviteToken(aliceRegisterOut)
+
+	bobArgs := []string{
+		"--server", srv.URL, "--state", bobState, "--json",
+		"register",
+		"--server", srv.URL,
+		"--org", orgSlug,
+		"--email", "bob@example.com",
+		"--agent", "bob-cli",
+	}
+	if inviteToken != "" {
+		bobArgs = append(bobArgs, "--invite-token", inviteToken)
+	}
+	runOK(t, "bob register", bobArgs...)
+
+	// Admin path: alice sets both overrides.
+	out := runOK(t, "alice tuning set",
+		"--state", aliceState, "--json",
+		"tuning",
+		"--confidence", "0.8",
+		"--lookback", "168h",
+	)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode tuning response: %v, raw=%s", err, out)
+	}
+	if got, _ := payload["confidence_threshold"].(float64); got != 0.8 {
+		t.Fatalf("expected confidence_threshold=0.8 in CLI output, got %v", payload["confidence_threshold"])
+	}
+	if payload["lookback_window"] != "168h0m0s" {
+		t.Fatalf("expected lookback_window=168h0m0s, got %v", payload["lookback_window"])
+	}
+
+	// Clear reverts to server defaults.
+	out = runOK(t, "alice tuning clear",
+		"--state", aliceState, "--json",
+		"tuning", "--clear",
+	)
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode clear response: %v, raw=%s", err, out)
+	}
+	if v, ok := payload["confidence_threshold"].(string); !ok || v != "(server default)" {
+		t.Fatalf("expected confidence_threshold=(server default), got %v", payload["confidence_threshold"])
+	}
+
+	// Non-admin: bob's call must fail.
+	stdout, stderr, code := runCLI(t,
+		"--state", bobState, "--json",
+		"tuning", "--confidence", "0.7",
+	)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for non-admin tuning call: stdout=%s stderr=%s", stdout, stderr)
+	}
+
+	// No flags → require at least one of --confidence / --lookback / --clear.
+	stdout, stderr, code = runCLI(t,
+		"--state", aliceState, "--json",
+		"tuning",
+	)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for empty tuning call: stdout=%s stderr=%s", stdout, stderr)
+	}
+}
+
 func runCLI(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer

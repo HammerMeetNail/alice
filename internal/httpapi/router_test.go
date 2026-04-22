@@ -895,6 +895,73 @@ func TestRotateInviteToken(t *testing.T) {
 	}
 }
 
+func TestUpdateGatekeeperTuning(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	admin := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	// Set both overrides.
+	rec := performJSON(t, handler, http.MethodPost, "/v1/orgs/gatekeeper-tuning", admin.AccessToken, map[string]any{
+		"confidence_threshold": 0.8,
+		"lookback_window":      "48h",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set tuning status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got, _ := payload["confidence_threshold"].(float64); got != 0.8 {
+		t.Fatalf("expected confidence_threshold=0.8, got %v", payload["confidence_threshold"])
+	}
+	if payload["lookback_window"] != "48h0m0s" {
+		t.Fatalf("expected lookback_window=48h0m0s, got %v", payload["lookback_window"])
+	}
+
+	// Invalid lookback: 400.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/gatekeeper-tuning", admin.AccessToken, map[string]any{
+		"lookback_window": "not-a-duration",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad duration, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Out-of-range threshold: 400 via service ValidationError.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/gatekeeper-tuning", admin.AccessToken, map[string]any{
+		"confidence_threshold": 1.5,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for out-of-range threshold, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Clear reverts both overrides to nil.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/gatekeeper-tuning", admin.AccessToken, map[string]any{
+		"clear": true,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear tuning status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	payload = map[string]any{}
+	json.NewDecoder(rec.Body).Decode(&payload)
+	if payload["confidence_threshold"] != nil {
+		t.Fatalf("expected nil confidence_threshold after clear, got %v", payload["confidence_threshold"])
+	}
+	if payload["lookback_window"] != nil {
+		t.Fatalf("expected nil lookback_window after clear, got %v", payload["lookback_window"])
+	}
+
+	// Non-admin must receive 403.
+	member := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/gatekeeper-tuning", member.AccessToken, map[string]any{
+		"confidence_threshold": 0.7,
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUpdateVerificationMode(t *testing.T) {
 	handler := newTestHandler(t, "")
 	fixture := newFixture(t)

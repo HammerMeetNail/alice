@@ -112,7 +112,7 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 	gatekeeperService := gatekeeper.NewService(queryService, gatekeeper.Options{
 		ConfidenceThreshold: cfg.GatekeeperConfidenceThreshold,
 		LookbackWindow:      cfg.GatekeeperLookbackWindow,
-	})
+	}).WithOrgLookup(repos)
 	approvalService := approvals.NewService(repos, repos, repos, repos)
 
 	var auditSinks []audit.Sink

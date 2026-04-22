@@ -114,6 +114,7 @@ func (r *router) routes() {
 	r.mux.Handle("GET /v1/audit/summary", r.requireVerifiedAuth(http.HandlerFunc(r.handleAuditSummary)))
 	r.mux.Handle("POST /v1/orgs/rotate-invite-token", r.requireVerifiedAuth(http.HandlerFunc(r.handleRotateInviteToken)))
 	r.mux.Handle("POST /v1/orgs/verification-mode", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleUpdateVerificationMode))))
+	r.mux.Handle("POST /v1/orgs/gatekeeper-tuning", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleUpdateGatekeeperTuning))))
 	r.mux.Handle("GET /v1/orgs/pending-agents", r.requireVerifiedAuth(http.HandlerFunc(r.handleListPendingAgents)))
 	r.mux.Handle("POST /v1/orgs/agents/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleReviewAgent))))
 }
@@ -1067,6 +1068,92 @@ func (r *router) handleUpdateVerificationMode(w http.ResponseWriter, req *http.R
 		"org_id":            org.OrgID,
 		"verification_mode": org.VerificationMode,
 	})
+}
+
+type updateGatekeeperTuningRequest struct {
+	// ConfidenceThreshold must be in (0, 1]. An absent key clears any
+	// previously-set override; a zero value or a bare `null` does the same.
+	// Callers that want to preserve the existing value should omit the key.
+	ConfidenceThreshold *float64 `json:"confidence_threshold"`
+	// LookbackWindow accepts a Go-style duration string such as "720h" or
+	// "336h30m". Empty clears the override. Must not exceed 365 days.
+	LookbackWindow string `json:"lookback_window"`
+	// Clear, when true, forces both overrides to nil regardless of the other
+	// fields. Useful for "revert to server defaults".
+	Clear bool `json:"clear"`
+}
+
+func (r *router) handleUpdateGatekeeperTuning(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	var input updateGatekeeperTuningRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeDecodeError(w, err)
+		return
+	}
+
+	var (
+		threshold *float64
+		window    *time.Duration
+	)
+	if !input.Clear {
+		threshold = input.ConfidenceThreshold
+		if strings.TrimSpace(input.LookbackWindow) != "" {
+			parsed, err := time.ParseDuration(strings.TrimSpace(input.LookbackWindow))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "lookback_window must be a Go duration string (e.g. 720h)")
+				return
+			}
+			window = &parsed
+		}
+	}
+
+	org, err := r.services.Agents.UpdateGatekeeperTuning(req.Context(), agent, threshold, window)
+	if err != nil {
+		switch {
+		case errors.Is(err, agents.ErrNotOrgAdmin):
+			writeError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, agents.ErrUnknownAgentOwner):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeServiceError(w, err, "update gatekeeper tuning failed")
+		}
+		return
+	}
+
+	auditMetadata := map[string]any{}
+	if org.GatekeeperConfidenceThreshold != nil {
+		auditMetadata["confidence_threshold"] = *org.GatekeeperConfidenceThreshold
+	} else {
+		auditMetadata["confidence_threshold"] = nil
+	}
+	if org.GatekeeperLookbackWindow != nil {
+		auditMetadata["lookback_window"] = org.GatekeeperLookbackWindow.String()
+	} else {
+		auditMetadata["lookback_window"] = nil
+	}
+	if _, auditErr := r.services.Audit.Record(req.Context(), "org.gatekeeper_tuning_updated", "org", agent.OrgID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, auditMetadata); auditErr != nil {
+		slog.Error("audit record failed", "op", "update_gatekeeper_tuning", "err", auditErr)
+	}
+
+	resp := map[string]any{
+		"org_id": org.OrgID,
+	}
+	if org.GatekeeperConfidenceThreshold != nil {
+		resp["confidence_threshold"] = *org.GatekeeperConfidenceThreshold
+	} else {
+		resp["confidence_threshold"] = nil
+	}
+	if org.GatekeeperLookbackWindow != nil {
+		resp["lookback_window"] = org.GatekeeperLookbackWindow.String()
+	} else {
+		resp["lookback_window"] = nil
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (r *router) handleListPendingAgents(w http.ResponseWriter, req *http.Request) {

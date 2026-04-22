@@ -130,13 +130,22 @@ const (
 )
 
 type Organization struct {
-	OrgID             string    `json:"org_id"`
-	Name              string    `json:"name"`
-	Slug              string    `json:"slug"`
-	CreatedAt         time.Time `json:"created_at"`
-	Status            string    `json:"status"`
-	VerificationMode  string    `json:"verification_mode"`
-	InviteTokenHash   string    `json:"-"` // SHA-256 hex of the raw token; never exposed in JSON
+	OrgID            string    `json:"org_id"`
+	Name             string    `json:"name"`
+	Slug             string    `json:"slug"`
+	CreatedAt        time.Time `json:"created_at"`
+	Status           string    `json:"status"`
+	VerificationMode string    `json:"verification_mode"`
+	InviteTokenHash  string    `json:"-"` // SHA-256 hex of the raw token; never exposed in JSON
+
+	// GatekeeperConfidenceThreshold, when non-nil, overrides the server-wide
+	// ALICE_GATEKEEPER_CONFIDENCE_THRESHOLD for this org. nil means fall
+	// through to env, then to the compile-time default.
+	GatekeeperConfidenceThreshold *float64 `json:"gatekeeper_confidence_threshold,omitempty"`
+	// GatekeeperLookbackWindow, when non-nil, overrides the server-wide
+	// ALICE_GATEKEEPER_LOOKBACK_WINDOW for this org. nil means fall through
+	// to env, then to the compile-time default.
+	GatekeeperLookbackWindow *time.Duration `json:"-"`
 }
 
 // OrgRequiresInviteToken returns true when the org's verification mode includes "invite_token".

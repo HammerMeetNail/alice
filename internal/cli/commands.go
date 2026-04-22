@@ -187,6 +187,7 @@ var subcommands = map[string]subcommandFunc{
 	"audit":      cmdAudit,
 	"logout":     cmdLogout,
 	"completion": cmdCompletion,
+	"tuning":     cmdTuning,
 }
 
 func printUsage(w io.Writer) {
@@ -222,6 +223,9 @@ PERMISSIONS
 
 OBSERVABILITY
   audit                   stream recent audit events
+
+ADMIN
+  tuning                  set per-org gatekeeper confidence / lookback overrides
 
 GLOBAL FLAGS
   --server URL            coordination server URL (or set ALICE_SERVER_URL)
@@ -1077,6 +1081,66 @@ func cmdAudit(ctx context.Context, opts GlobalOptions, args []string, _ io.Reade
 
 // ---- shell completion ----
 
+func cmdTuning(ctx context.Context, opts GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
+	fs := flag.NewFlagSet("tuning", flag.ContinueOnError)
+	fs.SetOutput(r.stderr)
+	var (
+		confidence = fs.Float64("confidence", -1, "gatekeeper auto-answer confidence threshold (0 < x ≤ 1); omit to leave unchanged")
+		lookback   = fs.String("lookback", "", "gatekeeper artifact lookback window (Go duration, e.g. 720h); omit to leave unchanged")
+		clear      = fs.Bool("clear", false, "clear both overrides and revert to the server-wide default")
+	)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	client, state, err := loadClient(opts)
+	if err != nil {
+		return err
+	}
+	if err := mustHaveSession(state); err != nil {
+		return err
+	}
+
+	body := map[string]any{}
+	switch {
+	case *clear:
+		body["clear"] = true
+	default:
+		if *confidence >= 0 {
+			body["confidence_threshold"] = *confidence
+		}
+		if *lookback != "" {
+			// Sanity check at the CLI layer; the server re-validates.
+			if _, err := time.ParseDuration(*lookback); err != nil {
+				return fmt.Errorf("--lookback must be a Go duration (e.g. 720h): %w", err)
+			}
+			body["lookback_window"] = *lookback
+		}
+		if len(body) == 0 {
+			return errors.New("pass at least one of --confidence, --lookback, or --clear")
+		}
+	}
+
+	resp, err := client.Do(ctx, http.MethodPost, "/v1/orgs/gatekeeper-tuning", body, false)
+	if err != nil {
+		return err
+	}
+	fields := map[string]any{
+		"org_id": stringFrom(resp, "org_id"),
+	}
+	if v, ok := resp["confidence_threshold"].(float64); ok {
+		fields["confidence_threshold"] = v
+	} else {
+		fields["confidence_threshold"] = "(server default)"
+	}
+	if v := stringFrom(resp, "lookback_window"); v != "" {
+		fields["lookback_window"] = v
+	} else {
+		fields["lookback_window"] = "(server default)"
+	}
+	return r.Emit("gatekeeper tuning updated", fields, false)
+}
+
 func cmdCompletion(_ context.Context, _ GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
 	if len(args) == 0 {
 		return errors.New("usage: alice completion bash|zsh|fish")
@@ -1098,7 +1162,7 @@ func cmdCompletion(_ context.Context, _ GlobalOptions, args []string, _ io.Reade
 
 // completionSubcommands is the canonical list sourced by every shell script.
 // Keep in sync with the subcommands map above; tests assert both lists match.
-const completionSubcommands = "init register whoami publish query result grant revoke peers request inbox outbox respond approvals approve deny audit logout completion"
+const completionSubcommands = "init register whoami publish query result grant revoke peers request inbox outbox respond approvals approve deny audit logout completion tuning"
 
 const completionBash = `# alice bash completion. Install by running:
 #   alice completion bash > /usr/local/etc/bash_completion.d/alice
@@ -1123,6 +1187,7 @@ _alice_complete() {
             request) COMPREPLY=( $(compgen -W "--to --type --title --content --expires --state --json" -- "${cur}") ) ;;
             inbox) COMPREPLY=( $(compgen -W "--watch --interval --limit --cursor --state --json" -- "${cur}") ) ;;
             respond) COMPREPLY=( $(compgen -W "--response --message --state --json" -- "${cur}") ) ;;
+            tuning) COMPREPLY=( $(compgen -W "--confidence --lookback --clear --state --json" -- "${cur}") ) ;;
             *) COMPREPLY=( $(compgen -W "--server --state --json" -- "${cur}") ) ;;
         esac
         return 0
@@ -1139,7 +1204,7 @@ const completionZsh = `#compdef alice
 _alice() {
     local -a subcommands
     subcommands=(` + "`echo \"" + completionSubcommands + "\" | tr ' ' '\\n' | sed 's/^/\"/;s/$/\"/' | paste -sd' ' -`" + `)
-    local subs=(init:"start a new session" register:"register with an org" whoami:"print current identity" publish:"publish an artifact" query:"query a peer" result:"fetch query result" grant:"grant a peer access" revoke:"revoke a grant" peers:"list peers with active grants" request:"send a request" inbox:"list incoming requests" outbox:"list sent requests" respond:"respond to a request" approvals:"list pending approvals" approve:"approve a pending approval" deny:"deny a pending approval" audit:"show audit events" logout:"clear local session" completion:"emit shell completion")
+    local subs=(init:"start a new session" register:"register with an org" whoami:"print current identity" publish:"publish an artifact" query:"query a peer" result:"fetch query result" grant:"grant a peer access" revoke:"revoke a grant" peers:"list peers with active grants" request:"send a request" inbox:"list incoming requests" outbox:"list sent requests" respond:"respond to a request" approvals:"list pending approvals" approve:"approve a pending approval" deny:"deny a pending approval" audit:"show audit events" logout:"clear local session" completion:"emit shell completion" tuning:"set per-org gatekeeper overrides")
     _arguments -C \
         '1: :->sub' \
         '*:: :->args'
@@ -1151,6 +1216,7 @@ _alice() {
             case $words[1] in
                 completion) _values 'shell' bash zsh fish ;;
                 inbox) _values 'flag' --watch --interval --limit --cursor --state --json ;;
+                tuning) _values 'flag' --confidence --lookback --clear --state --json ;;
                 *) _values 'flag' --server --state --json ;;
             esac
             ;;
@@ -1167,6 +1233,9 @@ complete -c alice -n '__fish_seen_subcommand_from inbox' -l watch -d 'poll conti
 complete -c alice -n '__fish_seen_subcommand_from inbox' -l interval -d 'poll interval'
 complete -c alice -n '__fish_seen_subcommand_from inbox outbox' -l limit -d 'max results'
 complete -c alice -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'
+complete -c alice -n '__fish_seen_subcommand_from tuning' -l confidence -d 'confidence threshold (0,1]'
+complete -c alice -n '__fish_seen_subcommand_from tuning' -l lookback -d 'Go duration string'
+complete -c alice -n '__fish_seen_subcommand_from tuning' -l clear -d 'revert to server default'
 complete -c alice -l server -d 'coordination server URL'
 complete -c alice -l state -d 'path to state file'
 complete -c alice -l json -d 'emit JSON output'

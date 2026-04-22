@@ -5,22 +5,34 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"alice/internal/core"
 )
 
 func (s *Store) UpsertOrganization(ctx context.Context, org core.Organization) (core.Organization, error) {
+	var threshold sql.NullFloat64
+	if org.GatekeeperConfidenceThreshold != nil {
+		threshold = sql.NullFloat64{Float64: *org.GatekeeperConfidenceThreshold, Valid: true}
+	}
+	var lookback sql.NullInt64
+	if org.GatekeeperLookbackWindow != nil {
+		lookback = sql.NullInt64{Int64: int64(*org.GatekeeperLookbackWindow / time.Second), Valid: true}
+	}
+
 	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO organizations (org_id, name, slug, created_at, status, verification_mode, invite_token_hash)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO organizations (org_id, name, slug, created_at, status, verification_mode, invite_token_hash, gatekeeper_confidence_threshold, gatekeeper_lookback_seconds)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (org_id) DO UPDATE
 		SET name = EXCLUDED.name,
 		    slug = EXCLUDED.slug,
 		    created_at = EXCLUDED.created_at,
 		    status = EXCLUDED.status,
 		    verification_mode = EXCLUDED.verification_mode,
-		    invite_token_hash = EXCLUDED.invite_token_hash`,
+		    invite_token_hash = EXCLUDED.invite_token_hash,
+		    gatekeeper_confidence_threshold = EXCLUDED.gatekeeper_confidence_threshold,
+		    gatekeeper_lookback_seconds = EXCLUDED.gatekeeper_lookback_seconds`,
 		org.OrgID,
 		org.Name,
 		normalizeSlug(org.Slug),
@@ -28,6 +40,8 @@ func (s *Store) UpsertOrganization(ctx context.Context, org core.Organization) (
 		org.Status,
 		org.VerificationMode,
 		org.InviteTokenHash,
+		threshold,
+		lookback,
 	)
 	if err != nil {
 		return core.Organization{}, fmt.Errorf("upsert organization: %w", err)
@@ -36,14 +50,11 @@ func (s *Store) UpsertOrganization(ctx context.Context, org core.Organization) (
 }
 
 func (s *Store) FindOrganizationBySlug(ctx context.Context, slug string) (core.Organization, bool, error) {
-	var org core.Organization
-	err := s.db.QueryRowContext(
+	org, err := scanOrganization(s.db.QueryRowContext(
 		ctx,
-		`SELECT org_id, name, slug, created_at, status, verification_mode, invite_token_hash
-		FROM organizations
-		WHERE slug = $1`,
+		orgSelectColumns+` FROM organizations WHERE slug = $1`,
 		normalizeSlug(slug),
-	).Scan(&org.OrgID, &org.Name, &org.Slug, &org.CreatedAt, &org.Status, &org.VerificationMode, &org.InviteTokenHash)
+	))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return core.Organization{}, false, nil

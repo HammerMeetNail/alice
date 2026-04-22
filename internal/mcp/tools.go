@@ -232,6 +232,17 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			}),
 			Handler: s.handleUpdateVerificationMode,
 		},
+		"set_gatekeeper_tuning": {
+			Name:        "set_gatekeeper_tuning",
+			Description: "Set per-org overrides for the gatekeeper auto-answer path. Caller must be an org admin. Pass clear=true to revert both overrides to the server-wide defaults.",
+			InputSchema: objectSchema(map[string]any{
+				"confidence_threshold": map[string]any{"type": "number", "description": "Minimum aggregate artifact confidence required before the gatekeeper auto-answers. Must be in (0, 1]."},
+				"lookback_window":      stringSchema("Go-style duration string (e.g. 720h) bounding how far back the gatekeeper looks for artifacts. Empty preserves the existing override."),
+				"clear":                map[string]any{"type": "boolean", "description": "Set true to clear both overrides."},
+				"confirm":              map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleSetGatekeeperTuning,
+		},
 	}
 }
 
@@ -439,6 +450,24 @@ func (s *Server) handleUpdateVerificationMode(ctx context.Context, args map[stri
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/verification-mode", map[string]any{
 		"verification_mode": mode,
 	})
+}
+
+func (s *Server) handleSetGatekeeperTuning(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
+	body := map[string]any{}
+	if clear, ok := args["clear"].(bool); ok && clear {
+		body["clear"] = true
+	} else {
+		if threshold, ok := args["confidence_threshold"].(float64); ok {
+			body["confidence_threshold"] = threshold
+		}
+		if lookback := stringArg(args, "lookback_window"); lookback != "" {
+			body["lookback_window"] = lookback
+		}
+	}
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/gatekeeper-tuning", body)
 }
 
 func (s *Server) handleRotateInviteToken(ctx context.Context, args map[string]any) (any, error) {

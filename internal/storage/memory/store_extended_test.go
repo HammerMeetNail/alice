@@ -85,6 +85,53 @@ func TestSetOrgInviteTokenHash(t *testing.T) {
 	}
 }
 
+func TestUpdateGatekeeperTuning_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	org := core.Organization{OrgID: id.New("org"), Slug: "tune"}
+	store.UpsertOrganization(ctx, org)
+
+	threshold := 0.85
+	window := 72 * time.Hour
+	if err := store.UpdateGatekeeperTuning(ctx, org.OrgID, &threshold, &window); err != nil {
+		t.Fatalf("UpdateGatekeeperTuning: %v", err)
+	}
+
+	found, _, _ := store.FindOrganizationByID(ctx, org.OrgID)
+	if found.GatekeeperConfidenceThreshold == nil || *found.GatekeeperConfidenceThreshold != threshold {
+		t.Fatalf("threshold not persisted: %v", found.GatekeeperConfidenceThreshold)
+	}
+	if found.GatekeeperLookbackWindow == nil || *found.GatekeeperLookbackWindow != window {
+		t.Fatalf("window not persisted: %v", found.GatekeeperLookbackWindow)
+	}
+
+	// Mutating the caller's pointer after the call must not change stored state.
+	threshold = 0.1
+	window = time.Second
+	found, _, _ = store.FindOrganizationByID(ctx, org.OrgID)
+	if *found.GatekeeperConfidenceThreshold != 0.85 {
+		t.Fatalf("store aliased caller's pointer for threshold: got %v", *found.GatekeeperConfidenceThreshold)
+	}
+	if *found.GatekeeperLookbackWindow != 72*time.Hour {
+		t.Fatalf("store aliased caller's pointer for window: got %v", *found.GatekeeperLookbackWindow)
+	}
+
+	// Clearing both back to nil.
+	if err := store.UpdateGatekeeperTuning(ctx, org.OrgID, nil, nil); err != nil {
+		t.Fatalf("clear UpdateGatekeeperTuning: %v", err)
+	}
+	found, _, _ = store.FindOrganizationByID(ctx, org.OrgID)
+	if found.GatekeeperConfidenceThreshold != nil || found.GatekeeperLookbackWindow != nil {
+		t.Fatalf("expected both overrides nil, got %+v / %+v", found.GatekeeperConfidenceThreshold, found.GatekeeperLookbackWindow)
+	}
+
+	// Missing org returns ErrOrgNotFound.
+	if err := store.UpdateGatekeeperTuning(ctx, "org_no_such_org", &threshold, nil); !errors.Is(err, storage.ErrOrgNotFound) {
+		t.Fatalf("expected ErrOrgNotFound, got %v", err)
+	}
+}
+
 // --- User ---
 
 func TestUpsertUser_Update(t *testing.T) {

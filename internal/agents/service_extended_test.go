@@ -3,8 +3,10 @@ package agents_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"alice/internal/agents"
+	"alice/internal/core"
 )
 
 func TestFindUserByEmail_Found(t *testing.T) {
@@ -153,6 +155,97 @@ func TestUpdateVerificationMode_NonAdmin(t *testing.T) {
 	_, err = svc.UpdateVerificationMode(ctx, completeB.Agent, "email_otp")
 	if err != agents.ErrNotOrgAdmin {
 		t.Fatalf("expected ErrNotOrgAdmin, got %v", err)
+	}
+}
+
+func TestUpdateGatekeeperTuning_Admin(t *testing.T) {
+	svc, _ := newAgentServiceWithApprovals()
+	ctx := context.Background()
+
+	pubKeyB64, _, privKey := generateKeyPair(t)
+	res, _ := svc.BeginRegistration(ctx, "tuneorg", "admin@example.com", "Admin", "edge", pubKeyB64, "")
+	sig := signChallenge(t, res.Payload, privKey)
+	complete, err := svc.CompleteRegistration(ctx, res.Challenge.ChallengeID, sig)
+	if err != nil {
+		t.Fatalf("CompleteRegistration: %v", err)
+	}
+
+	threshold := 0.85
+	window := 72 * time.Hour
+	org, err := svc.UpdateGatekeeperTuning(ctx, complete.Agent, &threshold, &window)
+	if err != nil {
+		t.Fatalf("UpdateGatekeeperTuning: %v", err)
+	}
+	if org.GatekeeperConfidenceThreshold == nil || *org.GatekeeperConfidenceThreshold != threshold {
+		t.Fatalf("threshold not persisted, got %v", org.GatekeeperConfidenceThreshold)
+	}
+	if org.GatekeeperLookbackWindow == nil || *org.GatekeeperLookbackWindow != window {
+		t.Fatalf("window not persisted, got %v", org.GatekeeperLookbackWindow)
+	}
+
+	// Clearing reverts both overrides to nil.
+	org, err = svc.UpdateGatekeeperTuning(ctx, complete.Agent, nil, nil)
+	if err != nil {
+		t.Fatalf("clear UpdateGatekeeperTuning: %v", err)
+	}
+	if org.GatekeeperConfidenceThreshold != nil || org.GatekeeperLookbackWindow != nil {
+		t.Fatalf("expected both overrides cleared, got %+v", org)
+	}
+}
+
+func TestUpdateGatekeeperTuning_NonAdmin(t *testing.T) {
+	svc, _ := newAgentServiceWithApprovals()
+	ctx := context.Background()
+
+	pubKeyA, _, privA := generateKeyPair(t)
+	resA, _ := svc.BeginRegistration(ctx, "tuneorg2", "admin@example.com", "Admin", "edge", pubKeyA, "")
+	sigA := signChallenge(t, resA.Payload, privA)
+	if _, err := svc.CompleteRegistration(ctx, resA.Challenge.ChallengeID, sigA); err != nil {
+		t.Fatalf("CompleteRegistration A: %v", err)
+	}
+
+	pubKeyB, _, privB := generateKeyPair(t)
+	resB, _ := svc.BeginRegistration(ctx, "tuneorg2", "member@example.com", "Member", "edge", pubKeyB, "")
+	sigB := signChallenge(t, resB.Payload, privB)
+	completeB, err := svc.CompleteRegistration(ctx, resB.Challenge.ChallengeID, sigB)
+	if err != nil {
+		t.Fatalf("CompleteRegistration B: %v", err)
+	}
+
+	threshold := 0.7
+	if _, err := svc.UpdateGatekeeperTuning(ctx, completeB.Agent, &threshold, nil); err != agents.ErrNotOrgAdmin {
+		t.Fatalf("expected ErrNotOrgAdmin for member, got %v", err)
+	}
+}
+
+func TestUpdateGatekeeperTuning_Validation(t *testing.T) {
+	svc, _ := newAgentServiceWithApprovals()
+	ctx := context.Background()
+
+	pubKey, _, priv := generateKeyPair(t)
+	res, _ := svc.BeginRegistration(ctx, "tuneorg3", "admin@example.com", "Admin", "edge", pubKey, "")
+	sig := signChallenge(t, res.Payload, priv)
+	complete, err := svc.CompleteRegistration(ctx, res.Challenge.ChallengeID, sig)
+	if err != nil {
+		t.Fatalf("CompleteRegistration: %v", err)
+	}
+
+	badThresholds := []float64{-0.1, 0, 1.1, 2}
+	for _, v := range badThresholds {
+		thr := v
+		_, err := svc.UpdateGatekeeperTuning(ctx, complete.Agent, &thr, nil)
+		if _, ok := err.(core.ValidationError); !ok {
+			t.Fatalf("threshold=%v: expected ValidationError, got %v", v, err)
+		}
+	}
+
+	badWindows := []time.Duration{0, -1 * time.Hour, 366 * 24 * time.Hour}
+	for _, v := range badWindows {
+		d := v
+		_, err := svc.UpdateGatekeeperTuning(ctx, complete.Agent, nil, &d)
+		if _, ok := err.(core.ValidationError); !ok {
+			t.Fatalf("window=%v: expected ValidationError, got %v", v, err)
+		}
 	}
 }
 

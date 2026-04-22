@@ -186,6 +186,213 @@ func TestDeferWhenConfidenceBelowConfiguredThreshold(t *testing.T) {
 	}
 }
 
+// TestPerOrgOverrideRaisesThreshold confirms that a per-org override beats
+// the server-wide (Options) default: a request that would auto-answer at the
+// 0.6 server default falls through to the human when the org sets 0.95.
+func TestPerOrgOverrideRaisesThreshold(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	orgID := id.New("org")
+	recipient := core.User{UserID: id.New("user"), OrgID: orgID, Email: "bob@example.com"}
+	sender := core.User{UserID: id.New("user"), OrgID: orgID, Email: "alice@example.com"}
+	orgThreshold := 0.95
+	if _, err := store.UpsertOrganization(ctx, core.Organization{
+		OrgID:                         orgID,
+		Slug:                          "tuned-org",
+		VerificationMode:              "email_otp",
+		GatekeeperConfidenceThreshold: &orgThreshold,
+	}); err != nil {
+		t.Fatalf("upsert org: %v", err)
+	}
+	if _, err := store.UpsertUser(ctx, recipient); err != nil {
+		t.Fatalf("save recipient: %v", err)
+	}
+	if _, err := store.UpsertUser(ctx, sender); err != nil {
+		t.Fatalf("save sender: %v", err)
+	}
+	if _, err := store.SaveArtifact(ctx, core.Artifact{
+		ArtifactID:     id.New("artifact"),
+		OrgID:          orgID,
+		OwnerUserID:    recipient.UserID,
+		Type:           core.ArtifactTypeStatusDelta,
+		Title:          "Auth refactor",
+		Content:        "Extracting JWT validation.",
+		Sensitivity:    core.SensitivityLow,
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Confidence:     0.9,
+		SourceRefs: []core.SourceReference{{
+			SourceSystem: "test", SourceType: "manual", SourceID: "seed",
+			ObservedAt: time.Now().UTC(), TrustClass: core.TrustClassStructuredSystem,
+			Sensitivity: core.SensitivityLow,
+		}},
+	}); err != nil {
+		t.Fatalf("save artifact: %v", err)
+	}
+	polSvc := policy.NewService(store)
+	if _, err := polSvc.Grant(ctx, orgID, recipient, sender, "project", "*",
+		[]core.ArtifactType{core.ArtifactTypeStatusDelta},
+		core.SensitivityMedium,
+		[]core.QueryPurpose{core.QueryPurposeStatusCheck}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	qSvc := queries.NewService(store, artifacts.NewService(store), polSvc, store, store)
+	// Options defaults to 0.6, but the per-org override of 0.95 must win.
+	gk := gatekeeper.NewService(qSvc, gatekeeper.Options{}).WithOrgLookup(store)
+
+	verdict := gk.Evaluate(ctx, core.Request{
+		OrgID:       orgID,
+		FromUserID:  sender.UserID,
+		ToUserID:    recipient.UserID,
+		RequestType: "question",
+		Title:       "What is bob working on?",
+		Content:     "status",
+		CreatedAt:   time.Now().UTC(),
+	})
+	if verdict.Answered {
+		t.Fatalf("expected deferral under per-org 0.95 threshold, got answered with confidence %.2f", verdict.Confidence)
+	}
+}
+
+// TestPerOrgOverrideLowersThreshold covers the opposite direction: a server
+// default high enough to defer (0.95) but a permissive per-org override (0.3)
+// lets the gatekeeper answer. Validates the fallback chain, not just clamping.
+func TestPerOrgOverrideLowersThreshold(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	orgID := id.New("org")
+	recipient := core.User{UserID: id.New("user"), OrgID: orgID, Email: "bob@example.com"}
+	sender := core.User{UserID: id.New("user"), OrgID: orgID, Email: "alice@example.com"}
+	orgThreshold := 0.3
+	if _, err := store.UpsertOrganization(ctx, core.Organization{
+		OrgID:                         orgID,
+		Slug:                          "permissive-org",
+		VerificationMode:              "email_otp",
+		GatekeeperConfidenceThreshold: &orgThreshold,
+	}); err != nil {
+		t.Fatalf("upsert org: %v", err)
+	}
+	if _, err := store.UpsertUser(ctx, recipient); err != nil {
+		t.Fatalf("save recipient: %v", err)
+	}
+	if _, err := store.UpsertUser(ctx, sender); err != nil {
+		t.Fatalf("save sender: %v", err)
+	}
+	if _, err := store.SaveArtifact(ctx, core.Artifact{
+		ArtifactID:     id.New("artifact"),
+		OrgID:          orgID,
+		OwnerUserID:    recipient.UserID,
+		Type:           core.ArtifactTypeStatusDelta,
+		Title:          "Auth refactor",
+		Content:        "Extracting JWT validation.",
+		Sensitivity:    core.SensitivityLow,
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Confidence:     0.5,
+		SourceRefs: []core.SourceReference{{
+			SourceSystem: "test", SourceType: "manual", SourceID: "seed",
+			ObservedAt: time.Now().UTC(), TrustClass: core.TrustClassStructuredSystem,
+			Sensitivity: core.SensitivityLow,
+		}},
+	}); err != nil {
+		t.Fatalf("save artifact: %v", err)
+	}
+	polSvc := policy.NewService(store)
+	if _, err := polSvc.Grant(ctx, orgID, recipient, sender, "project", "*",
+		[]core.ArtifactType{core.ArtifactTypeStatusDelta},
+		core.SensitivityMedium,
+		[]core.QueryPurpose{core.QueryPurposeStatusCheck}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	qSvc := queries.NewService(store, artifacts.NewService(store), polSvc, store, store)
+	// Options threshold 0.95 would defer this 0.5-confidence artifact, but
+	// the per-org override of 0.3 lets it through.
+	gk := gatekeeper.NewService(qSvc, gatekeeper.Options{ConfidenceThreshold: 0.95}).WithOrgLookup(store)
+
+	verdict := gk.Evaluate(ctx, core.Request{
+		OrgID:       orgID,
+		FromUserID:  sender.UserID,
+		ToUserID:    recipient.UserID,
+		RequestType: "question",
+		Title:       "What is bob working on?",
+		Content:     "status",
+		CreatedAt:   time.Now().UTC(),
+	})
+	if !verdict.Answered {
+		t.Fatalf("expected auto-answer under per-org 0.3 threshold, got reason=%q confidence=%.2f", verdict.Reason, verdict.Confidence)
+	}
+}
+
+// TestPerOrgOverrideFallsBackWhenAbsent confirms that an org without a per-org
+// override still uses the Options threshold.
+func TestPerOrgOverrideFallsBackWhenAbsent(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	orgID := id.New("org")
+	recipient := core.User{UserID: id.New("user"), OrgID: orgID, Email: "bob@example.com"}
+	sender := core.User{UserID: id.New("user"), OrgID: orgID, Email: "alice@example.com"}
+	// Org has no overrides set.
+	if _, err := store.UpsertOrganization(ctx, core.Organization{
+		OrgID:            orgID,
+		Slug:             "default-org",
+		VerificationMode: "email_otp",
+	}); err != nil {
+		t.Fatalf("upsert org: %v", err)
+	}
+	if _, err := store.UpsertUser(ctx, recipient); err != nil {
+		t.Fatalf("save recipient: %v", err)
+	}
+	if _, err := store.UpsertUser(ctx, sender); err != nil {
+		t.Fatalf("save sender: %v", err)
+	}
+	if _, err := store.SaveArtifact(ctx, core.Artifact{
+		ArtifactID:     id.New("artifact"),
+		OrgID:          orgID,
+		OwnerUserID:    recipient.UserID,
+		Type:           core.ArtifactTypeStatusDelta,
+		Title:          "Auth refactor",
+		Content:        "Extracting JWT validation.",
+		Sensitivity:    core.SensitivityLow,
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Confidence:     0.9,
+		SourceRefs: []core.SourceReference{{
+			SourceSystem: "test", SourceType: "manual", SourceID: "seed",
+			ObservedAt: time.Now().UTC(), TrustClass: core.TrustClassStructuredSystem,
+			Sensitivity: core.SensitivityLow,
+		}},
+	}); err != nil {
+		t.Fatalf("save artifact: %v", err)
+	}
+	polSvc := policy.NewService(store)
+	if _, err := polSvc.Grant(ctx, orgID, recipient, sender, "project", "*",
+		[]core.ArtifactType{core.ArtifactTypeStatusDelta},
+		core.SensitivityMedium,
+		[]core.QueryPurpose{core.QueryPurposeStatusCheck}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	qSvc := queries.NewService(store, artifacts.NewService(store), polSvc, store, store)
+	// Server-wide Options 0.95 must defer this 0.9-confidence artifact when
+	// the org has no override.
+	gk := gatekeeper.NewService(qSvc, gatekeeper.Options{ConfidenceThreshold: 0.95}).WithOrgLookup(store)
+
+	verdict := gk.Evaluate(ctx, core.Request{
+		OrgID:       orgID,
+		FromUserID:  sender.UserID,
+		ToUserID:    recipient.UserID,
+		RequestType: "question",
+		Title:       "What is bob working on?",
+		Content:     "status",
+		CreatedAt:   time.Now().UTC(),
+	})
+	if verdict.Answered {
+		t.Fatalf("expected deferral when server-wide 0.95 applies, got answered")
+	}
+}
+
 // TestDeferWhenRequestTypeIneligible confirms action-like request types (e.g.
 // ask_for_time) are never auto-answered, since the agent cannot act on the
 // user's behalf.

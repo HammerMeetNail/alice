@@ -21,6 +21,7 @@ type AgentService interface {
 	ResendVerificationEmail(ctx context.Context, agentID string) error
 	RotateInviteToken(ctx context.Context, orgID, callerAgentID string) (string, error)
 	UpdateVerificationMode(ctx context.Context, agent core.Agent, mode string) (core.Organization, error)
+	UpdateGatekeeperTuning(ctx context.Context, agent core.Agent, threshold *float64, window *time.Duration) (core.Organization, error)
 	ListPendingAgentApprovals(ctx context.Context, orgID, callerAgentID string, limit, offset int) ([]core.AgentApproval, error)
 	ReviewAgentApproval(ctx context.Context, orgID, targetAgentID, callerAgentID, decision, reason string) error
 }
