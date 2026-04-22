@@ -738,10 +738,14 @@ func (r *router) handleSendRequestToPeer(w http.ResponseWriter, req *http.Reques
 		slog.Error("audit record failed", "op", "request_create", "err", err)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"request_id": requestRecord.RequestID,
 		"state":      requestRecord.State,
-	})
+	}
+	if requestRecord.ResponseMessage != "" {
+		payload["response_message"] = requestRecord.ResponseMessage
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (r *router) handleListIncomingRequests(w http.ResponseWriter, req *http.Request) {

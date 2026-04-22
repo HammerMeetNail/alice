@@ -89,12 +89,17 @@ const (
 type RequestState string
 
 const (
-	RequestStatePending   RequestState = "pending"
-	RequestStateAccepted  RequestState = "accepted"
-	RequestStateDeferred  RequestState = "deferred"
-	RequestStateDenied    RequestState = "denied"
-	RequestStateCompleted RequestState = "completed"
-	RequestStateExpired   RequestState = "expired"
+	RequestStatePending      RequestState = "pending"
+	RequestStateAccepted     RequestState = "accepted"
+	RequestStateDeferred     RequestState = "deferred"
+	RequestStateDenied       RequestState = "denied"
+	RequestStateCompleted    RequestState = "completed"
+	RequestStateExpired      RequestState = "expired"
+	// RequestStateAutoAnswered indicates the recipient's agent answered the
+	// request from existing derived artifacts without interrupting the human.
+	// The sender can treat this as a low-confidence Reporter-style answer and
+	// follow up if they need more.
+	RequestStateAutoAnswered RequestState = "auto_answered"
 )
 
 type RequestResponseAction string
@@ -244,12 +249,15 @@ type Query struct {
 }
 
 type QueryArtifact struct {
-	ArtifactID  string       `json:"artifact_id"`
-	Type        ArtifactType `json:"type"`
-	Title       string       `json:"title"`
-	Content     string       `json:"content"`
-	Sensitivity Sensitivity  `json:"sensitivity"`
-	Confidence  float64      `json:"confidence"`
+	ArtifactID  string            `json:"artifact_id"`
+	Type        ArtifactType      `json:"type"`
+	Title       string            `json:"title"`
+	Content     string            `json:"content"`
+	Sensitivity Sensitivity       `json:"sensitivity"`
+	Confidence  float64           `json:"confidence"`
+	CreatedAt   time.Time         `json:"created_at"`
+	ObservedAt  time.Time         `json:"observed_at,omitempty"`
+	SourceRefs  []SourceReference `json:"source_refs,omitempty"`
 }
 
 type QueryResponse struct {

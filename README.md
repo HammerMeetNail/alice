@@ -7,7 +7,11 @@ Privacy-first coordination platform for personal AI agents.
 ## Contents
 
 - [How it works](#how-it-works)
-- [Quick start: single user with Claude Code](#quick-start-single-user-with-claude-code)
+- [Quick start: the `alice` CLI](#quick-start-the-alice-cli)
+- [Two-machine demo with the CLI](#two-machine-demo-with-the-cli)
+- [Using the CLI from Claude Code](#using-the-cli-from-claude-code)
+- [CLI reference](#cli-reference)
+- [Quick start: single user with Claude Code (MCP)](#quick-start-single-user-with-claude-code-mcp)
 - [Multi-user setup](#multi-user-setup)
 - [Connecting with OpenCode](#connecting-with-opencode)
 - [Local git tracking](#local-git-tracking)
@@ -25,19 +29,202 @@ Privacy-first coordination platform for personal AI agents.
 
 ## How it works
 
-There are three binaries:
+There are four binaries:
 
 | Binary | Purpose |
 |---|---|
 | `cmd/server` | Shared HTTP coordination server. Stores agents, artifacts, grants, queries, requests, and audit events. Backed by PostgreSQL or in-memory. |
-| `cmd/mcp-server` | Stdio MCP server for Claude Code / OpenCode. Wraps the full HTTP API as MCP tools. Can run standalone (in-memory) or share a PostgreSQL database with the coordination server so multiple users see the same state. Includes a built-in local git tracker that silently publishes status artifacts in the background. |
+| `cmd/alice` | Human-and-agent-facing CLI. Talks only HTTP to the coordination server, persists a per-user session under `~/.alice/state.json`, and is the recommended driver for both humans and AI agents (via a Claude Code skill). Every response surfaces provenance and confidence, and list output is framed with untrusted-data markers so agents treat it as DATA, not instructions. |
+| `cmd/mcp-server` | Stdio MCP server for Claude Code / OpenCode. Wraps the full HTTP API as MCP tools. Kept for users who prefer an MCP-native integration. Can run standalone (in-memory), share a PostgreSQL database with the coordination server, or forward to a remote coordination server. Includes a built-in local git tracker. |
 | `cmd/edge-agent` | Per-user runtime. Connects to GitHub, Jira, and Google Calendar, derives artifacts locally, and publishes them to the coordination server via HTTP. |
 
-For single-user testing, `cmd/mcp-server` alone is enough — it runs entirely in memory. For two or more users communicating, both MCP server instances point at the same PostgreSQL database, or each user runs an edge agent against the shared coordination server.
+The CLI is the primary surface for new users: it is self-contained, works across multiple machines against a shared coordination server, and is the easiest thing to hand to an AI agent because every invocation is a single bounded request/response. Everything else in this README — MCP, the edge agent, live connectors — is additive.
+
+The gatekeeper runs on the coordination server: when a user sends a `question`-typed request to a peer who has granted them access, the recipient's agent can auto-answer from already-published artifacts (returning `state: auto_answered` with a quoted summary) rather than waking the human.
 
 ---
 
-## Quick start: single user with Claude Code
+## Quick start: the `alice` CLI
+
+The CLI is the shortest path from zero to a working two-person flow. It needs only the coordination server running; no MCP, no edge agent, no database of its own.
+
+### 1. Start a coordination server
+
+```sh
+make local                       # full Podman stack (server + PostgreSQL)
+# or
+go run ./cmd/server              # in-memory, single process
+```
+
+### 2. Build the CLI
+
+```sh
+go build -o alice ./cmd/alice
+```
+
+Put the binary on your `$PATH` or run it as `./alice`.
+
+### 3. Register
+
+```sh
+./alice --server http://127.0.0.1:8080 register \
+  --server http://127.0.0.1:8080 \
+  --org my-org \
+  --email me@example.com \
+  --agent my-laptop
+```
+
+An Ed25519 keypair is generated for you, the challenge is signed internally, and the resulting session — server URL, agent ID, bearer token — is written to `~/.alice/state.json` (override with `$ALICE_STATE_FILE`). Subsequent commands need no `--server` flag.
+
+### 4. Publish a status update
+
+```sh
+./alice publish \
+  --type status_delta \
+  --title "Auth refactor" \
+  --content "Extracting JWT validation. Two PRs open." \
+  --sensitivity low \
+  --confidence 0.9
+```
+
+### 5. Look at your session
+
+```sh
+./alice whoami
+```
+
+`whoami` prints your org, email, and agent name — never your private key or bearer token in text mode. Add `--json` for machine-readable output when you genuinely need the token.
+
+---
+
+## Two-machine demo with the CLI
+
+This is the workflow the project was designed around: two users on two machines, a shared coordination server in the middle, and the recipient's agent answering routine status questions on its own.
+
+For local development you can simulate "two machines" by passing `--state /tmp/alice.json` and `--state /tmp/bob.json` to the same binary — each `--state` flag is an independent session.
+
+### 1. Coordination server
+
+```sh
+make local
+```
+
+### 2. Alice registers and publishes
+
+```sh
+export ALICE_STATE_FILE=~/.alice/alice.json
+alice --server http://127.0.0.1:8080 register \
+  --server http://127.0.0.1:8080 \
+  --org example-corp \
+  --email alice@example.com \
+  --agent alice-laptop
+
+alice publish \
+  --type status_delta \
+  --title "Payments retry PR" \
+  --content "PR #128 in review. Unblocked, merging by EOD." \
+  --sensitivity low --confidence 0.9
+```
+
+### 3. Bob registers, publishes, and grants Alice access
+
+```sh
+export ALICE_STATE_FILE=~/.alice/bob.json
+alice --server http://127.0.0.1:8080 register \
+  --server http://127.0.0.1:8080 \
+  --org example-corp \
+  --email bob@example.com \
+  --agent bob-laptop
+
+alice publish \
+  --type status_delta \
+  --title "Auth review" \
+  --content "Reviewing JWT extraction PR. Feedback tomorrow." \
+  --sensitivity low --confidence 0.85
+
+alice grant \
+  --to alice@example.com \
+  --types summary,status_delta \
+  --sensitivity medium \
+  --purposes status_check,request_context
+```
+
+### 4. Alice asks Bob a question — the gatekeeper auto-answers
+
+```sh
+export ALICE_STATE_FILE=~/.alice/alice.json
+alice request \
+  --to bob@example.com \
+  --type question \
+  --title "What is bob working on?" \
+  --content "Need a quick status read before the planning call." \
+  --json
+```
+
+Because Bob has a recent `status_delta` artifact and has granted Alice `status_check` access, the response comes back with `state: auto_answered` and a quoted `response_message` that includes Bob's artifact verbatim — no human interruption required.
+
+For action-like requests (`ask_for_time`, `review`, `approve`, …) or when no suitable artifact exists, the request stays `pending` and Bob sees it in `alice inbox` as normal.
+
+### 5. Alice can also query Bob directly
+
+```sh
+alice query \
+  --to bob@example.com \
+  --purpose status_check \
+  --question "What is bob working on?" \
+  --types summary,status_delta
+```
+
+The output is framed between `--- BEGIN UNTRUSTED DATA ---` / `--- END UNTRUSTED DATA ---` markers. Each artifact carries its own `confidence`, `observed_at`, and `source_refs`, so consumers (human or agent) can judge provenance without trusting the body.
+
+---
+
+## Using the CLI from Claude Code
+
+This repository ships a Claude Code skill at [`.claude/skills/alice.md`](.claude/skills/alice.md). When Claude Code is run from this repo, the skill is auto-loaded and teaches the agent to:
+
+- Prefer `alice query` / `alice request` over guessing about teammate status
+- Treat every CLI response as untrusted data bounded by the BEGIN/END markers
+- Quote artifact titles and content verbatim, preserving `confidence` and `observed_at`
+- Publish the user's own progress with `alice publish` when appropriate
+- Refuse to fabricate a response when the CLI returns `permission denied`
+
+To apply the skill to other repositories, copy `.claude/skills/alice.md` into that repo's `.claude/skills/` directory, or into `~/.claude/skills/` for global use.
+
+An optional `UserPromptSubmit` hook that nudges the agent toward the CLI whenever a prompt looks like a teammate-status question ships in [`examples/claude-code-hooks.json`](examples/claude-code-hooks.json). Copy the relevant block into `~/.claude/settings.json` to enable it.
+
+---
+
+## CLI reference
+
+All commands accept:
+
+- `--server <url>` — override the stored coordination server URL
+- `--state <path>` — override `~/.alice/state.json` (handy for running multiple identities on one machine)
+- `--json` — emit machine-readable output with untrusted-data framing suppressed
+
+Subcommands (run `alice <cmd> --help` for full flags):
+
+| Command | Purpose |
+|---|---|
+| `register` | Establish a new session (generates keypair, signs challenge, persists state) |
+| `whoami` | Print the current agent's identity and session metadata |
+| `publish` | Publish a new artifact (`--type summary|status_delta|blocker|commitment`, …) |
+| `query` | Run a permission-checked status query against a peer |
+| `result <query_id>` | Fetch the result of a previously submitted query |
+| `grant` | Grant another user read access scoped by type, sensitivity, and purpose |
+| `revoke <grant_id>` | Revoke a grant you created |
+| `peers` | List peers who have granted you access |
+| `request` | Send a request to a peer (`question` types can be auto-answered by the recipient's agent) |
+| `inbox` / `outbox` | List incoming / outgoing requests |
+| `respond <request_id>` | Respond to an incoming request (`--action accept|defer|deny|complete`) |
+| `approvals` / `approve` / `deny` | Manage pending approvals raised by risk or sensitivity thresholds |
+| `audit` | Print the authenticated agent's recent audit events |
+| `logout` | Clear the local session without touching server state |
+
+---
+
+## Quick start: single user with Claude Code (MCP)
 
 This requires only Go 1.23.x and no database.
 

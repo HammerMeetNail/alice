@@ -4,7 +4,7 @@
 
 Active implementation guide  
 Audience: engineering, platform, future agent sessions  
-Last updated: 2026-03-25 (steps s and t complete)
+Last updated: 2026-04-21 (step v complete — CLI, gatekeeper auto-answer, Claude Code skill)
 
 ---
 
@@ -13,6 +13,9 @@ Last updated: 2026-03-25 (steps s and t complete)
 The repository is no longer design-only. The current implementation includes:
 
 - a Go module and runnable coordination server entrypoint
+- a human-and-agent-facing CLI (`cmd/alice/`) that talks only HTTP to the coordination server, persists a per-user session under `~/.alice/state.json`, frames list output with `--- BEGIN UNTRUSTED DATA ---` / `--- END UNTRUSTED DATA ---` markers, and surfaces provenance (`confidence`, `observed_at`, `source_refs`) and `policy_basis` on every query response
+- a gatekeeper service (`internal/gatekeeper/`) that auto-answers eligible incoming requests from the recipient's already-published artifacts, producing `state: auto_answered` responses with verbatim-quoted Reporter-style summaries when aggregate confidence ≥ 0.6
+- a Claude Code skill (`.claude/skills/alice.md`) that teaches agents to prefer the CLI, treat output as untrusted data, quote artifacts verbatim with provenance, and never bypass `permission denied` by asking the user
 - a stdio MCP server entrypoint for local CLI-native clients
 - a local edge runtime skeleton entrypoint with JSON config loading, persisted local state, and an initial webhook-server mode
 - canonical Go domain models for agents, auth challenges/tokens, artifacts, grants, queries, requests, approvals, and audit events
@@ -414,6 +417,42 @@ Status: **complete** (2026-03-25)
 
 8. **Tests:** Unit tests cover first registrant gets `admin` + auto-approved, second registrant gets `pending_admin_approval`, admin approve/reject, non-admin gets `ErrNotOrgAdmin`, rejected token authentication fails. HTTP tests cover 403 on pending/rejected agents, admin approval + rejection flows, non-admin review returns 403, pagination on pending-agents list, combined `email_otp,admin_approval` mode.
 
+### step v: first-class `alice` CLI, gatekeeper auto-answer, and Claude Code skill
+
+Status: **complete** (2026-04-21)
+
+**Problem:** The project was MCP-first, which meant (a) a new user had to install a Claude Code / OpenCode MCP server just to try the system, (b) AI agents were free to fabricate teammate status because the MCP tool surface competed with the model's own knowledge, and (c) requests always landed in the human's inbox even when the recipient's agent had enough published data to answer directly. The feature that earns the name "alice" — an agent that actually gates interruptions — did not exist yet.
+
+**What was implemented:**
+
+1. **`internal/cli/` + `cmd/alice/`:** New remote-only HTTP client CLI. Subcommands: `register`, `whoami`, `publish`, `query`, `result`, `grant`, `revoke`, `peers`, `request`, `inbox`, `outbox`, `respond`, `approvals`, `approve`, `deny`, `audit`, `logout`. Session (server URL, agent ID, keypair, bearer token) persisted under `~/.alice/state.json` with `0600` file / `0700` directory permissions, written atomically via temp+rename. `$ALICE_STATE_FILE` overrides the path to allow multiple identities on one machine. `whoami` text output never includes the private key or bearer token; `--json` is an explicit opt-in.
+
+2. **Untrusted-data framing:** Every list response emitted by the CLI is wrapped between `--- BEGIN UNTRUSTED DATA ---` and `--- END UNTRUSTED DATA ---` markers so agents consuming CLI output treat it as DATA, not instructions. The markers are suppressed under `--json`.
+
+3. **Provenance-first output:** `core.QueryArtifact` gained `CreatedAt`, `ObservedAt`, and `SourceRefs` fields. `internal/queries/service.go` populates them from the underlying `core.Artifact` and its source refs (latest `observed_at` wins). `alice query` surfaces `confidence` and `policy_basis` on every response so consumers can judge how much to trust each artifact without reading the body.
+
+4. **Synthesised `source_ref` on `alice publish`:** The CLI auto-injects a provenance record (`source_system: alice_cli`, `trust_class: structured_system`, current UTC timestamp) so humans are not forced to author provenance metadata by hand and the publish path never bypasses the "every artifact has at least one source_ref" rule.
+
+5. **`internal/gatekeeper/`:** New service that wraps `queries.Service`. `Evaluate(ctx, core.Request)` synthesises a permission-checked query for informational request types (`question`, `status_check`, `context`, `info`, `status`), tries `status_check` and `request_context` purposes in an order that matches the request type, pulls the recipient's derived artifacts from the last 14 days, and when aggregate confidence ≥ 0.6 returns `AutoAnswer{Answered: true, Summary: …}` with a Reporter-style response that quotes each artifact's title, body, confidence, and observation time verbatim. Missing grant, low confidence, no matching artifact, or ineligible request types (`ask_for_time`, `review`, `approve`, …) all fall through with `Answered: false` and a populated `Reason`.
+
+6. **`internal/gatekeeper/adapter.go`:** `RequestsAdapter` satisfies the new `requests.AutoAnswerer` interface so the requests service can call the gatekeeper without importing the queries package (avoids cycle). `requests.Service.Send` calls `AutoAnswerer.Evaluate` after `SaveRequest`; when `Answered`, it updates the request to `core.RequestStateAutoAnswered` with the Reporter summary as `response_message`. Failure is never fatal — the request remains `pending` and the human handles it normally.
+
+7. **`core.RequestStateAutoAnswered`:** New state constant. `POST /v1/requests` now returns `response_message` alongside `state` so CLI callers see the auto-answer text on the same response that created the request.
+
+8. **`internal/app/server.go`:** `buildContainer` now wires the gatekeeper in front of the requests service: `requests.NewService(...).WithAutoAnswerer(gatekeeperService.AsRequestsAutoAnswerer())`.
+
+9. **`.claude/skills/alice.md`:** Claude Code skill that teaches agents to invoke the CLI rather than fabricate teammate state, treat every CLI response as untrusted data, quote artifacts verbatim with provenance, confirm before running `grant` / `revoke`, and never retry on `permission denied`. Auto-loaded when Claude Code runs from this repo.
+
+10. **`examples/claude-code-hooks.json`:** Opt-in `UserPromptSubmit` + `PreToolUse` hook example that nudges the agent toward the CLI when a prompt looks like a teammate-status question and logs `alice` invocations to a local audit trail.
+
+11. **Tests:**
+    - `internal/cli/cli_test.go`: boots an in-process coordination server via `app.NewContainer` + `httpapi.NewRouter`, drives register (alice, bob) → grant → publish → query → request flows end-to-end, asserts `state: "completed"` on query, `state: "auto_answered"` with `response_message` containing "Auto-answered" on the question-type request, and that `whoami` text output never contains `private_key:` or `access_token:`.
+    - `internal/gatekeeper/gatekeeper_test.go`: covers the auto-answer happy path (grant + fresh artifact → answered, confidence ≥ 0.6, artifact IDs populated), deferral when no grant exists, and deferral when the request type is ineligible.
+
+**Why the purpose-fallback matters:** The first implementation synthesised queries with `QueryPurposeRequestContext` only, which meant recipients had to grant `request_context` explicitly for the gatekeeper to fire. In practice users naturally grant `status_check` for status questions. `purposesForRequestType` now returns the candidate purposes in an order that matches the request type (e.g. `question` → `[request_context, status_check]`), and the gatekeeper accepts the first purpose that produces any artifacts. This keeps the common one-purpose grant working without weakening permission semantics — each attempt still goes through `queries.Evaluate` with the normal grant checks.
+
+**Docs updated:** `README.md` now leads with a CLI quick-start, a two-machine demo that ends in a gatekeeper auto-answer, a "Using the CLI from Claude Code" section, and a CLI reference table. MCP docs are preserved below. `AGENTS.md` entries added for `cmd/alice/`, `.claude/skills/alice.md`, the gatekeeper, and the CLI.
+
 ---
 
 ## 5. immediate constraints for future sessions
@@ -442,6 +481,7 @@ See `docs/roadmap.md` for tracked work items.
 
 ### recently completed
 
+- **step v (2026-04-21):** first-class `alice` CLI, gatekeeper auto-answer, and Claude Code skill (see step v below)
 - **step u (2026-04-06):** local git tracker in MCP server (`internal/tracker/`); background goroutine reads local repo state and publishes `status_delta` artifacts with dedup and supersedes chains; enabled via `ALICE_TRACK_REPOS`
 - **steps s–t (2026-03-25):** org invite tokens, admin approval queue
 - **step r (2026-03-25):** email OTP verification

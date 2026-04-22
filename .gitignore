@@ -1,3 +1,4 @@
 .alice/
+/alice
 alice-mcp-server
 coverage.out

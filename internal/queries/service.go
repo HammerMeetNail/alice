@@ -118,6 +118,9 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 			Content:     content,
 			Sensitivity: artifact.Sensitivity,
 			Confidence:  artifact.Confidence,
+			CreatedAt:   artifact.CreatedAt,
+			ObservedAt:  latestObservedAt(artifact.SourceRefs),
+			SourceRefs:  artifact.SourceRefs,
 		})
 		policyBasis = append(policyBasis, "grant:"+matchedGrant.PolicyGrantID)
 	}
@@ -312,16 +315,24 @@ func dedupe(values []string) []string {
 }
 
 func artifactActivityTime(artifact core.Artifact) time.Time {
-	var latestObservedAt time.Time
-	for _, ref := range artifact.SourceRefs {
-		if ref.ObservedAt.After(latestObservedAt) {
-			latestObservedAt = ref.ObservedAt
-		}
-	}
-	if !latestObservedAt.IsZero() {
-		return latestObservedAt
+	if observed := latestObservedAt(artifact.SourceRefs); !observed.IsZero() {
+		return observed
 	}
 	return artifact.CreatedAt
+}
+
+// latestObservedAt returns the most recent observed_at across a set of source
+// references. It is used both for time-window filtering (so we match on when
+// the source actually occurred, not when the artifact was persisted) and for
+// provenance display in query responses.
+func latestObservedAt(refs []core.SourceReference) time.Time {
+	var latest time.Time
+	for _, ref := range refs {
+		if ref.ObservedAt.After(latest) {
+			latest = ref.ObservedAt
+		}
+	}
+	return latest
 }
 
 func supersededArtifactIDs(artifacts []core.Artifact) map[string]struct{} {

@@ -1,0 +1,142 @@
+package gatekeeper_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"alice/internal/artifacts"
+	"alice/internal/core"
+	"alice/internal/gatekeeper"
+	"alice/internal/id"
+	"alice/internal/policy"
+	"alice/internal/queries"
+	"alice/internal/storage/memory"
+)
+
+// TestAutoAnswerWhenGrantAndArtifactsExist confirms the gatekeeper's
+// Reporter-style behavior: when a teammate has published a relevant artifact
+// and granted access, a request from an eligible type is answered without
+// human intervention.
+func TestAutoAnswerWhenGrantAndArtifactsExist(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	orgID := id.New("org")
+	recipient := core.User{UserID: id.New("user"), OrgID: orgID, Email: "bob@example.com"}
+	sender := core.User{UserID: id.New("user"), OrgID: orgID, Email: "alice@example.com"}
+	if _, err := store.UpsertUser(ctx, recipient); err != nil {
+		t.Fatalf("save recipient: %v", err)
+	}
+	if _, err := store.UpsertUser(ctx, sender); err != nil {
+		t.Fatalf("save sender: %v", err)
+	}
+
+	// Bob publishes a status_delta artifact.
+	artSvc := artifacts.NewService(store)
+	artifact := core.Artifact{
+		ArtifactID:     id.New("artifact"),
+		OrgID:          orgID,
+		OwnerUserID:    recipient.UserID,
+		OwnerAgentID:   id.New("agent"),
+		Type:           core.ArtifactTypeStatusDelta,
+		Title:          "Auth refactor",
+		Content:        "Extracting JWT validation. Two PRs open.",
+		Sensitivity:    core.SensitivityLow,
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Confidence:     0.9,
+		SourceRefs: []core.SourceReference{{
+			SourceSystem: "test",
+			SourceType:   "manual",
+			SourceID:     "seed",
+			ObservedAt:   time.Now().UTC(),
+			TrustClass:   core.TrustClassStructuredSystem,
+			Sensitivity:  core.SensitivityLow,
+		}},
+	}
+	if _, err := store.SaveArtifact(ctx, artifact); err != nil {
+		t.Fatalf("save artifact: %v", err)
+	}
+	_ = artSvc
+
+	// Bob grants Alice status_check access.
+	polSvc := policy.NewService(store)
+	if _, err := polSvc.Grant(ctx, orgID, recipient, sender, "project", "*",
+		[]core.ArtifactType{core.ArtifactTypeStatusDelta, core.ArtifactTypeSummary},
+		core.SensitivityMedium,
+		[]core.QueryPurpose{core.QueryPurposeRequestContext, core.QueryPurposeStatusCheck}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	qSvc := queries.NewService(store, artSvc, polSvc, store, store)
+	gk := gatekeeper.NewService(qSvc, gatekeeper.Options{})
+
+	req := core.Request{
+		RequestID:   id.New("request"),
+		OrgID:       orgID,
+		FromAgentID: id.New("agent"),
+		FromUserID:  sender.UserID,
+		ToAgentID:   id.New("agent"),
+		ToUserID:    recipient.UserID,
+		RequestType: "question",
+		Title:       "What is bob working on?",
+		Content:     "Context for today's planning call.",
+		CreatedAt:   time.Now().UTC(),
+		ExpiresAt:   time.Now().UTC().Add(time.Hour),
+		State:       core.RequestStatePending,
+	}
+
+	verdict := gk.Evaluate(ctx, req)
+	if !verdict.Answered {
+		t.Fatalf("expected auto-answer, got reason=%q", verdict.Reason)
+	}
+	if verdict.Confidence < 0.6 {
+		t.Fatalf("expected confidence above threshold, got %v", verdict.Confidence)
+	}
+	if len(verdict.ArtifactIDs) == 0 {
+		t.Fatalf("expected at least one supporting artifact id")
+	}
+}
+
+// TestDeferWhenNoGrant confirms the gatekeeper falls through to the human
+// path when no grant exists between the sender and recipient.
+func TestDeferWhenNoGrant(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	orgID := id.New("org")
+	recipientID := id.New("user")
+	senderID := id.New("user")
+
+	qSvc := queries.NewService(store, artifacts.NewService(store), policy.NewService(store), store, store)
+	gk := gatekeeper.NewService(qSvc, gatekeeper.Options{})
+
+	verdict := gk.Evaluate(ctx, core.Request{
+		OrgID:       orgID,
+		FromUserID:  senderID,
+		ToUserID:    recipientID,
+		RequestType: "question",
+		Title:       "Anything?",
+		Content:     "status",
+		CreatedAt:   time.Now().UTC(),
+	})
+	if verdict.Answered {
+		t.Fatalf("expected deferral when no grant exists")
+	}
+}
+
+// TestDeferWhenRequestTypeIneligible confirms action-like request types (e.g.
+// ask_for_time) are never auto-answered, since the agent cannot act on the
+// user's behalf.
+func TestDeferWhenRequestTypeIneligible(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	qSvc := queries.NewService(store, artifacts.NewService(store), policy.NewService(store), store, store)
+	gk := gatekeeper.NewService(qSvc, gatekeeper.Options{})
+	verdict := gk.Evaluate(ctx, core.Request{
+		RequestType: "ask_for_time",
+		Title:       "Have 15 minutes today?",
+	})
+	if verdict.Answered {
+		t.Fatalf("expected ineligible request type to defer")
+	}
+}

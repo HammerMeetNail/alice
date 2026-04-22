@@ -10,10 +10,29 @@ import (
 	"alice/internal/storage"
 )
 
+// AutoAnswerer is the subset of the gatekeeper surface the requests service
+// needs. It is declared here to avoid importing the gatekeeper package (which
+// itself imports queries) and to let tests supply fakes.
+type AutoAnswerer interface {
+	Evaluate(ctx context.Context, request core.Request) AutoAnswerResult
+}
+
+// AutoAnswerResult mirrors gatekeeper.AutoAnswer without importing the
+// package. The concrete gatekeeper adapter in internal/gatekeeper wraps this
+// into the service via WithAutoAnswerer.
+type AutoAnswerResult struct {
+	Answered    bool
+	Summary     string
+	ArtifactIDs []string
+	Confidence  float64
+	Reason      string
+}
+
 type Service struct {
-	requests  storage.RequestRepository
-	approvals storage.ApprovalRepository
-	tx        storage.Transactor
+	requests   storage.RequestRepository
+	approvals  storage.ApprovalRepository
+	tx         storage.Transactor
+	autoAnswer AutoAnswerer
 }
 
 func NewService(requests storage.RequestRepository, approvals storage.ApprovalRepository, tx storage.Transactor) *Service {
@@ -22,6 +41,14 @@ func NewService(requests storage.RequestRepository, approvals storage.ApprovalRe
 		approvals: approvals,
 		tx:        tx,
 	}
+}
+
+// WithAutoAnswerer enables the gatekeeper's auto-answer path. When set, Send
+// will attempt to answer eligible requests from the recipient's existing
+// derived artifacts before leaving them pending for the human.
+func (s *Service) WithAutoAnswerer(a AutoAnswerer) *Service {
+	s.autoAnswer = a
+	return s
 }
 
 func (s *Service) Send(ctx context.Context, request core.Request) (core.Request, error) {
@@ -37,6 +64,26 @@ func (s *Service) Send(ctx context.Context, request core.Request) (core.Request,
 	if err != nil {
 		return core.Request{}, fmt.Errorf("save request: %w", err)
 	}
+
+	// Give the gatekeeper a chance to answer from the recipient's existing
+	// derived artifacts before the request sits in the human's inbox. A
+	// failure here is never fatal — the request remains pending and the
+	// human handles it normally.
+	if s.autoAnswer != nil {
+		if answer := s.autoAnswer.Evaluate(ctx, saved); answer.Answered {
+			message := answer.Summary
+			if message == "" {
+				message = "Auto-answered by the recipient's agent from derived artifacts."
+			}
+			updated, ok, updateErr := s.requests.UpdateRequestState(ctx,
+				saved.RequestID, core.RequestStateAutoAnswered,
+				saved.ApprovalState, message)
+			if updateErr == nil && ok {
+				return updated, nil
+			}
+		}
+	}
+
 	return saved, nil
 }
 

@@ -16,6 +16,7 @@ import (
 	"alice/internal/audit"
 	"alice/internal/config"
 	"alice/internal/email"
+	"alice/internal/gatekeeper"
 	"alice/internal/httpapi"
 	"alice/internal/policy"
 	"alice/internal/queries"
@@ -108,7 +109,9 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService, repos, repos)
-	requestService := requests.NewService(repos, repos, repos)
+	gatekeeperService := gatekeeper.NewService(queryService, gatekeeper.Options{})
+	requestService := requests.NewService(repos, repos, repos).
+		WithAutoAnswerer(gatekeeperService.AsRequestsAutoAnswerer())
 	approvalService := approvals.NewService(repos, repos, repos, repos)
 
 	var auditSinks []audit.Sink
