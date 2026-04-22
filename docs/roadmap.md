@@ -14,7 +14,8 @@ Tracked work items for alice, organized by priority.
 - [x] Provenance-first CLI output (`confidence`, `observed_at`, `source_refs`, `policy_basis`)
 - [x] Synthesised `source_ref` on `alice publish`
 - [x] Gatekeeper: capture auto-answer responses in the audit log with supporting artifact IDs (`request.auto_answered` event recorded with `confidence`, `artifact_ids`, `artifact_count`)
-- [ ] Gatekeeper: configurable confidence threshold and lookback window per org (currently compile-time defaults: 0.6 confidence, 14-day window)
+- [x] Gatekeeper: server-wide configurable confidence threshold and lookback window via `ALICE_GATEKEEPER_CONFIDENCE_THRESHOLD` / `ALICE_GATEKEEPER_LOOKBACK_WINDOW` (compile-time defaults: 0.6 confidence, 14-day window)
+- [ ] Gatekeeper: per-org confidence threshold and lookback window (requires storage migration)
 - [x] CLI: `alice register` surfaces the org's `first_invite_token` on first registration — shown in text mode and included in `--json` output for automation
 - [ ] CLI: richer `alice inbox --watch` / tail mode for humans triaging pending requests
 - [ ] CLI: shell completion (`alice completion bash|zsh|fish`)

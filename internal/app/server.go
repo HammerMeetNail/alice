@@ -109,7 +109,10 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	queryService := queries.NewService(repos, artifactService, policyService, repos, repos)
-	gatekeeperService := gatekeeper.NewService(queryService, gatekeeper.Options{})
+	gatekeeperService := gatekeeper.NewService(queryService, gatekeeper.Options{
+		ConfidenceThreshold: cfg.GatekeeperConfidenceThreshold,
+		LookbackWindow:      cfg.GatekeeperLookbackWindow,
+	})
 	approvalService := approvals.NewService(repos, repos, repos, repos)
 
 	var auditSinks []audit.Sink

@@ -886,6 +886,9 @@ Set these on the `cmd/server` process.
 | `ALICE_SMTP_TLS` | `true` | Set `false` to disable STARTTLS (e.g. for local mail catchers). |
 | `ALICE_EMAIL_OTP_TTL` | `10m` | How long an OTP code is valid after issuance. |
 | `ALICE_EMAIL_OTP_MAX_ATTEMPTS` | `5` | Maximum wrong-code attempts before the verification record is locked. |
+| `ALICE_AUDIT_LOG_FILE` | _(none)_ | Path to an NDJSON audit log file. When set, every audit event is appended to this file in addition to the database, enabling external SIEM ingestion. |
+| `ALICE_GATEKEEPER_CONFIDENCE_THRESHOLD` | `0.6` | Minimum aggregate artifact confidence required before the gatekeeper auto-answers a request on the recipient's behalf. Accepts values in `[0, 1]`; anything outside the range is ignored and the compile-time default applies. |
+| `ALICE_GATEKEEPER_LOOKBACK_WINDOW` | `336h` (14d) | How far back the gatekeeper searches for recent artifacts when synthesising an auto-answer query. Accepts Go duration strings (e.g. `72h`, `168h`). |
 
 ## MCP server environment variables
 

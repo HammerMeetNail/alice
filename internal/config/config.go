@@ -30,6 +30,17 @@ type Config struct {
 	// AuditLogFile is the path to an NDJSON audit log file. When set, all audit
 	// events are written to this file in addition to the database.
 	AuditLogFile string
+
+	// Gatekeeper auto-answer tuning.
+	//
+	// GatekeeperConfidenceThreshold is the minimum aggregate artifact
+	// confidence required before the gatekeeper answers a request on the
+	// recipient's behalf. Values outside [0, 1] fall back to the compile-time
+	// default. Zero leaves the default.
+	GatekeeperConfidenceThreshold float64
+	// GatekeeperLookbackWindow is how far back the gatekeeper looks for
+	// artifacts when synthesising a query. Zero leaves the default.
+	GatekeeperLookbackWindow time.Duration
 }
 
 func FromEnv() Config {
@@ -56,7 +67,22 @@ func FromEnv() Config {
 		EmailOTPMaxAttempts: intFromEnv("ALICE_EMAIL_OTP_MAX_ATTEMPTS", 5),
 
 		AuditLogFile: strings.TrimSpace(os.Getenv("ALICE_AUDIT_LOG_FILE")),
+
+		GatekeeperConfidenceThreshold: floatFromEnv("ALICE_GATEKEEPER_CONFIDENCE_THRESHOLD", 0),
+		GatekeeperLookbackWindow:      durationFromEnv("ALICE_GATEKEEPER_LOOKBACK_WINDOW", 0),
 	}
+}
+
+func floatFromEnv(key string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value < 0 || value > 1 {
+		return fallback
+	}
+	return value
 }
 
 func intFromEnv(key string, fallback int) int {
