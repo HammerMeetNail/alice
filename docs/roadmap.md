@@ -24,7 +24,7 @@ Quick status view. Every unchecked item points at a plan in `docs/plans/` that a
 - [x] Field-level artifact redaction, fine-grained audit queries
 - [ ] `team_scope` / `manager_scope` visibility + rich org graph — [plans/org-graph-and-scoped-visibility.md](plans/org-graph-and-scoped-visibility.md)
 - [ ] Operator phase — [plans/operator-phase.md](plans/operator-phase.md)
-- [ ] Advanced risk policy engine — [plans/risk-policy-engine.md](plans/risk-policy-engine.md)
+- [x] Advanced risk policy engine (per-org versioned JSON policies, admin-gated apply/history/activate, evaluator overrides the grant ladder in queries service)
 
 ## quality / operational
 

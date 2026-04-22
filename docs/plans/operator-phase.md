@@ -65,5 +65,5 @@ The whole plan is about designing enough rails that auto-execution stays safe ev
 
 ## dependencies
 
-- risk-policy-engine.md — the risk classification is reused; don't duplicate it
-- per-org-gatekeeper-tuning.md — not blocking, but the same "per-org override" pattern could apply to per-kind risk thresholds
+- risk policy engine (LANDED): reuse `internal/riskpolicy.Service.Evaluate` with Inputs populated for the action kind; don't duplicate classification
+- per-org gatekeeper tuning (LANDED): same "per-org override" pattern applies to per-kind risk thresholds when we need them

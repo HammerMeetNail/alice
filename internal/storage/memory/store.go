@@ -38,6 +38,7 @@ type Store struct {
 	emailVerifsByAgent map[string]string                // agentID → verificationID (pending)
 	agentApprovals   map[string]core.AgentApproval      // approvalID → approval
 	agentApprovalsByAgent map[string]string             // agentID → approvalID
+	riskPolicies     map[string]core.RiskPolicy         // policyID → policy
 }
 
 var (
@@ -54,6 +55,7 @@ var (
 	_ storage.AuditRepository                      = (*Store)(nil)
 	_ storage.EmailVerificationRepository          = (*Store)(nil)
 	_ storage.AgentApprovalRepository              = (*Store)(nil)
+	_ storage.RiskPolicyRepository                 = (*Store)(nil)
 )
 
 func New() *Store {
@@ -80,6 +82,7 @@ func New() *Store {
 		emailVerifsByAgent: make(map[string]string),
 		agentApprovals:       make(map[string]core.AgentApproval),
 		agentApprovalsByAgent: make(map[string]string),
+		riskPolicies:         make(map[string]core.RiskPolicy),
 	}
 }
 
@@ -793,6 +796,106 @@ func (s *Store) UpdateAgentApproval(_ context.Context, approvalID, decision, rea
 	approval.ReviewedAt = &reviewedAt
 	s.agentApprovals[approvalID] = approval
 	return nil
+}
+
+// --- Risk policies ---
+
+func (s *Store) SavePolicy(_ context.Context, policy core.RiskPolicy) (core.RiskPolicy, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.riskPolicies[policy.PolicyID] = policy
+	return policy, nil
+}
+
+func (s *Store) FindActivePolicyForOrg(_ context.Context, orgID string) (core.RiskPolicy, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var (
+		active core.RiskPolicy
+		found  bool
+	)
+	for _, policy := range s.riskPolicies {
+		if policy.OrgID != orgID {
+			continue
+		}
+		if policy.ActiveAt == nil {
+			continue
+		}
+		if !found || policy.ActiveAt.After(*active.ActiveAt) {
+			active = policy
+			found = true
+		}
+	}
+	return active, found, nil
+}
+
+func (s *Store) FindPolicyByID(_ context.Context, policyID string) (core.RiskPolicy, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	policy, ok := s.riskPolicies[policyID]
+	return policy, ok, nil
+}
+
+func (s *Store) ListPoliciesForOrg(_ context.Context, orgID string, limit, offset int) ([]core.RiskPolicy, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]core.RiskPolicy, 0)
+	for _, policy := range s.riskPolicies {
+		if policy.OrgID == orgID {
+			out = append(out, policy)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		// Newest first: higher version => earlier in the list.
+		return out[i].Version > out[j].Version
+	})
+	return pageSlice(out, limit, offset), nil
+}
+
+func (s *Store) ActivatePolicy(_ context.Context, policyID string, activeAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	target, ok := s.riskPolicies[policyID]
+	if !ok {
+		return storage.ErrRiskPolicyNotFound
+	}
+
+	// Deactivate any other active policy in the same org; then activate
+	// this one. Callers rely on at-most-one-active invariant.
+	for id, policy := range s.riskPolicies {
+		if policy.OrgID != target.OrgID {
+			continue
+		}
+		if policy.ActiveAt == nil {
+			continue
+		}
+		policy.ActiveAt = nil
+		s.riskPolicies[id] = policy
+	}
+	target.ActiveAt = &activeAt
+	s.riskPolicies[policyID] = target
+	return nil
+}
+
+func (s *Store) NextPolicyVersionForOrg(_ context.Context, orgID string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	max := 0
+	for _, policy := range s.riskPolicies {
+		if policy.OrgID != orgID {
+			continue
+		}
+		if policy.Version > max {
+			max = policy.Version
+		}
+	}
+	return max + 1, nil
 }
 
 // WithTx satisfies storage.Transactor. The memory store's mutex-based

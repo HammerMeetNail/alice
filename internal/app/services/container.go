@@ -60,12 +60,23 @@ type AuditService interface {
 	Summary(ctx context.Context, agentID string, since time.Time, limit, offset int, filter audit.SummaryFilter) ([]core.AuditEvent, error)
 }
 
+// RiskPolicyService is the admin-gated management surface for per-org risk
+// policies. The router uses this directly; the queries path consumes the
+// evaluator adapter (see riskpolicy.AsQueriesEvaluator) and does not touch
+// this interface.
+type RiskPolicyService interface {
+	Apply(ctx context.Context, agent core.Agent, name string, source []byte) (core.RiskPolicy, error)
+	Activate(ctx context.Context, agent core.Agent, policyID string) (core.RiskPolicy, error)
+	History(ctx context.Context, agent core.Agent, limit, offset int) ([]core.RiskPolicy, error)
+}
+
 type Container struct {
-	Agents    AgentService
-	Artifacts ArtifactService
-	Policy    PolicyService
-	Queries   QueryService
-	Requests  RequestService
-	Approvals ApprovalService
-	Audit     AuditService
+	Agents     AgentService
+	Artifacts  ArtifactService
+	Policy     PolicyService
+	Queries    QueryService
+	Requests   RequestService
+	Approvals  ApprovalService
+	Audit      AuditService
+	RiskPolicy RiskPolicyService
 }

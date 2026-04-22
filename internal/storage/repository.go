@@ -111,6 +111,22 @@ type EmailVerificationRepository interface {
 	IncrementVerificationAttempts(ctx context.Context, verificationID string) error
 }
 
+// ErrRiskPolicyNotFound is returned when no risk policy matches the given criteria.
+var ErrRiskPolicyNotFound = errors.New("risk policy not found")
+
+// RiskPolicyRepository persists per-org risk policies. SavePolicy writes a
+// new version; ActivatePolicy atomically flips the active_at flag, ensuring
+// only one policy per org is active at a time. Rollback works by calling
+// ActivatePolicy with an older version's ID.
+type RiskPolicyRepository interface {
+	SavePolicy(ctx context.Context, policy core.RiskPolicy) (core.RiskPolicy, error)
+	FindActivePolicyForOrg(ctx context.Context, orgID string) (core.RiskPolicy, bool, error)
+	FindPolicyByID(ctx context.Context, policyID string) (core.RiskPolicy, bool, error)
+	ListPoliciesForOrg(ctx context.Context, orgID string, limit, offset int) ([]core.RiskPolicy, error)
+	ActivatePolicy(ctx context.Context, policyID string, activeAt time.Time) error
+	NextPolicyVersionForOrg(ctx context.Context, orgID string) (int, error)
+}
+
 // AuditFilter groups the parameters accepted by ListAuditEvents.
 // Non-empty string fields are combined as AND conditions.
 type AuditFilter struct {
@@ -143,6 +159,7 @@ type StoreTx interface {
 	AuditRepository
 	EmailVerificationRepository
 	AgentApprovalRepository
+	RiskPolicyRepository
 }
 
 // Transactor runs fn inside a single atomic transaction.

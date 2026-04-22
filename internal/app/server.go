@@ -21,6 +21,7 @@ import (
 	"alice/internal/policy"
 	"alice/internal/queries"
 	"alice/internal/requests"
+	"alice/internal/riskpolicy"
 	"alice/internal/storage"
 	"alice/internal/storage/memory"
 	"alice/internal/storage/postgres"
@@ -45,6 +46,7 @@ type repositories interface {
 	storage.AuditRepository
 	storage.EmailVerificationRepository
 	storage.AgentApprovalRepository
+	storage.RiskPolicyRepository
 	storage.Transactor
 }
 
@@ -108,7 +110,9 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
-	queryService := queries.NewService(repos, artifactService, policyService, repos, repos)
+	riskPolicyService := riskpolicy.NewService(repos, repos)
+	queryService := queries.NewService(repos, artifactService, policyService, repos, repos).
+		WithRiskPolicyEvaluator(riskPolicyService.AsQueriesEvaluator())
 	gatekeeperService := gatekeeper.NewService(queryService, gatekeeper.Options{
 		ConfidenceThreshold: cfg.GatekeeperConfidenceThreshold,
 		LookbackWindow:      cfg.GatekeeperLookbackWindow,
@@ -132,12 +136,13 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 		WithAuditRecorder(auditService)
 
 	return services.Container{
-		Agents:    agentService,
-		Artifacts: artifactService,
-		Policy:    policyService,
-		Queries:   queryService,
-		Requests:  requestService,
-		Approvals: approvalService,
-		Audit:     auditService,
+		Agents:     agentService,
+		Artifacts:  artifactService,
+		Policy:     policyService,
+		Queries:    queryService,
+		Requests:   requestService,
+		Approvals:  approvalService,
+		Audit:      auditService,
+		RiskPolicy: riskPolicyService,
 	}
 }

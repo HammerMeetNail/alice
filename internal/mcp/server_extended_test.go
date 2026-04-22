@@ -328,6 +328,58 @@ func TestUpdateVerificationModeMCP(t *testing.T) {
 	}
 }
 
+func TestRiskPolicyMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	keys := generateKeys(t)
+
+	server := NewServer(handler)
+	callTool(t, server, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice-agent", "client_type": "mcp",
+		"public_key": keys.PublicKey, "private_key": keys.PrivateKey,
+	})
+
+	applied := mustStructuredContent(t, callTool(t, server, "apply_risk_policy", map[string]any{
+		"name": "mcp-smoke",
+		"source": map[string]any{
+			"rules": []map[string]any{
+				{"when": map[string]any{}, "then": "allow"},
+			},
+		},
+		"confirm": true,
+	}))
+	if applied["policy_id"] == nil {
+		t.Fatal("expected policy_id in MCP response")
+	}
+
+	history := mustStructuredContent(t, callTool(t, server, "list_risk_policies", map[string]any{}))
+	if history["policies"] == nil {
+		t.Fatal("expected policies in list response")
+	}
+
+	// Apply without confirm must fail at the MCP layer.
+	noConfirm, rpcErr := callToolRaw(t, server, "apply_risk_policy", map[string]any{
+		"source": map[string]any{"rules": []map[string]any{{"when": map[string]any{}, "then": "allow"}}},
+	})
+	if rpcErr != nil {
+		t.Fatalf("unexpected JSON-RPC error: %+v", rpcErr)
+	}
+	if isErr, _ := noConfirm["isError"].(bool); !isErr {
+		t.Fatalf("expected isError=true when confirm is absent, got %v", noConfirm)
+	}
+
+	// Activate needs a confirm flag and the caller is admin, so it should
+	// succeed against the just-applied policy id.
+	activated := mustStructuredContent(t, callTool(t, server, "activate_risk_policy", map[string]any{
+		"policy_id": applied["policy_id"],
+		"confirm":   true,
+	}))
+	if activated["policy_id"] != applied["policy_id"] {
+		t.Fatalf("activate returned different policy_id; got %v want %v", activated["policy_id"], applied["policy_id"])
+	}
+}
+
 func TestSetGatekeeperTuningMCP(t *testing.T) {
 	handler := newTestHandler(t)
 	fixture := newFixture(t)

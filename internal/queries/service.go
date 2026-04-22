@@ -23,12 +23,22 @@ type PolicySource interface {
 	ListGrantsForPair(ctx context.Context, grantorUserID, granteeUserID string) ([]core.PolicyGrant, error)
 }
 
+// RiskPolicyEvaluator overrides the grant-level `requires_approval_above_risk`
+// ladder with an admin-applied policy. Implementations are expected to fail
+// closed: any evaluation error returns core.RiskDecisionDeny. Passing nil
+// disables the evaluator and the queries service falls back to the ladder,
+// preserving pre-policy-engine behaviour.
+type RiskPolicyEvaluator interface {
+	EvaluateQuery(ctx context.Context, query core.Query, matchedGrant core.PolicyGrant, artifact core.Artifact) core.RiskDecisionAction
+}
+
 type Service struct {
 	store     storage.QueryRepository
 	artifacts ArtifactSource
 	policies  PolicySource
 	approvals storage.ApprovalRepository
 	tx        storage.Transactor
+	risk      RiskPolicyEvaluator
 }
 
 func NewService(store storage.QueryRepository, artifacts ArtifactSource, policies PolicySource, approvals storage.ApprovalRepository, tx storage.Transactor) *Service {
@@ -39,6 +49,14 @@ func NewService(store storage.QueryRepository, artifacts ArtifactSource, policie
 		approvals: approvals,
 		tx:        tx,
 	}
+}
+
+// WithRiskPolicyEvaluator attaches an evaluator; calls with nil are ignored.
+func (s *Service) WithRiskPolicyEvaluator(eval RiskPolicyEvaluator) *Service {
+	if s != nil && eval != nil {
+		s.risk = eval
+	}
+	return s
 }
 
 func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryResponse, error) {
@@ -97,11 +115,28 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 			continue
 		}
 
+		// Risk-policy decision: an admin-applied policy can override the
+		// ladder either way — allow what the ladder would gate, or require
+		// approval / deny something the ladder would wave through. When no
+		// policy is attached (nil evaluator) we fall through to the ladder
+		// so existing deployments keep behaving identically.
+		ladderVerdict := core.RiskDecisionAllow
 		if core.RiskLevelExceeds(query.RiskLevel, matchedGrant.RequiresApprovalAboveRisk) {
+			ladderVerdict = core.RiskDecisionRequireApproval
+		}
+		verdict := ladderVerdict
+		if s.risk != nil {
+			verdict = s.risk.EvaluateQuery(ctx, query, *matchedGrant, artifact)
+		}
+		switch verdict {
+		case core.RiskDecisionDeny:
+			redactions = append(redactions, fmt.Sprintf("artifact:%s: denied by risk policy", artifact.ArtifactID))
+			continue
+		case core.RiskDecisionRequireApproval:
 			if approvalRequiredByGrant == nil {
 				approvalRequiredByGrant = matchedGrant
 			}
-			redactions = append(redactions, fmt.Sprintf("artifact:%s: withheld pending approval (risk level %q exceeds grant threshold %q)", artifact.ArtifactID, query.RiskLevel, matchedGrant.RequiresApprovalAboveRisk))
+			redactions = append(redactions, fmt.Sprintf("artifact:%s: withheld pending approval (risk level %q, grant threshold %q)", artifact.ArtifactID, query.RiskLevel, matchedGrant.RequiresApprovalAboveRisk))
 			continue
 		}
 

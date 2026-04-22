@@ -356,6 +356,34 @@ type EmailVerification struct {
 	Attempts       int        `json:"attempts"`
 }
 
+// RiskPolicy is one versioned evaluable policy belonging to an org. A policy
+// records its Source (the raw JSON document applied by an admin) verbatim so
+// audits can show exactly what was evaluated. Only one policy per org may
+// have a non-nil ActiveAt at any time; rollback works by activating a prior
+// Version.
+type RiskPolicy struct {
+	PolicyID        string     `json:"policy_id"`
+	OrgID           string     `json:"org_id"`
+	Name            string     `json:"name"`
+	Version         int        `json:"version"`
+	Source          string     `json:"source"`
+	CreatedAt       time.Time  `json:"created_at"`
+	CreatedByUserID string     `json:"created_by_user_id,omitempty"`
+	ActiveAt        *time.Time `json:"active_at,omitempty"`
+}
+
+// RiskDecisionAction is the outcome of evaluating a risk policy against an
+// input. The set is intentionally tiny — every consumer knows how to react
+// to each action — and new actions are added only when a concrete consumer
+// needs them.
+type RiskDecisionAction string
+
+const (
+	RiskDecisionAllow           RiskDecisionAction = "allow"
+	RiskDecisionRequireApproval RiskDecisionAction = "require_approval"
+	RiskDecisionDeny            RiskDecisionAction = "deny"
+)
+
 type AuditEvent struct {
 	AuditEventID  string         `json:"audit_event_id"`
 	OrgID         string         `json:"org_id"`

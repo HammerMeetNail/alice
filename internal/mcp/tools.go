@@ -232,6 +232,34 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			}),
 			Handler: s.handleUpdateVerificationMode,
 		},
+		"apply_risk_policy": {
+			Name:        "apply_risk_policy",
+			Description: "Apply a new risk policy for the caller's org. Caller must be an org admin. Source is the parsed JSON policy document; name is optional but recommended for audit.",
+			InputSchema: objectSchema(map[string]any{
+				"name":    stringSchema("Optional human-readable policy name."),
+				"source":  map[string]any{"type": "object", "description": "Policy document: { rules: [{when, then, reason?}, ...] }. First matching rule wins; actions are allow | require_approval | deny."},
+				"confirm": map[string]any{"type": "boolean", "description": "Set true to confirm you want to apply this policy."},
+			}),
+			Handler: s.handleApplyRiskPolicy,
+		},
+		"list_risk_policies": {
+			Name:        "list_risk_policies",
+			Description: "List the caller org's risk policy history, newest first.",
+			InputSchema: objectSchema(map[string]any{
+				"limit":  map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor": stringSchema("Opaque pagination cursor from a previous response."),
+			}),
+			Handler: s.handleListRiskPolicies,
+		},
+		"activate_risk_policy": {
+			Name:        "activate_risk_policy",
+			Description: "Activate a previously-saved risk policy version (rolls back or forward). Caller must be an org admin.",
+			InputSchema: objectSchema(map[string]any{
+				"policy_id": stringSchema("Policy id to activate."),
+				"confirm":   map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleActivateRiskPolicy,
+		},
 		"set_gatekeeper_tuning": {
 			Name:        "set_gatekeeper_tuning",
 			Description: "Set per-org overrides for the gatekeeper auto-answer path. Caller must be an org admin. Pass clear=true to revert both overrides to the server-wide defaults.",
@@ -450,6 +478,36 @@ func (s *Server) handleUpdateVerificationMode(ctx context.Context, args map[stri
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/verification-mode", map[string]any{
 		"verification_mode": mode,
 	})
+}
+
+func (s *Server) handleApplyRiskPolicy(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
+	source, ok := args["source"]
+	if !ok {
+		return nil, fmt.Errorf("source is required")
+	}
+	body := map[string]any{
+		"name":   stringArg(args, "name"),
+		"source": source,
+	}
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/risk-policy", body)
+}
+
+func (s *Server) handleListRiskPolicies(ctx context.Context, args map[string]any) (any, error) {
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/orgs/risk-policies"+paginationQuery(args, ""), nil)
+}
+
+func (s *Server) handleActivateRiskPolicy(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
+	policyID := stringArg(args, "policy_id")
+	if policyID == "" {
+		return nil, fmt.Errorf("policy_id is required")
+	}
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/risk-policies/"+policyID+"/activate", nil)
 }
 
 func (s *Server) handleSetGatekeeperTuning(ctx context.Context, args map[string]any) (any, error) {

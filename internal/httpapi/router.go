@@ -20,6 +20,8 @@ import (
 	"alice/internal/id"
 	"alice/internal/queries"
 	"alice/internal/requests"
+	"alice/internal/riskpolicy"
+	"alice/internal/storage"
 )
 
 // ipBucket is a simple token-bucket rate limiter entry per IP address.
@@ -115,6 +117,9 @@ func (r *router) routes() {
 	r.mux.Handle("POST /v1/orgs/rotate-invite-token", r.requireVerifiedAuth(http.HandlerFunc(r.handleRotateInviteToken)))
 	r.mux.Handle("POST /v1/orgs/verification-mode", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleUpdateVerificationMode))))
 	r.mux.Handle("POST /v1/orgs/gatekeeper-tuning", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleUpdateGatekeeperTuning))))
+	r.mux.Handle("POST /v1/orgs/risk-policy", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleApplyRiskPolicy))))
+	r.mux.Handle("GET /v1/orgs/risk-policies", r.requireVerifiedAuth(http.HandlerFunc(r.handleListRiskPolicies)))
+	r.mux.Handle("POST /v1/orgs/risk-policies/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleActivateRiskPolicy))))
 	r.mux.Handle("GET /v1/orgs/pending-agents", r.requireVerifiedAuth(http.HandlerFunc(r.handleListPendingAgents)))
 	r.mux.Handle("POST /v1/orgs/agents/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleReviewAgent))))
 }
@@ -1154,6 +1159,147 @@ func (r *router) handleUpdateGatekeeperTuning(w http.ResponseWriter, req *http.R
 		resp["lookback_window"] = nil
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+type applyRiskPolicyRequest struct {
+	Name   string          `json:"name"`
+	Source json.RawMessage `json:"source"`
+}
+
+func (r *router) handleApplyRiskPolicy(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+	if r.services.RiskPolicy == nil {
+		writeError(w, http.StatusNotImplemented, "risk policy engine is not configured")
+		return
+	}
+
+	var input applyRiskPolicyRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeDecodeError(w, err)
+		return
+	}
+	if len(input.Source) == 0 {
+		writeError(w, http.StatusBadRequest, "source is required")
+		return
+	}
+
+	policy, err := r.services.RiskPolicy.Apply(req.Context(), agent, strings.TrimSpace(input.Name), input.Source)
+	if err != nil {
+		switch {
+		case errors.Is(err, riskpolicy.ErrNotOrgAdmin):
+			writeError(w, http.StatusForbidden, err.Error())
+		default:
+			writeServiceError(w, err, "apply risk policy failed")
+		}
+		return
+	}
+
+	if _, auditErr := r.services.Audit.Record(req.Context(), "policy.applied", "risk_policy", policy.PolicyID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
+		"policy_id": policy.PolicyID,
+		"version":   policy.Version,
+		"name":      policy.Name,
+	}); auditErr != nil {
+		slog.Error("audit record failed", "op", "apply_risk_policy", "err", auditErr)
+	}
+
+	writeJSON(w, http.StatusOK, riskPolicyJSON(policy))
+}
+
+func (r *router) handleListRiskPolicies(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+	if r.services.RiskPolicy == nil {
+		writeError(w, http.StatusNotImplemented, "risk policy engine is not configured")
+		return
+	}
+
+	limit, offset := parsePagination(req)
+	policies, err := r.services.RiskPolicy.History(req.Context(), agent, limit, offset)
+	if err != nil {
+		writeServiceError(w, err, "list risk policies failed")
+		return
+	}
+
+	items := make([]map[string]any, 0, len(policies))
+	for _, policy := range policies {
+		items = append(items, riskPolicyJSON(policy))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"policies":    items,
+		"next_cursor": nextCursor(len(policies), limit, offset),
+	})
+}
+
+func (r *router) handleActivateRiskPolicy(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+	if r.services.RiskPolicy == nil {
+		writeError(w, http.StatusNotImplemented, "risk policy engine is not configured")
+		return
+	}
+
+	// Path form: /v1/orgs/risk-policies/<id>/activate
+	path := strings.TrimPrefix(req.URL.Path, "/v1/orgs/risk-policies/")
+	path = strings.TrimSuffix(path, "/activate")
+	policyID := strings.Trim(path, "/")
+	if policyID == "" || !strings.HasSuffix(req.URL.Path, "/activate") {
+		writeError(w, http.StatusNotFound, "policy id is required (POST /v1/orgs/risk-policies/:id/activate)")
+		return
+	}
+
+	policy, err := r.services.RiskPolicy.Activate(req.Context(), agent, policyID)
+	if err != nil {
+		switch {
+		case errors.Is(err, riskpolicy.ErrNotOrgAdmin):
+			writeError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, storage.ErrRiskPolicyNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			if _, ok := err.(core.ForbiddenError); ok {
+				writeError(w, http.StatusForbidden, err.Error())
+				return
+			}
+			writeServiceError(w, err, "activate risk policy failed")
+		}
+		return
+	}
+
+	if _, auditErr := r.services.Audit.Record(req.Context(), "policy.activated", "risk_policy", policy.PolicyID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
+		"policy_id": policy.PolicyID,
+		"version":   policy.Version,
+	}); auditErr != nil {
+		slog.Error("audit record failed", "op", "activate_risk_policy", "err", auditErr)
+	}
+
+	writeJSON(w, http.StatusOK, riskPolicyJSON(policy))
+}
+
+func riskPolicyJSON(policy core.RiskPolicy) map[string]any {
+	out := map[string]any{
+		"policy_id":  policy.PolicyID,
+		"org_id":     policy.OrgID,
+		"name":       policy.Name,
+		"version":    policy.Version,
+		"source":     json.RawMessage(policy.Source),
+		"created_at": policy.CreatedAt,
+	}
+	if policy.ActiveAt != nil {
+		out["active_at"] = *policy.ActiveAt
+	}
+	if policy.CreatedByUserID != "" {
+		out["created_by_user_id"] = policy.CreatedByUserID
+	}
+	return out
 }
 
 func (r *router) handleListPendingAgents(w http.ResponseWriter, req *http.Request) {

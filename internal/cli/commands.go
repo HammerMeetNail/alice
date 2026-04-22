@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -188,6 +189,7 @@ var subcommands = map[string]subcommandFunc{
 	"logout":     cmdLogout,
 	"completion": cmdCompletion,
 	"tuning":     cmdTuning,
+	"policy":     cmdPolicy,
 }
 
 func printUsage(w io.Writer) {
@@ -226,6 +228,9 @@ OBSERVABILITY
 
 ADMIN
   tuning                  set per-org gatekeeper confidence / lookback overrides
+  policy apply            apply a new risk policy (admin)
+  policy history          list the org's risk policy versions
+  policy activate         roll back (or forward) to a saved policy version
 
 GLOBAL FLAGS
   --server URL            coordination server URL (or set ALICE_SERVER_URL)
@@ -1141,6 +1146,149 @@ func cmdTuning(ctx context.Context, opts GlobalOptions, args []string, _ io.Read
 	return r.Emit("gatekeeper tuning updated", fields, false)
 }
 
+func cmdPolicy(ctx context.Context, opts GlobalOptions, args []string, stdin io.Reader, r *Renderer) error {
+	if len(args) == 0 {
+		return errors.New("usage: alice policy apply|history|activate [flags]")
+	}
+	sub := args[0]
+	rest := args[1:]
+	switch sub {
+	case "apply":
+		return cmdPolicyApply(ctx, opts, rest, stdin, r)
+	case "history":
+		return cmdPolicyHistory(ctx, opts, rest, r)
+	case "activate":
+		return cmdPolicyActivate(ctx, opts, rest, r)
+	default:
+		return fmt.Errorf("unknown policy subcommand %q (valid: apply, history, activate)", sub)
+	}
+}
+
+func cmdPolicyApply(ctx context.Context, opts GlobalOptions, args []string, stdin io.Reader, r *Renderer) error {
+	fs := flag.NewFlagSet("policy apply", flag.ContinueOnError)
+	fs.SetOutput(r.stderr)
+	var (
+		file = fs.String("file", "", "path to a policy JSON file; pass - to read from stdin")
+		name = fs.String("name", "", "optional human-readable policy name")
+	)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var raw []byte
+	switch {
+	case *file == "":
+		return errors.New("--file is required (path to policy JSON, or - for stdin)")
+	case *file == "-":
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return fmt.Errorf("read policy from stdin: %w", err)
+		}
+		raw = data
+	default:
+		data, err := os.ReadFile(*file)
+		if err != nil {
+			return fmt.Errorf("read policy file: %w", err)
+		}
+		raw = data
+	}
+
+	var source any
+	if err := json.Unmarshal(raw, &source); err != nil {
+		return fmt.Errorf("policy file is not valid JSON: %w", err)
+	}
+
+	client, state, err := loadClient(opts)
+	if err != nil {
+		return err
+	}
+	if err := mustHaveSession(state); err != nil {
+		return err
+	}
+
+	resp, err := client.Do(ctx, http.MethodPost, "/v1/orgs/risk-policy", map[string]any{
+		"name":   *name,
+		"source": source,
+	}, false)
+	if err != nil {
+		return err
+	}
+	return r.Emit("risk policy applied", map[string]any{
+		"policy_id": stringFrom(resp, "policy_id"),
+		"version":   resp["version"],
+		"name":      stringFrom(resp, "name"),
+		"active_at": resp["active_at"],
+	}, false)
+}
+
+func cmdPolicyHistory(ctx context.Context, opts GlobalOptions, args []string, r *Renderer) error {
+	fs := flag.NewFlagSet("policy history", flag.ContinueOnError)
+	fs.SetOutput(r.stderr)
+	limit := fs.Int("limit", 20, "max policies to return")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	client, state, err := loadClient(opts)
+	if err != nil {
+		return err
+	}
+	if err := mustHaveSession(state); err != nil {
+		return err
+	}
+
+	resp, err := client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1/orgs/risk-policies?limit=%d", *limit), nil, false)
+	if err != nil {
+		return err
+	}
+	items := ExtractList(resp, "policies")
+	rendered := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		row := map[string]any{
+			"policy_id": stringFrom(item, "policy_id"),
+			"version":   item["version"],
+		}
+		if name := stringFrom(item, "name"); name != "" {
+			row["name"] = name
+		}
+		if active, ok := item["active_at"]; ok && active != nil {
+			row["active"] = true
+		}
+		rendered = append(rendered, row)
+	}
+	return r.EmitList("risk policy history", rendered, false)
+}
+
+func cmdPolicyActivate(ctx context.Context, opts GlobalOptions, args []string, r *Renderer) error {
+	fs := flag.NewFlagSet("policy activate", flag.ContinueOnError)
+	fs.SetOutput(r.stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return errors.New("usage: alice policy activate <policy_id>")
+	}
+	policyID := fs.Arg(0)
+
+	client, state, err := loadClient(opts)
+	if err != nil {
+		return err
+	}
+	if err := mustHaveSession(state); err != nil {
+		return err
+	}
+
+	resp, err := client.Do(ctx, http.MethodPost, "/v1/orgs/risk-policies/"+policyID+"/activate", nil, false)
+	if err != nil {
+		return err
+	}
+	return r.Emit("risk policy activated", map[string]any{
+		"policy_id": stringFrom(resp, "policy_id"),
+		"version":   resp["version"],
+		"active_at": resp["active_at"],
+	}, false)
+}
+
 func cmdCompletion(_ context.Context, _ GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
 	if len(args) == 0 {
 		return errors.New("usage: alice completion bash|zsh|fish")
@@ -1162,7 +1310,7 @@ func cmdCompletion(_ context.Context, _ GlobalOptions, args []string, _ io.Reade
 
 // completionSubcommands is the canonical list sourced by every shell script.
 // Keep in sync with the subcommands map above; tests assert both lists match.
-const completionSubcommands = "init register whoami publish query result grant revoke peers request inbox outbox respond approvals approve deny audit logout completion tuning"
+const completionSubcommands = "init register whoami publish query result grant revoke peers request inbox outbox respond approvals approve deny audit logout completion tuning policy"
 
 const completionBash = `# alice bash completion. Install by running:
 #   alice completion bash > /usr/local/etc/bash_completion.d/alice
@@ -1188,6 +1336,7 @@ _alice_complete() {
             inbox) COMPREPLY=( $(compgen -W "--watch --interval --limit --cursor --state --json" -- "${cur}") ) ;;
             respond) COMPREPLY=( $(compgen -W "--response --message --state --json" -- "${cur}") ) ;;
             tuning) COMPREPLY=( $(compgen -W "--confidence --lookback --clear --state --json" -- "${cur}") ) ;;
+            policy) COMPREPLY=( $(compgen -W "apply history activate" -- "${cur}") ) ;;
             *) COMPREPLY=( $(compgen -W "--server --state --json" -- "${cur}") ) ;;
         esac
         return 0
@@ -1204,7 +1353,7 @@ const completionZsh = `#compdef alice
 _alice() {
     local -a subcommands
     subcommands=(` + "`echo \"" + completionSubcommands + "\" | tr ' ' '\\n' | sed 's/^/\"/;s/$/\"/' | paste -sd' ' -`" + `)
-    local subs=(init:"start a new session" register:"register with an org" whoami:"print current identity" publish:"publish an artifact" query:"query a peer" result:"fetch query result" grant:"grant a peer access" revoke:"revoke a grant" peers:"list peers with active grants" request:"send a request" inbox:"list incoming requests" outbox:"list sent requests" respond:"respond to a request" approvals:"list pending approvals" approve:"approve a pending approval" deny:"deny a pending approval" audit:"show audit events" logout:"clear local session" completion:"emit shell completion" tuning:"set per-org gatekeeper overrides")
+    local subs=(init:"start a new session" register:"register with an org" whoami:"print current identity" publish:"publish an artifact" query:"query a peer" result:"fetch query result" grant:"grant a peer access" revoke:"revoke a grant" peers:"list peers with active grants" request:"send a request" inbox:"list incoming requests" outbox:"list sent requests" respond:"respond to a request" approvals:"list pending approvals" approve:"approve a pending approval" deny:"deny a pending approval" audit:"show audit events" logout:"clear local session" completion:"emit shell completion" tuning:"set per-org gatekeeper overrides" policy:"manage org risk policies")
     _arguments -C \
         '1: :->sub' \
         '*:: :->args'
@@ -1217,6 +1366,7 @@ _alice() {
                 completion) _values 'shell' bash zsh fish ;;
                 inbox) _values 'flag' --watch --interval --limit --cursor --state --json ;;
                 tuning) _values 'flag' --confidence --lookback --clear --state --json ;;
+                policy) _values 'policy sub' apply history activate ;;
                 *) _values 'flag' --server --state --json ;;
             esac
             ;;
@@ -1236,6 +1386,7 @@ complete -c alice -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'
 complete -c alice -n '__fish_seen_subcommand_from tuning' -l confidence -d 'confidence threshold (0,1]'
 complete -c alice -n '__fish_seen_subcommand_from tuning' -l lookback -d 'Go duration string'
 complete -c alice -n '__fish_seen_subcommand_from tuning' -l clear -d 'revert to server default'
+complete -c alice -n '__fish_seen_subcommand_from policy' -a 'apply history activate'
 complete -c alice -l server -d 'coordination server URL'
 complete -c alice -l state -d 'path to state file'
 complete -c alice -l json -d 'emit JSON output'

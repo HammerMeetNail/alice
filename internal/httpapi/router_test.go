@@ -26,6 +26,7 @@ import (
 	"alice/internal/policy"
 	"alice/internal/queries"
 	"alice/internal/requests"
+	"alice/internal/riskpolicy"
 	"alice/internal/storage"
 	"alice/internal/storage/memory"
 	"alice/internal/storage/postgres"
@@ -335,6 +336,7 @@ type testRepositories interface {
 	storage.ApprovalRepository
 	storage.AuditRepository
 	storage.EmailVerificationRepository
+	storage.RiskPolicyRepository
 	storage.Transactor
 }
 
@@ -349,19 +351,22 @@ func buildTestHandlerWithSender(cfg config.Config, repos testRepositories, sende
 	}
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
-	queryService := queries.NewService(repos, artifactService, policyService, repos, repos)
+	riskPolicyService := riskpolicy.NewService(repos, repos)
+	queryService := queries.NewService(repos, artifactService, policyService, repos, repos).
+		WithRiskPolicyEvaluator(riskPolicyService.AsQueriesEvaluator())
 	requestService := requests.NewService(repos, repos, repos)
 	approvalService := approvals.NewService(repos, repos, repos, repos)
 	auditService := audit.NewService(repos)
 
 	return NewRouter(services.Container{
-		Agents:    agentService,
-		Artifacts: artifactService,
-		Policy:    policyService,
-		Queries:   queryService,
-		Requests:  requestService,
-		Approvals: approvalService,
-		Audit:     auditService,
+		Agents:     agentService,
+		Artifacts:  artifactService,
+		Policy:     policyService,
+		Queries:    queryService,
+		Requests:   requestService,
+		Approvals:  approvalService,
+		Audit:      auditService,
+		RiskPolicy: riskPolicyService,
 	})
 }
 
@@ -959,6 +964,87 @@ func TestUpdateGatekeeperTuning(t *testing.T) {
 	})
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-admin, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRiskPolicyApplyHistoryActivate(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	admin := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	// Admin applies a first policy.
+	rec := performJSON(t, handler, http.MethodPost, "/v1/orgs/risk-policy", admin.AccessToken, map[string]any{
+		"name": "baseline",
+		"source": map[string]any{
+			"rules": []map[string]any{
+				{"when": map[string]any{}, "then": "allow"},
+			},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var first map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&first); err != nil {
+		t.Fatalf("decode apply response: %v", err)
+	}
+	if first["policy_id"] == nil || first["policy_id"].(string) == "" {
+		t.Fatal("expected policy_id in response")
+	}
+
+	// Apply a second policy — becomes the new active version.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/risk-policy", admin.AccessToken, map[string]any{
+		"name": "strict",
+		"source": map[string]any{
+			"rules": []map[string]any{
+				{"when": map[string]any{"risk_level_at_least": "L2"}, "then": "require_approval"},
+				{"when": map[string]any{}, "then": "allow"},
+			},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second apply status = %d", rec.Code)
+	}
+	var second map[string]any
+	json.NewDecoder(rec.Body).Decode(&second)
+
+	// History should return both, newest first.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/orgs/risk-policies", admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history status = %d", rec.Code)
+	}
+	var hist map[string]any
+	json.NewDecoder(rec.Body).Decode(&hist)
+	policies := hist["policies"].([]any)
+	if len(policies) != 2 {
+		t.Fatalf("expected 2 policies in history, got %d", len(policies))
+	}
+
+	// Rollback: activate the first policy again.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/risk-policies/"+first["policy_id"].(string)+"/activate", admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activate status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Invalid policy → 500 (service error wrapping validation).
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/risk-policy", admin.AccessToken, map[string]any{
+		"source": map[string]any{"rules": []any{}},
+	})
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected non-OK for empty rules, got %d", rec.Code)
+	}
+
+	// Non-admin: member calls must be rejected.
+	member := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+	rec = performJSON(t, handler, http.MethodPost, "/v1/orgs/risk-policy", member.AccessToken, map[string]any{
+		"name": "member-attempt",
+		"source": map[string]any{
+			"rules": []map[string]any{{"when": map[string]any{}, "then": "allow"}},
+		},
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin apply, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
