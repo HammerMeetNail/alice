@@ -164,6 +164,35 @@ func TestCLIEndToEnd(t *testing.T) {
 			t.Fatalf("whoami leaked %s in text output: %s", secret, stdout)
 		}
 	}
+
+	// --- alice sends a fresh ask_for_time request that won't be auto-answered
+	//     (ineligible type) and bob watches his inbox; the watch loop must
+	//     surface the new request and return cleanly when the context is
+	//     cancelled. ---
+	runOK(t, "alice request ask_for_time",
+		"--state", aliceState, "--json",
+		"request",
+		"--to", "bob@example.com",
+		"--type", "ask_for_time",
+		"--title", "15 minutes tomorrow?",
+		"--content", "Planning chat.",
+	)
+
+	watchCtx, watchCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer watchCancel()
+	var watchOut, watchErr bytes.Buffer
+	watchCode := cli.Run(watchCtx,
+		[]string{"--state", bobState, "inbox", "--watch", "--interval", "1s"},
+		strings.NewReader(""), &watchOut, &watchErr)
+	if watchCode != 0 {
+		t.Fatalf("inbox --watch failed (code=%d): stdout=%s stderr=%s", watchCode, watchOut.String(), watchErr.String())
+	}
+	if !strings.Contains(watchOut.String(), "Incoming requests (watching") {
+		t.Fatalf("expected watch-mode banner, got: %s", watchOut.String())
+	}
+	if !strings.Contains(watchOut.String(), "15 minutes tomorrow?") {
+		t.Fatalf("expected pending request surfaced by --watch, got: %s", watchOut.String())
+	}
 }
 
 func runCLI(t *testing.T, args ...string) (string, string, int) {

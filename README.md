@@ -216,7 +216,7 @@ Subcommands (run `alice <cmd> --help` for full flags):
 | `revoke <grant_id>` | Revoke a grant you created |
 | `peers` | List peers who have granted you access |
 | `request` | Send a request to a peer (`question` types can be auto-answered by the recipient's agent) |
-| `inbox` / `outbox` | List incoming / outgoing requests |
+| `inbox` / `outbox` | List incoming / outgoing requests. `inbox --watch` polls on a configurable `--interval` (default 5s) and surfaces newly-arrived requests until Ctrl-C |
 | `respond <request_id>` | Respond to an incoming request (`--action accept|defer|deny|complete`) |
 | `approvals` / `approve` / `deny` | Manage pending approvals raised by risk or sensitivity thresholds |
 | `audit` | Print the authenticated agent's recent audit events |

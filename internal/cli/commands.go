@@ -824,11 +824,125 @@ func cmdSendRequest(ctx context.Context, opts GlobalOptions, args []string, _ io
 }
 
 func cmdInbox(ctx context.Context, opts GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
-	return listRequests(ctx, opts, args, r, "/v1/requests/incoming", "Incoming requests:")
+	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
+	fs.SetOutput(r.stderr)
+	watch := fs.Bool("watch", false, "poll continuously and surface newly-arrived requests")
+	interval := fs.Duration("interval", 5*time.Second, "poll interval when --watch is set (minimum 1s)")
+	limit := fs.Int("limit", 0, "maximum number of results per poll")
+	cursor := fs.String("cursor", "", "pagination cursor (ignored in --watch mode)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*watch {
+		return fetchAndRenderRequests(ctx, opts, r, "/v1/requests/incoming", "Incoming requests:",
+			*limit, *cursor)
+	}
+	if *interval < time.Second {
+		*interval = time.Second
+	}
+	return watchInbox(ctx, opts, r, *interval, *limit)
 }
 
 func cmdOutbox(ctx context.Context, opts GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
 	return listRequests(ctx, opts, args, r, "/v1/requests/sent", "Sent requests:")
+}
+
+// watchInbox polls /v1/requests/incoming on the given interval and emits
+// newly-appeared requests as they arrive. First poll prints the current
+// pending set; subsequent polls only surface request_ids not seen before.
+func watchInbox(ctx context.Context, opts GlobalOptions, r *Renderer, interval time.Duration, limit int) error {
+	client, state, err := loadClient(opts)
+	if err != nil {
+		return err
+	}
+	if err := mustHaveSession(state); err != nil {
+		return err
+	}
+
+	query := ""
+	if limit > 0 {
+		query = "?limit=" + strconv.Itoa(limit)
+	}
+
+	seen := map[string]struct{}{}
+	first := true
+
+	poll := func() error {
+		resp, err := client.Do(ctx, http.MethodGet, "/v1/requests/incoming"+query, nil, false)
+		if err != nil {
+			return err
+		}
+		items := ExtractList(resp, "requests", "items")
+		fresh := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			id, _ := item["request_id"].(string)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			fresh = append(fresh, item)
+		}
+		if first {
+			first = false
+			return r.EmitList("Incoming requests (watching — press Ctrl-C to stop):", fresh, true)
+		}
+		if len(fresh) == 0 {
+			return nil
+		}
+		header := fmt.Sprintf("[%s] %d new incoming request(s):",
+			time.Now().UTC().Format(time.RFC3339), len(fresh))
+		return r.EmitList(header, fresh, true)
+	}
+
+	if err := poll(); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := poll(); err != nil {
+				r.Errorf("watch poll failed: %v", err)
+			}
+		}
+	}
+}
+
+// fetchAndRenderRequests is the flag-free core of listRequests. cmdInbox parses
+// its own flags (to add --watch) and calls this directly; other callers use
+// listRequests, which wraps this with its own flag set.
+func fetchAndRenderRequests(ctx context.Context, opts GlobalOptions, r *Renderer, path, title string, limit int, cursor string) error {
+	client, state, err := loadClient(opts)
+	if err != nil {
+		return err
+	}
+	if err := mustHaveSession(state); err != nil {
+		return err
+	}
+	query := ""
+	if limit > 0 {
+		query = "?limit=" + strconv.Itoa(limit)
+	}
+	if cursor != "" {
+		if query == "" {
+			query = "?"
+		} else {
+			query += "&"
+		}
+		query += "cursor=" + url.QueryEscape(cursor)
+	}
+	resp, err := client.Do(ctx, http.MethodGet, path+query, nil, false)
+	if err != nil {
+		return err
+	}
+	items := ExtractList(resp, "requests", "items")
+	return r.EmitList(title, items, true)
 }
 
 func listRequests(ctx context.Context, opts GlobalOptions, args []string, r *Renderer, path, title string) error {
@@ -839,33 +953,7 @@ func listRequests(ctx context.Context, opts GlobalOptions, args []string, r *Ren
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	client, state, err := loadClient(opts)
-	if err != nil {
-		return err
-	}
-	if err := mustHaveSession(state); err != nil {
-		return err
-	}
-
-	query := ""
-	if *limit > 0 {
-		query = "?limit=" + strconv.Itoa(*limit)
-	}
-	if *cursor != "" {
-		if query == "" {
-			query = "?"
-		} else {
-			query += "&"
-		}
-		query += "cursor=" + url.QueryEscape(*cursor)
-	}
-	resp, err := client.Do(ctx, http.MethodGet, path+query, nil, false)
-	if err != nil {
-		return err
-	}
-	items := ExtractList(resp, "requests", "items")
-	return r.EmitList(title, items, true)
+	return fetchAndRenderRequests(ctx, opts, r, path, title, *limit, *cursor)
 }
 
 func cmdRespond(ctx context.Context, opts GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
