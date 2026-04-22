@@ -77,6 +77,21 @@ func (s *gcalLiveSource) Poll(ctx context.Context, state State, credentials Cred
 	return events, nil
 }
 
+// pollWithToken accepts a caller-resolved token and an explicit `since`
+// cursor, letting reusers drive the poller without synthesising a State /
+// CredentialStore pair.
+func (s *gcalLiveSource) pollWithToken(ctx context.Context, token string, since time.Time) ([]NormalizedEvent, error) {
+	events := make([]NormalizedEvent, 0)
+	for _, calendar := range s.calendars {
+		calendarEvents, err := s.listEvents(ctx, token, calendar, since)
+		if err != nil {
+			return nil, fmt.Errorf("list events for %s: %w", calendar.ID, err)
+		}
+		events = append(events, normalizeLiveGCalEvents(calendar, calendarEvents)...)
+	}
+	return events, nil
+}
+
 func (s *gcalLiveSource) PollCalendar(ctx context.Context, state State, credentials CredentialStore, calendar GCalCalendarConfig) ([]NormalizedEvent, error) {
 	token, err := loadConnectorSecret("gcal", s.tokenEnvVar, s.tokenFile, credentials.ConnectorCredential("gcal"))
 	if err != nil {

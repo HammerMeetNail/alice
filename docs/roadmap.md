@@ -15,7 +15,7 @@ Quick status view. Every unchecked item points at a plan in `docs/plans/` that a
 ## tracker evolution
 
 - [x] Local git tracker in MCP server with dedup, supersedes chains, configurable interval, state persistence
-- [ ] Additional tracker connectors (Jira, GitHub API, Google Calendar) — [plans/tracker-connectors.md](plans/tracker-connectors.md)
+- [x] Additional tracker connectors (Jira, GitHub API, Google Calendar) via `ALICE_TRACK_CONNECTORS`
 - [ ] Model-assisted artifact derivation (LLM summarisation) — [plans/model-assisted-derivation.md](plans/model-assisted-derivation.md)
 
 ## spec features

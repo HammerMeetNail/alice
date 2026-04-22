@@ -908,6 +908,19 @@ Set these on the `cmd/mcp-server` process (per user machine).
 | `ALICE_TRACK_OWNER_EMAIL` | _(none)_ | Owner email for auto-registration when the tracker starts. |
 | `ALICE_TRACK_AGENT_NAME` | _(none)_ | Agent name for auto-registration when the tracker starts. |
 | `ALICE_TRACK_STATE_FILE` | _(none)_ | Path to a JSON file for persisting tracker state between restarts. Prevents redundant re-publishes. |
+| `ALICE_TRACK_CONNECTORS` | `git` (when `ALICE_TRACK_REPOS` is set) | Comma-separated list of enabled tracker connectors: any of `git`, `github`, `jira`, `calendar`. Unknown names are rejected; connectors whose required env vars are missing are silently skipped with a WARN log. |
+| `ALICE_TRACK_GITHUB_TOKEN` | _(none)_ | GitHub personal access token used by the MCP tracker's GitHub connector. Required when `github` is listed in `ALICE_TRACK_CONNECTORS`. |
+| `ALICE_TRACK_GITHUB_REPOS` | _(none)_ | Comma-separated `owner/repo` list the GitHub connector polls for open pull requests. |
+| `ALICE_TRACK_GITHUB_USER` | _(derived from owner email local part)_ | Actor login for the GitHub connector; limits polled pull requests to those the user authored, is requested to review, or is assigned to. |
+| `ALICE_TRACK_GITHUB_API_URL` | `https://api.github.com` | Override for self-hosted GitHub Enterprise. |
+| `ALICE_TRACK_JIRA_TOKEN` | _(none)_ | Jira API token used by the MCP tracker's Jira connector. Required when `jira` is listed in `ALICE_TRACK_CONNECTORS`. |
+| `ALICE_TRACK_JIRA_BASE_URL` | _(none)_ | Base URL of the Jira instance (e.g. `https://acme.atlassian.net`). Required when the Jira connector is enabled. |
+| `ALICE_TRACK_JIRA_PROJECTS` | _(none)_ | Comma-separated Jira project keys (uppercase, matching `^[A-Z][A-Z0-9_]+$`) the Jira connector polls. |
+| `ALICE_TRACK_JIRA_EMAIL` | _(none)_ | Optional actor email used to filter Jira issues to those assigned to the user. |
+| `ALICE_TRACK_JIRA_ACCOUNT_ID` | _(none)_ | Optional actor account id (Atlassian AccountID) used to filter Jira issues. |
+| `ALICE_TRACK_CALENDAR_TOKEN` | _(none)_ | Google Calendar OAuth access token used by the MCP tracker's calendar connector. Mint via `cmd/edge-agent -bootstrap-connector`; the tracker does not refresh tokens itself. |
+| `ALICE_TRACK_CALENDAR_IDS` | `primary` | Comma-separated calendar IDs the calendar connector polls. |
+| `ALICE_TRACK_CALENDAR_API_URL` | `https://www.googleapis.com/calendar/v3` | Override for the Google Calendar API base URL. |
 
 ## Edge agent environment variables
 

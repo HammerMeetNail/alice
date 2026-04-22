@@ -92,6 +92,26 @@ func (s *jiraLiveSource) Poll(ctx context.Context, state State, credentials Cred
 	return events, nil
 }
 
+// pollWithToken accepts a caller-resolved token and an explicit `since`
+// cursor, letting reusers drive the poller without synthesising a State /
+// CredentialStore pair.
+func (s *jiraLiveSource) pollWithToken(ctx context.Context, token string, since time.Time) ([]NormalizedEvent, error) {
+	events := make([]NormalizedEvent, 0)
+	for _, project := range s.projects {
+		issues, err := s.listIssues(ctx, token, project, since)
+		if err != nil {
+			return nil, fmt.Errorf("list issues for %s: %w", project.Key, err)
+		}
+		for _, issue := range issues {
+			if !s.isRelevantIssue(issue) {
+				continue
+			}
+			events = append(events, normalizeLiveJiraIssue(project, issue))
+		}
+	}
+	return events, nil
+}
+
 func (s *jiraLiveSource) listIssues(ctx context.Context, token string, project JiraProjectConfig, cursor time.Time) ([]jiraIssueResponse, error) {
 	const pageSize = 50
 

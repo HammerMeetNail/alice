@@ -59,7 +59,14 @@ func (s *gitHubLiveSource) Poll(ctx context.Context, _ State, credentials Creden
 	if err != nil {
 		return nil, err
 	}
+	return s.pollWithToken(ctx, token)
+}
 
+// pollWithToken runs the same polling logic as Poll but accepts a
+// caller-resolved token, so reusers that resolve credentials differently
+// (e.g. the MCP tracker reading ALICE_TRACK_GITHUB_TOKEN) don't need to
+// synthesise a CredentialStore.
+func (s *gitHubLiveSource) pollWithToken(ctx context.Context, token string) ([]NormalizedEvent, error) {
 	events := make([]NormalizedEvent, 0)
 	for _, repository := range s.repositories {
 		pullRequests, err := s.listPullRequests(ctx, token, repository.Name)

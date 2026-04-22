@@ -71,26 +71,49 @@ type Tracker struct {
 	publish    PublishFunc
 	register   func(ctx context.Context) error
 	hasSession func() bool
+	connectors []Connector
 	published  map[string]string // digest -> artifact ID
 	latest     map[string]string // derivation_key -> artifact ID
 }
 
 // New creates a Tracker, loading persisted state if a state file is configured.
+// When no connectors are explicitly provided, the tracker falls back to the
+// configured git repo paths; this preserves the pre-multi-connector default.
 func New(cfg Config, publish PublishFunc, register func(ctx context.Context) error, hasSession func() bool) *Tracker {
+	connectors, err := buildConnectorsFromEnv(cfg)
+	if err != nil {
+		slog.Error("tracker: connector configuration rejected, continuing with git-only", "err", err)
+	}
+	if len(connectors) == 0 && len(cfg.RepoPaths) > 0 {
+		connectors = []Connector{newGitConnector(cfg.RepoPaths)}
+	}
+
 	state := loadTrackerState(cfg.StatePath)
 	return &Tracker{
 		cfg:        cfg,
 		publish:    publish,
 		register:   register,
 		hasSession: hasSession,
+		connectors: connectors,
 		published:  state.Published,
 		latest:     state.Latest,
 	}
 }
 
+// WithConnectors replaces the auto-built connector list with an explicit
+// set. Used by tests to inject fakes without standing up real pollers.
+func (t *Tracker) WithConnectors(connectors []Connector) *Tracker {
+	t.connectors = append([]Connector(nil), connectors...)
+	return t
+}
+
 // Run starts the tracking loop, blocking until ctx is cancelled.
 func (t *Tracker) Run(ctx context.Context) {
-	slog.Info("tracker started", "repos", t.cfg.RepoPaths, "interval", t.cfg.Interval)
+	names := make([]string, 0, len(t.connectors))
+	for _, c := range t.connectors {
+		names = append(names, c.Name())
+	}
+	slog.Info("tracker started", "connectors", names, "repos", t.cfg.RepoPaths, "interval", t.cfg.Interval)
 
 	t.Tick(ctx)
 
@@ -117,18 +140,17 @@ func (t *Tracker) Tick(ctx context.Context) {
 	}
 
 	dirty := false
-	for _, repoPath := range t.cfg.RepoPaths {
-		state, err := ReadRepoState(ctx, repoPath)
+	for _, connector := range t.connectors {
+		artifacts, err := connector.Poll(ctx)
 		if err != nil {
-			slog.Warn("tracker: failed to read git state", "repo", repoPath, "err", err)
+			slog.Warn("tracker: connector poll failed", "connector", connector.Name(), "err", err)
 			continue
 		}
 
-		artifacts := DeriveArtifacts(state)
 		for _, artifact := range artifacts {
 			digest, err := artifactContentDigest(artifact)
 			if err != nil {
-				slog.Warn("tracker: digest failed", "err", err)
+				slog.Warn("tracker: digest failed", "connector", connector.Name(), "err", err)
 				continue
 			}
 			if _, seen := t.published[digest]; seen {
@@ -145,7 +167,7 @@ func (t *Tracker) Tick(ctx context.Context) {
 			body := map[string]any{"artifact": artifactToMap(artifact)}
 			resp, err := t.publish(ctx, body)
 			if err != nil {
-				slog.Warn("tracker: publish failed", "repo", repoPath, "err", err)
+				slog.Warn("tracker: publish failed", "connector", connector.Name(), "err", err)
 				continue
 			}
 
@@ -155,7 +177,7 @@ func (t *Tracker) Tick(ctx context.Context) {
 					t.latest[derivationKey] = artifactID
 				}
 				dirty = true
-				slog.Info("tracker: published", "repo", repoPath, "artifact_id", artifactID)
+				slog.Info("tracker: published", "connector", connector.Name(), "artifact_id", artifactID)
 			}
 		}
 	}
