@@ -429,23 +429,28 @@ func doRegister(ctx context.Context, opts GlobalOptions, r *Renderer,
 		return err
 	}
 
+	firstInviteToken := stringFrom(response, "first_invite_token")
 	summary := fmt.Sprintf("Registered %s as %s (%s).", email, agentName, agentID)
-	if inviteToken := stringFrom(response, "first_invite_token"); inviteToken != "" {
+	if firstInviteToken != "" {
 		summary += "\n\nNOTE: This org did not yet have an invite token. One was generated and will be shown once:\n  " +
-			inviteToken + "\n\nShare it with teammates who will register next."
+			firstInviteToken + "\n\nShare it with teammates who will register next. It is not persisted; re-running register will not show it again."
 	}
 	if status := stringFrom(response, "agent_status"); status != "" && status != "active" {
 		summary += fmt.Sprintf("\nStatus: %s — additional verification required before you can query peers.", status)
 	}
 
-	return r.Emit(summary, map[string]any{
+	payload := map[string]any{
 		"agent_id":     agentID,
 		"org_id":       orgID,
 		"state_file":   opts.StateFile,
 		"server_url":   client.BaseURL(),
 		"expires_at":   expiresRaw,
 		"agent_status": stringFrom(response, "agent_status"),
-	}, false)
+	}
+	if firstInviteToken != "" {
+		payload["first_invite_token"] = firstInviteToken
+	}
+	return r.Emit(summary, payload, false)
 }
 
 func cmdWhoami(_ context.Context, opts GlobalOptions, _ []string, _ io.Reader, r *Renderer) error {

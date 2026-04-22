@@ -43,7 +43,7 @@ func TestCLIEndToEnd(t *testing.T) {
 	orgSlug := "cli-demo-" + time.Now().UTC().Format("20060102150405.000000000")
 
 	// --- alice registers ---
-	runOK(t, "alice register",
+	aliceRegisterOut := runOK(t, "alice register",
 		"--server", srv.URL, "--state", aliceState, "--json",
 		"register",
 		"--server", srv.URL,
@@ -52,12 +52,13 @@ func TestCLIEndToEnd(t *testing.T) {
 		"--agent", "alice-cli",
 	)
 
-	// --- bob registers in the same org (second registrant needs the invite token if the org issued one) ---
-	aliceJSON := readJSONState(t, aliceState)
-	inviteToken := aliceJSON["first_invite_token"]
-	// first_invite_token is emitted in the register response but not persisted
-	// to state. Work around by re-reading the CLI's stdout capture next time.
-	_ = inviteToken
+	// --- alice's register JSON must carry first_invite_token so downstream
+	//     automation can capture it. Every new org gets a fresh token on the
+	//     first registration, regardless of verification mode. ---
+	inviteToken := extractFirstInviteToken(aliceRegisterOut)
+	if inviteToken == "" {
+		t.Fatalf("expected first_invite_token in alice register JSON, got: %s", aliceRegisterOut)
+	}
 
 	bobArgs := []string{
 		"--server", srv.URL, "--state", bobState, "--json",
@@ -67,8 +68,8 @@ func TestCLIEndToEnd(t *testing.T) {
 		"--email", "bob@example.com",
 		"--agent", "bob-cli",
 	}
-	if tok := firstInviteTokenFrom(t, aliceState, srv.URL); tok != "" {
-		bobArgs = append(bobArgs, "--invite-token", tok)
+	if inviteToken != "" {
+		bobArgs = append(bobArgs, "--invite-token", inviteToken)
 	}
 	runOK(t, "bob register", bobArgs...)
 
@@ -181,40 +182,22 @@ func runOK(t *testing.T, label string, args ...string) string {
 	return stdout
 }
 
-func readJSONState(t *testing.T, path string) map[string]string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read state: %v", err)
+// extractFirstInviteToken parses the JSON stdout of `alice register --json`
+// and returns the `first_invite_token` field when the server issued one on
+// first registration. Returns empty string for subsequent registrants or for
+// orgs whose verification mode does not emit a token.
+func extractFirstInviteToken(stdout string) string {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		return ""
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("decode state: %v", err)
+	if tok, ok := payload["first_invite_token"].(string); ok {
+		return tok
 	}
-	out := make(map[string]string)
-	for k, v := range raw {
-		if s, ok := v.(string); ok {
-			out[k] = s
-		}
-	}
-	return out
-}
-
-// firstInviteTokenFrom captures the invite token by re-running the register
-// flow output. On the first test-org registrant the server surfaces a
-// first_invite_token in the response but the CLI drops it — this is a small
-// gap that the register command should be enhanced to capture in future, but
-// for now the test reruns against /v1/orgs/rotate-invite-token via the CLI.
-func firstInviteTokenFrom(t *testing.T, aliceState, serverURL string) string {
-	t.Helper()
-	// If the org uses invite_token verification, the first registrant would
-	// have gotten a token. For this test the default config does not enable
-	// invite_token mode, so no token is needed. Return "" to signal that.
-	_ = aliceState
-	_ = serverURL
 	return ""
 }
 
-// Compile-time use of fmt to keep the import tree clean when additional
-// diagnostics are added later.
+// Compile-time use of fmt and os to keep the import tree stable when
+// additional diagnostics are added later.
 var _ = fmt.Sprintf
+var _ = os.Getenv
