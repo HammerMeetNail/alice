@@ -46,6 +46,11 @@ func buildConnectorsFromEnv(cfg Config) ([]Connector, error) {
 		}
 	}
 
+	summariser, err := SelectSummariserFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("select summariser: %w", err)
+	}
+
 	connectors := make([]Connector, 0)
 	seen := make(map[string]struct{})
 	for _, raw := range strings.Split(requested, ",") {
@@ -57,7 +62,7 @@ func buildConnectorsFromEnv(cfg Config) ([]Connector, error) {
 			continue
 		}
 		seen[name] = struct{}{}
-		connector, err := buildConnectorByName(name, cfg)
+		connector, err := buildConnectorByName(name, cfg, summariser)
 		if err != nil {
 			return nil, fmt.Errorf("configure %s connector: %w", name, err)
 		}
@@ -72,13 +77,13 @@ func buildConnectorsFromEnv(cfg Config) ([]Connector, error) {
 	return connectors, nil
 }
 
-func buildConnectorByName(name string, cfg Config) (Connector, error) {
+func buildConnectorByName(name string, cfg Config, summariser Summariser) (Connector, error) {
 	switch name {
 	case "git":
 		if len(cfg.RepoPaths) == 0 {
 			return nil, nil
 		}
-		return newGitConnector(cfg.RepoPaths), nil
+		return newGitConnectorWithSummariser(cfg.RepoPaths, summariser), nil
 	case "github":
 		return newGitHubConnectorFromEnv()
 	case "jira":

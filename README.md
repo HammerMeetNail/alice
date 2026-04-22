@@ -921,6 +921,7 @@ Set these on the `cmd/mcp-server` process (per user machine).
 | `ALICE_TRACK_CALENDAR_TOKEN` | _(none)_ | Google Calendar OAuth access token used by the MCP tracker's calendar connector. Mint via `cmd/edge-agent -bootstrap-connector`; the tracker does not refresh tokens itself. |
 | `ALICE_TRACK_CALENDAR_IDS` | `primary` | Comma-separated calendar IDs the calendar connector polls. |
 | `ALICE_TRACK_CALENDAR_API_URL` | `https://www.googleapis.com/calendar/v3` | Override for the Google Calendar API base URL. |
+| `ALICE_TRACK_SUMMARISER` | `heuristic` | Selects the summariser the git connector uses to turn local git state into artifacts. Valid names: `heuristic`. `claude` is reserved for a future LLM-backed summariser and is rejected at startup today so misconfiguration fails loudly. |
 
 ## Edge agent environment variables
 
