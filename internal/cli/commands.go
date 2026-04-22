@@ -186,6 +186,7 @@ var subcommands = map[string]subcommandFunc{
 	"deny":       cmdResolveApproval("deny"),
 	"audit":      cmdAudit,
 	"logout":     cmdLogout,
+	"completion": cmdCompletion,
 }
 
 func printUsage(w io.Writer) {
@@ -1073,6 +1074,103 @@ func cmdAudit(ctx context.Context, opts GlobalOptions, args []string, _ io.Reade
 	items := ExtractList(resp, "events", "items")
 	return r.EmitList("Audit events:", items, false)
 }
+
+// ---- shell completion ----
+
+func cmdCompletion(_ context.Context, _ GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
+	if len(args) == 0 {
+		return errors.New("usage: alice completion bash|zsh|fish")
+	}
+	switch strings.ToLower(args[0]) {
+	case "bash":
+		_, err := fmt.Fprint(r.stdout, completionBash)
+		return err
+	case "zsh":
+		_, err := fmt.Fprint(r.stdout, completionZsh)
+		return err
+	case "fish":
+		_, err := fmt.Fprint(r.stdout, completionFish)
+		return err
+	default:
+		return fmt.Errorf("unsupported shell %q (expected bash, zsh, or fish)", args[0])
+	}
+}
+
+// completionSubcommands is the canonical list sourced by every shell script.
+// Keep in sync with the subcommands map above; tests assert both lists match.
+const completionSubcommands = "init register whoami publish query result grant revoke peers request inbox outbox respond approvals approve deny audit logout completion"
+
+const completionBash = `# alice bash completion. Install by running:
+#   alice completion bash > /usr/local/etc/bash_completion.d/alice
+# or sourcing at shell startup:
+#   source <(alice completion bash)
+_alice_complete() {
+    local cur prev words cword
+    _init_completion || return
+    local subcommands="` + completionSubcommands + `"
+    if [[ ${cword} -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "${subcommands}" -- "${cur}") )
+        return 0
+    fi
+    # Flag-name completion for the current subcommand happens via the generic
+    # long-option prefix; alice does not expose dynamic value completion.
+    if [[ "${cur}" == --* ]]; then
+        case "${words[1]}" in
+            register) COMPREPLY=( $(compgen -W "--server --org --email --agent --invite-token --state --json" -- "${cur}") ) ;;
+            publish) COMPREPLY=( $(compgen -W "--type --title --content --sensitivity --visibility --confidence --ttl --state --json" -- "${cur}") ) ;;
+            query) COMPREPLY=( $(compgen -W "--to --purpose --question --types --sensitivity --state --json" -- "${cur}") ) ;;
+            grant) COMPREPLY=( $(compgen -W "--to --types --sensitivity --purposes --scope-kind --scope-id --expires --state --json" -- "${cur}") ) ;;
+            request) COMPREPLY=( $(compgen -W "--to --type --title --content --expires --state --json" -- "${cur}") ) ;;
+            inbox) COMPREPLY=( $(compgen -W "--watch --interval --limit --cursor --state --json" -- "${cur}") ) ;;
+            respond) COMPREPLY=( $(compgen -W "--response --message --state --json" -- "${cur}") ) ;;
+            *) COMPREPLY=( $(compgen -W "--server --state --json" -- "${cur}") ) ;;
+        esac
+        return 0
+    fi
+}
+complete -F _alice_complete alice
+`
+
+const completionZsh = `#compdef alice
+# alice zsh completion. Install by running:
+#   alice completion zsh > "${fpath[1]}/_alice"
+# then restart the shell, or source directly:
+#   source <(alice completion zsh)
+_alice() {
+    local -a subcommands
+    subcommands=(` + "`echo \"" + completionSubcommands + "\" | tr ' ' '\\n' | sed 's/^/\"/;s/$/\"/' | paste -sd' ' -`" + `)
+    local subs=(init:"start a new session" register:"register with an org" whoami:"print current identity" publish:"publish an artifact" query:"query a peer" result:"fetch query result" grant:"grant a peer access" revoke:"revoke a grant" peers:"list peers with active grants" request:"send a request" inbox:"list incoming requests" outbox:"list sent requests" respond:"respond to a request" approvals:"list pending approvals" approve:"approve a pending approval" deny:"deny a pending approval" audit:"show audit events" logout:"clear local session" completion:"emit shell completion")
+    _arguments -C \
+        '1: :->sub' \
+        '*:: :->args'
+    case $state in
+        sub)
+            _describe 'subcommand' subs
+            ;;
+        args)
+            case $words[1] in
+                completion) _values 'shell' bash zsh fish ;;
+                inbox) _values 'flag' --watch --interval --limit --cursor --state --json ;;
+                *) _values 'flag' --server --state --json ;;
+            esac
+            ;;
+    esac
+}
+compdef _alice alice
+`
+
+const completionFish = `# alice fish completion. Install by running:
+#   alice completion fish > ~/.config/fish/completions/alice.fish
+set -l subcommands ` + completionSubcommands + `
+complete -c alice -f -n '__fish_use_subcommand' -a "$subcommands"
+complete -c alice -n '__fish_seen_subcommand_from inbox' -l watch -d 'poll continuously'
+complete -c alice -n '__fish_seen_subcommand_from inbox' -l interval -d 'poll interval'
+complete -c alice -n '__fish_seen_subcommand_from inbox outbox' -l limit -d 'max results'
+complete -c alice -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'
+complete -c alice -l server -d 'coordination server URL'
+complete -c alice -l state -d 'path to state file'
+complete -c alice -l json -d 'emit JSON output'
+`
 
 // ---- helpers ----
 

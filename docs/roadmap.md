@@ -18,7 +18,7 @@ Tracked work items for alice, organized by priority.
 - [ ] Gatekeeper: per-org confidence threshold and lookback window (requires storage migration)
 - [x] CLI: `alice register` surfaces the org's `first_invite_token` on first registration — shown in text mode and included in `--json` output for automation
 - [x] CLI: `alice inbox --watch` — polls on `--interval` (default 5s) and surfaces newly-arrived requests until Ctrl-C
-- [ ] CLI: shell completion (`alice completion bash|zsh|fish`)
+- [x] CLI: shell completion (`alice completion bash|zsh|fish`) with a test that keeps the word list in sync with the dispatch map
 - [x] Claude Code hook: harden the UserPromptSubmit regex in `examples/claude-code-hooks.json` against false positives (requires a nearby `?` so un-terminated code comments don't trigger)
 
 ## tracker evolution

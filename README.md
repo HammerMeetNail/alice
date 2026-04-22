@@ -221,6 +221,7 @@ Subcommands (run `alice <cmd> --help` for full flags):
 | `approvals` / `approve` / `deny` | Manage pending approvals raised by risk or sensitivity thresholds |
 | `audit` | Print the authenticated agent's recent audit events |
 | `logout` | Clear the local session without touching server state |
+| `completion <bash\|zsh\|fish>` | Emit a shell-completion script. Install with e.g. `source <(alice completion bash)` or drop into the shell's completion directory |
 
 ---
 
