@@ -19,6 +19,7 @@ import (
 	"alice/internal/email"
 	"alice/internal/gatekeeper"
 	"alice/internal/httpapi"
+	"alice/internal/orggraph"
 	"alice/internal/policy"
 	"alice/internal/queries"
 	"alice/internal/requests"
@@ -50,6 +51,7 @@ type repositories interface {
 	storage.RiskPolicyRepository
 	storage.ActionRepository
 	storage.UserPreferencesRepository
+	storage.OrgGraphRepository
 	storage.Transactor
 }
 
@@ -114,8 +116,10 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	riskPolicyService := riskpolicy.NewService(repos, repos)
+	orgGraphService := orggraph.NewService(repos, repos)
 	queryService := queries.NewService(repos, artifactService, policyService, repos, repos).
-		WithRiskPolicyEvaluator(riskPolicyService.AsQueriesEvaluator())
+		WithRiskPolicyEvaluator(riskPolicyService.AsQueriesEvaluator()).
+		WithOrgGraph(orgGraphService.AsEvaluator())
 	gatekeeperService := gatekeeper.NewService(queryService, gatekeeper.Options{
 		ConfidenceThreshold: cfg.GatekeeperConfidenceThreshold,
 		LookbackWindow:      cfg.GatekeeperLookbackWindow,
@@ -152,5 +156,6 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 		Audit:      auditService,
 		RiskPolicy: riskPolicyService,
 		Actions:    actionService,
+		OrgGraph:   orgGraphService,
 	}
 }

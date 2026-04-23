@@ -128,6 +128,14 @@ func (r *router) routes() {
 	r.mux.Handle("POST /v1/users/me/operator-enabled", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleSetOperatorEnabled))))
 	r.mux.Handle("GET /v1/orgs/pending-agents", r.requireVerifiedAuth(http.HandlerFunc(r.handleListPendingAgents)))
 	r.mux.Handle("POST /v1/orgs/agents/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleReviewAgent))))
+	r.mux.Handle("POST /v1/org/teams", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleCreateTeam))))
+	r.mux.Handle("GET /v1/org/teams", r.requireVerifiedAuth(http.HandlerFunc(r.handleListTeams)))
+	r.mux.Handle("GET /v1/org/teams/", r.requireVerifiedAuth(http.HandlerFunc(r.handleListTeamMembers)))
+	r.mux.Handle("POST /v1/org/teams/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleAddTeamMember))))
+	r.mux.Handle("DELETE /v1/org/teams/", r.requireVerifiedAuth(http.HandlerFunc(r.handleTeamDelete)))
+	r.mux.Handle("POST /v1/org/manager-edges", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleAssignManager))))
+	r.mux.Handle("GET /v1/org/manager-edges/", r.requireVerifiedAuth(http.HandlerFunc(r.handleGetManagerChain))) // GET /v1/org/manager-edges/:user_id
+	r.mux.Handle("DELETE /v1/org/manager-edges/", r.requireVerifiedAuth(http.HandlerFunc(r.handleRevokeManager)))
 }
 
 func (r *router) handleHealthz(w http.ResponseWriter, _ *http.Request) {

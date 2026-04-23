@@ -32,6 +32,15 @@ type RiskPolicyEvaluator interface {
 	EvaluateQuery(ctx context.Context, query core.Query, matchedGrant core.PolicyGrant, artifact core.Artifact) core.RiskDecisionAction
 }
 
+// OrgGraphEvaluator answers team_scope / manager_scope visibility
+// questions. When nil, the queries service treats team_scope and
+// manager_scope artifacts as if no graph edges exist, so neither mode
+// can leak data on a deployment that has not configured the graph yet.
+type OrgGraphEvaluator interface {
+	UserSharesTeamWith(ctx context.Context, viewerUserID, ownerUserID string) (bool, error)
+	ViewerInOwnerManagerChain(ctx context.Context, viewerUserID, ownerUserID string) (bool, error)
+}
+
 type Service struct {
 	store     storage.QueryRepository
 	artifacts ArtifactSource
@@ -39,6 +48,7 @@ type Service struct {
 	approvals storage.ApprovalRepository
 	tx        storage.Transactor
 	risk      RiskPolicyEvaluator
+	orgGraph  OrgGraphEvaluator
 }
 
 func NewService(store storage.QueryRepository, artifacts ArtifactSource, policies PolicySource, approvals storage.ApprovalRepository, tx storage.Transactor) *Service {
@@ -59,6 +69,17 @@ func (s *Service) WithRiskPolicyEvaluator(eval RiskPolicyEvaluator) *Service {
 	return s
 }
 
+// WithOrgGraph attaches the org-graph evaluator used for `team_scope` /
+// `manager_scope` visibility modes. Calls with nil are ignored; the
+// default behaviour (no graph) falls back to grant-only access, which
+// preserves the semantics of existing deployments.
+func (s *Service) WithOrgGraph(eval OrgGraphEvaluator) *Service {
+	if s != nil && eval != nil {
+		s.orgGraph = eval
+	}
+	return s
+}
+
 func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryResponse, error) {
 	if _, err := s.store.SaveQuery(ctx, query); err != nil {
 		return core.QueryResponse{}, fmt.Errorf("save query: %w", err)
@@ -68,7 +89,15 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 	if err != nil {
 		return core.QueryResponse{}, fmt.Errorf("list grants for pair: %w", err)
 	}
-	if len(grants) == 0 {
+	// No explicit grants between this pair is not a hard deny anymore —
+	// scope-based visibility (team_scope / manager_scope) gives access
+	// through the org graph. If neither grants nor the graph yield any
+	// allowed artifacts, the per-artifact loop below produces an empty
+	// response, and the caller still sees a clean "no matches" outcome
+	// rather than a stale "permission denied" that hides the existence
+	// of scope-published data.
+	scopeAvailable := s.orgGraph != nil
+	if len(grants) == 0 && !scopeAvailable {
 		if _, _, err := s.store.UpdateQueryState(ctx, query.QueryID, core.QueryStateDenied); err != nil {
 			return core.QueryResponse{}, fmt.Errorf("update query state to denied: %w", err)
 		}
@@ -105,11 +134,21 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 			continue
 		}
 
+		// Access has two independent paths. An explicit grant is the first
+		// check because it is strictly more specific: it carries a
+		// sensitivity ceiling and a purpose/type allowlist that scoped
+		// visibility does not. When no grant matches, the artifact's own
+		// visibility mode (team_scope / manager_scope) is consulted against
+		// the org graph. Both paths flow through the risk-policy evaluator
+		// below — the evaluator only sees a synthetic empty grant on the
+		// scope-based path so its inputs stay uniform.
 		matchedGrant := matchingGrant(grants, query, artifact)
+		scopeBasis := ""
 		if matchedGrant == nil {
-			// Check if the artifact was excluded solely because of sensitivity ceiling.
-			sensitivityGrant := matchingGrantIgnoreSensitivity(grants, query, artifact)
-			if sensitivityGrant != nil {
+			scopeBasis = s.scopeBasisForArtifact(ctx, query, artifact)
+		}
+		if matchedGrant == nil && scopeBasis == "" {
+			if sensitivityGrant := matchingGrantIgnoreSensitivity(grants, query, artifact); sensitivityGrant != nil {
 				redactions = append(redactions, fmt.Sprintf("artifact:%s: sensitivity %q exceeds grant ceiling %q", artifact.ArtifactID, artifact.Sensitivity, sensitivityGrant.MaxSensitivity))
 			}
 			continue
@@ -119,14 +158,20 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 		// ladder either way — allow what the ladder would gate, or require
 		// approval / deny something the ladder would wave through. When no
 		// policy is attached (nil evaluator) we fall through to the ladder
-		// so existing deployments keep behaving identically.
+		// so existing deployments keep behaving identically. Scope-based
+		// access has no ladder threshold to consult, so it defaults to
+		// allow and relies on the risk-policy evaluator for any tightening.
 		ladderVerdict := core.RiskDecisionAllow
-		if core.RiskLevelExceeds(query.RiskLevel, matchedGrant.RequiresApprovalAboveRisk) {
+		if matchedGrant != nil && core.RiskLevelExceeds(query.RiskLevel, matchedGrant.RequiresApprovalAboveRisk) {
 			ladderVerdict = core.RiskDecisionRequireApproval
 		}
 		verdict := ladderVerdict
 		if s.risk != nil {
-			verdict = s.risk.EvaluateQuery(ctx, query, *matchedGrant, artifact)
+			grantForRisk := core.PolicyGrant{}
+			if matchedGrant != nil {
+				grantForRisk = *matchedGrant
+			}
+			verdict = s.risk.EvaluateQuery(ctx, query, grantForRisk, artifact)
 		}
 		switch verdict {
 		case core.RiskDecisionDeny:
@@ -136,12 +181,20 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 			if approvalRequiredByGrant == nil {
 				approvalRequiredByGrant = matchedGrant
 			}
-			redactions = append(redactions, fmt.Sprintf("artifact:%s: withheld pending approval (risk level %q, grant threshold %q)", artifact.ArtifactID, query.RiskLevel, matchedGrant.RequiresApprovalAboveRisk))
+			threshold := core.RiskLevel("scope")
+			if matchedGrant != nil {
+				threshold = matchedGrant.RequiresApprovalAboveRisk
+			}
+			redactions = append(redactions, fmt.Sprintf("artifact:%s: withheld pending approval (risk level %q, grant threshold %q)", artifact.ArtifactID, query.RiskLevel, threshold))
 			continue
 		}
 
+		// Sensitivity ceiling is a grant concept; scope-based access has
+		// no ceiling because the publisher chose team/manager visibility
+		// at publish time with full knowledge of the artifact's
+		// sensitivity.
 		content := artifact.Content
-		if core.SensitivityAtCeiling(artifact.Sensitivity, matchedGrant.MaxSensitivity) {
+		if matchedGrant != nil && core.SensitivityAtCeiling(artifact.Sensitivity, matchedGrant.MaxSensitivity) {
 			content = "[content redacted: sensitivity at grant ceiling]"
 			redactions = append(redactions, fmt.Sprintf("artifact:%s: content redacted (sensitivity %q at grant ceiling %q)", artifact.ArtifactID, artifact.Sensitivity, matchedGrant.MaxSensitivity))
 		}
@@ -157,7 +210,11 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 			ObservedAt:  latestObservedAt(artifact.SourceRefs),
 			SourceRefs:  artifact.SourceRefs,
 		})
-		policyBasis = append(policyBasis, "grant:"+matchedGrant.PolicyGrantID)
+		if matchedGrant != nil {
+			policyBasis = append(policyBasis, "grant:"+matchedGrant.PolicyGrantID)
+		} else {
+			policyBasis = append(policyBasis, "visibility:"+scopeBasis)
+		}
 	}
 
 	approvalState := core.ApprovalStateNotRequired
@@ -206,6 +263,33 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 		return core.QueryResponse{}, fmt.Errorf("update query state to completed: %w", err)
 	}
 	return response, nil
+}
+
+// scopeBasisForArtifact returns "team_scope" or "manager_scope" when the
+// artifact's visibility mode is satisfied by the org graph, or "" when no
+// scope-based path grants access. Errors are treated as "no access" —
+// visibility decisions must fail closed, and the grant-based path may
+// still grant access independently.
+func (s *Service) scopeBasisForArtifact(ctx context.Context, query core.Query, artifact core.Artifact) string {
+	if s.orgGraph == nil {
+		return ""
+	}
+	switch artifact.VisibilityMode {
+	case core.VisibilityModeTeamScope:
+		ok, err := s.orgGraph.UserSharesTeamWith(ctx, query.FromUserID, query.ToUserID)
+		if err != nil || !ok {
+			return ""
+		}
+		return "team_scope"
+	case core.VisibilityModeManagerScope:
+		ok, err := s.orgGraph.ViewerInOwnerManagerChain(ctx, query.FromUserID, query.ToUserID)
+		if err != nil || !ok {
+			return ""
+		}
+		return "manager_scope"
+	default:
+		return ""
+	}
 }
 
 func (s *Service) FindResult(ctx context.Context, queryID string) (core.Query, core.QueryResponse, bool, error) {

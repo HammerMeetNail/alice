@@ -24,6 +24,7 @@ import (
 	"alice/internal/config"
 	"alice/internal/core"
 	"alice/internal/email"
+	"alice/internal/orggraph"
 	"alice/internal/policy"
 	"alice/internal/queries"
 	"alice/internal/requests"
@@ -340,6 +341,7 @@ type testRepositories interface {
 	storage.RiskPolicyRepository
 	storage.ActionRepository
 	storage.UserPreferencesRepository
+	storage.OrgGraphRepository
 	storage.Transactor
 }
 
@@ -355,8 +357,10 @@ func buildTestHandlerWithSender(cfg config.Config, repos testRepositories, sende
 	artifactService := artifacts.NewService(repos)
 	policyService := policy.NewService(repos)
 	riskPolicyService := riskpolicy.NewService(repos, repos)
+	orgGraphService := orggraph.NewService(repos, repos)
 	queryService := queries.NewService(repos, artifactService, policyService, repos, repos).
-		WithRiskPolicyEvaluator(riskPolicyService.AsQueriesEvaluator())
+		WithRiskPolicyEvaluator(riskPolicyService.AsQueriesEvaluator()).
+		WithOrgGraph(orgGraphService.AsEvaluator())
 	requestService := requests.NewService(repos, repos, repos)
 	approvalService := approvals.NewService(repos, repos, repos, repos)
 	auditService := audit.NewService(repos)
@@ -374,6 +378,7 @@ func buildTestHandlerWithSender(cfg config.Config, repos testRepositories, sende
 		Audit:      auditService,
 		RiskPolicy: riskPolicyService,
 		Actions:    actionService,
+		OrgGraph:   orgGraphService,
 	})
 }
 
@@ -1302,5 +1307,248 @@ func TestEmailOTP_VerificationExemptFromEmailCheck(t *testing.T) {
 	rec = performJSON(t, handler, http.MethodPost, "/v1/agents/resend-verification", accessToken, nil)
 	if rec.Code == http.StatusForbidden {
 		t.Fatalf("resend-verification should not be blocked by email verification check, got 403 body=%s", rec.Body.String())
+	}
+}
+
+// scopeQueryResult is the decoded slice of the GET /v1/queries/:id response
+// the org-graph tests care about.
+type scopeQueryResult struct {
+	Artifacts   []any
+	PolicyBasis []string
+}
+
+func runScopeQuery(t *testing.T, handler http.Handler, accessToken, toEmail, purpose string) scopeQueryResult {
+	t.Helper()
+	rec := performJSON(t, handler, http.MethodPost, "/v1/queries", accessToken, map[string]any{
+		"to_user_email":   toEmail,
+		"purpose":         purpose,
+		"requested_types": []string{"summary"},
+		"time_window": map[string]any{
+			"start": time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339),
+			"end":   time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scope query status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var envelope map[string]any
+	json.NewDecoder(rec.Body).Decode(&envelope)
+	queryID := envelope["query_id"].(string)
+
+	rec = performJSON(t, handler, http.MethodGet, "/v1/queries/"+queryID, accessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get query result status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	json.NewDecoder(rec.Body).Decode(&payload)
+	response, _ := payload["response"].(map[string]any)
+	artifacts, _ := response["artifacts"].([]any)
+	rawBasis, _ := response["policy_basis"].([]any)
+	basis := make([]string, 0, len(rawBasis))
+	for _, b := range rawBasis {
+		if s, ok := b.(string); ok {
+			basis = append(basis, s)
+		}
+	}
+	return scopeQueryResult{Artifacts: artifacts, PolicyBasis: basis}
+}
+
+func containsBasisStr(basis []string, want string) bool {
+	for _, b := range basis {
+		if b == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestOrgGraphLifecycle exercises team + manager graph management via the
+// HTTP surface end-to-end: admin-only writes, cycle detection, cross-org
+// 404s, and — critically — that team_scope / manager_scope visibility
+// modes on published artifacts are answered by scope-based access
+// without requiring an explicit grant.
+func TestOrgGraphLifecycle(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+	carolEmail := "carol-" + strings.TrimPrefix(fixture.AliceEmail, "alice-")
+
+	admin := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+	bob := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+	carol := registerAgent(t, handler, fixture.OrgSlug, carolEmail)
+
+	// Non-admin cannot create teams.
+	rec := performJSON(t, handler, http.MethodPost, "/v1/org/teams", bob.AccessToken, map[string]any{"name": "eng"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin create team, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Admin creates a team.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/org/teams", admin.AccessToken, map[string]any{"name": "eng"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create team status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var team map[string]any
+	json.NewDecoder(rec.Body).Decode(&team)
+	teamID := team["team_id"].(string)
+
+	// GET /v1/org/teams lists teams in the org.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/org/teams", admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list teams status = %d", rec.Code)
+	}
+	var teamsList map[string]any
+	json.NewDecoder(rec.Body).Decode(&teamsList)
+	if len(teamsList["teams"].([]any)) != 1 {
+		t.Fatalf("expected 1 team in list, got %d", len(teamsList["teams"].([]any)))
+	}
+
+	// Admin adds Bob and Carol to the team.
+	for _, email := range []string{fixture.BobEmail, carolEmail} {
+		rec = performJSON(t, handler, http.MethodPost, "/v1/org/teams/"+teamID+"/members", admin.AccessToken, map[string]any{
+			"user_email": email,
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("add member %s status = %d body=%s", email, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Members list contains 2 rows.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/org/teams/"+teamID+"/members", admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list members status = %d", rec.Code)
+	}
+	var members map[string]any
+	json.NewDecoder(rec.Body).Decode(&members)
+	if n := len(members["members"].([]any)); n != 2 {
+		t.Fatalf("expected 2 members, got %d", n)
+	}
+
+	// Bob publishes a team_scope summary, no explicit grant to Carol.
+	publishArtifact(t, handler, bob.AccessToken, core.Artifact{
+		Type:           core.ArtifactTypeSummary,
+		Title:          "Shipping queue",
+		Content:        "Queued work through Friday.",
+		Sensitivity:    core.SensitivityLow,
+		Confidence:     0.9,
+		VisibilityMode: core.VisibilityModeTeamScope,
+		SourceRefs: []core.SourceReference{{
+			SourceSystem: "test", SourceType: "manual", SourceID: "1",
+			ObservedAt: time.Now().UTC(), TrustClass: core.TrustClassTrustedPolicy, Sensitivity: core.SensitivityLow,
+		}},
+	})
+
+	// Carol queries Bob with no grant — should see the team-scoped artifact via the graph.
+	teamResp := runScopeQuery(t, handler, carol.AccessToken, fixture.BobEmail, "status_check")
+	if n := len(teamResp.Artifacts); n != 1 {
+		t.Fatalf("expected 1 team-scope artifact, got %d basis=%v", n, teamResp.PolicyBasis)
+	}
+	if !containsBasisStr(teamResp.PolicyBasis, "visibility:team_scope") {
+		t.Fatalf("expected visibility:team_scope in policy_basis, got %v", teamResp.PolicyBasis)
+	}
+
+	// Remove Carol from the team → follow-up query must return zero.
+	rec = performJSON(t, handler, http.MethodDelete, "/v1/org/teams/"+teamID+"/members/"+carolEmail, admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remove member status = %d", rec.Code)
+	}
+	// After removal Carol has no grants and no shared team. The query
+	// succeeds (with the graph attached we don't early-deny on "no
+	// grants"; scope evaluation still runs) but returns zero artifacts
+	// because the artifact's team_scope no longer matches.
+	removedResp := runScopeQuery(t, handler, carol.AccessToken, fixture.BobEmail, "status_check")
+	if len(removedResp.Artifacts) != 0 {
+		t.Fatalf("expected 0 artifacts after team removal, got %d basis=%v", len(removedResp.Artifacts), removedResp.PolicyBasis)
+	}
+
+	// Assign Admin as Bob's manager, then Bob publishes a manager_scope summary.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/org/manager-edges", admin.AccessToken, map[string]any{
+		"user_email":    fixture.BobEmail,
+		"manager_email": fixture.AliceEmail,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("assign manager status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Self-manager edges are rejected at the service layer → 400.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/org/manager-edges", admin.AccessToken, map[string]any{
+		"user_email":    fixture.BobEmail,
+		"manager_email": fixture.BobEmail,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for self-manager, got %d", rec.Code)
+	}
+
+	// Cycle detection: can't set Bob as Alice's manager when Alice is already upstream of Bob.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/org/manager-edges", admin.AccessToken, map[string]any{
+		"user_email":    fixture.AliceEmail,
+		"manager_email": fixture.BobEmail,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for manager cycle, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	publishArtifact(t, handler, bob.AccessToken, core.Artifact{
+		Type:           core.ArtifactTypeSummary,
+		Title:          "Status for manager",
+		Content:        "On-track; minor risk on payments retry.",
+		Sensitivity:    core.SensitivityLow,
+		Confidence:     0.9,
+		VisibilityMode: core.VisibilityModeManagerScope,
+		SourceRefs: []core.SourceReference{{
+			SourceSystem: "test", SourceType: "manual", SourceID: "2",
+			ObservedAt: time.Now().UTC(), TrustClass: core.TrustClassTrustedPolicy, Sensitivity: core.SensitivityLow,
+		}},
+	})
+
+	// Alice queries Bob — the manager-scope artifact should be visible.
+	mgrResp := runScopeQuery(t, handler, admin.AccessToken, fixture.BobEmail, "manager_update")
+	if len(mgrResp.Artifacts) < 1 {
+		t.Fatalf("expected ≥1 artifact from manager-scope visibility, got %d basis=%v", len(mgrResp.Artifacts), mgrResp.PolicyBasis)
+	}
+	if !containsBasisStr(mgrResp.PolicyBasis, "visibility:manager_scope") {
+		t.Fatalf("expected visibility:manager_scope in policy_basis, got %v", mgrResp.PolicyBasis)
+	}
+
+	// GET /v1/org/manager-edges/:email returns the chain.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/org/manager-edges/"+fixture.BobEmail, admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get manager chain status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var chainResp map[string]any
+	json.NewDecoder(rec.Body).Decode(&chainResp)
+	if n := len(chainResp["chain"].([]any)); n != 1 {
+		t.Fatalf("expected 1-hop manager chain, got %d", n)
+	}
+
+	// Unknown user email → 404.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/org/manager-edges/ghost@nowhere.test", admin.AccessToken, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown user chain, got %d", rec.Code)
+	}
+
+	// Bob (non-admin) cannot revoke Bob's own manager edge.
+	rec = performJSON(t, handler, http.MethodDelete, "/v1/org/manager-edges/"+fixture.BobEmail, bob.AccessToken, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin revoke, got %d", rec.Code)
+	}
+	// Admin can.
+	rec = performJSON(t, handler, http.MethodDelete, "/v1/org/manager-edges/"+fixture.BobEmail, admin.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke manager status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Cross-org isolation: a user in a different org cannot be addressed as a manager.
+	otherFixture := newFixture(t)
+	otherAdmin := registerAgent(t, handler, otherFixture.OrgSlug, otherFixture.AliceEmail)
+	rec = performJSON(t, handler, http.MethodPost, "/v1/org/teams", otherAdmin.AccessToken, map[string]any{"name": "ops"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create other-org team: %d", rec.Code)
+	}
+	rec = performJSON(t, handler, http.MethodPost, "/v1/org/manager-edges", admin.AccessToken, map[string]any{
+		"user_email":    fixture.BobEmail,
+		"manager_email": otherFixture.AliceEmail,
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-org manager, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

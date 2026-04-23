@@ -1018,8 +1018,8 @@ All four visibility modes must be enforced:
 
 - `private`: artifact is never returned in cross-agent queries (currently enforced)
 - `explicit_grants_only`: artifact is returned only when a matching grant exists (currently enforced)
-- `team_scope`: artifact is returned to any user on the same team without requiring an explicit per-user grant (requires team membership resolution from org graph — not yet implemented)
-- `manager_scope`: artifact is returned to the user's direct manager without requiring an explicit grant (requires manager relationship resolution from org graph — not yet implemented)
+- `team_scope`: artifact is returned to any user on the same team without requiring an explicit per-user grant (team boundaries are sealed; parent pointers are display-only)
+- `manager_scope`: artifact is returned to users in the owner's upward manager chain (ancestor visibility only) without requiring an explicit grant
 
 #### Grant revocation
 

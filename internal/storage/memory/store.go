@@ -41,6 +41,12 @@ type Store struct {
 	riskPolicies     map[string]core.RiskPolicy         // policyID → policy
 	actions          map[string]core.Action             // actionID → action
 	actionsByOwner   map[string][]string                // ownerUserID → actionIDs
+
+	teams            map[string]core.Team                // teamID → team
+	teamsByOrg       map[string][]string                 // orgID → teamIDs
+	teamMembers      map[string]map[string]core.TeamMember // teamID → userID → member
+	managerEdges     map[string]core.ManagerEdge         // edgeID → edge
+	managerByUser    map[string]string                   // userID → currently-active edgeID ("" if none)
 }
 
 var (
@@ -60,6 +66,7 @@ var (
 	_ storage.RiskPolicyRepository                 = (*Store)(nil)
 	_ storage.ActionRepository                     = (*Store)(nil)
 	_ storage.UserPreferencesRepository            = (*Store)(nil)
+	_ storage.OrgGraphRepository                   = (*Store)(nil)
 )
 
 func New() *Store {
@@ -89,6 +96,12 @@ func New() *Store {
 		riskPolicies:         make(map[string]core.RiskPolicy),
 		actions:              make(map[string]core.Action),
 		actionsByOwner:       make(map[string][]string),
+
+		teams:         make(map[string]core.Team),
+		teamsByOrg:    make(map[string][]string),
+		teamMembers:   make(map[string]map[string]core.TeamMember),
+		managerEdges:  make(map[string]core.ManagerEdge),
+		managerByUser: make(map[string]string),
 	}
 }
 
@@ -323,8 +336,11 @@ func (s *Store) SaveArtifact(_ context.Context, artifact core.Artifact) (core.Ar
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	_, existed := s.artifacts[artifact.ArtifactID]
 	s.artifacts[artifact.ArtifactID] = artifact
-	s.artifactsByUser[artifact.OwnerUserID] = append(s.artifactsByUser[artifact.OwnerUserID], artifact.ArtifactID)
+	if !existed {
+		s.artifactsByUser[artifact.OwnerUserID] = append(s.artifactsByUser[artifact.OwnerUserID], artifact.ArtifactID)
+	}
 	return artifact, nil
 }
 

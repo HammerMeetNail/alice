@@ -662,3 +662,108 @@ func TestToolValidation_MissingRequired(t *testing.T) {
 		})
 	}
 }
+
+// TestOrgGraphMCP is a smoke test covering the team and manager tools end
+// to end through the MCP handler. Admin-gating, cycle detection, and the
+// confirm=true gating are exercised via the shared server-side routes.
+func TestOrgGraphMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	aliceKeys := generateKeys(t)
+	bobKeys := generateKeys(t)
+
+	alice := NewServer(handler)
+	bob := NewServer(handler)
+
+	callTool(t, alice, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice", "client_type": "mcp",
+		"public_key": aliceKeys.PublicKey, "private_key": aliceKeys.PrivateKey,
+	})
+	callTool(t, bob, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.BobEmail,
+		"agent_name": "bob", "client_type": "mcp",
+		"public_key": bobKeys.PublicKey, "private_key": bobKeys.PrivateKey,
+	})
+
+	// confirm=false is rejected.
+	noConfirm, err := callToolRaw(t, alice, "create_team", map[string]any{"name": "eng"})
+	if err != nil {
+		t.Fatalf("rpc error: %v", err)
+	}
+	if isErr, _ := noConfirm["isError"].(bool); !isErr {
+		t.Fatal("expected confirm=true gating to reject create_team")
+	}
+
+	team := mustStructuredContent(t, callTool(t, alice, "create_team", map[string]any{"name": "eng", "confirm": true}))
+	teamID := team["team_id"].(string)
+
+	// Non-admin Bob can't add members.
+	bobAdd, _ := callToolRaw(t, bob, "add_team_member", map[string]any{
+		"team_id": teamID, "user_email": fixture.AliceEmail, "confirm": true,
+	})
+	if isErr, _ := bobAdd["isError"].(bool); !isErr {
+		t.Fatal("expected non-admin add_team_member to fail")
+	}
+
+	// Admin adds Bob.
+	mustStructuredContent(t, callTool(t, alice, "add_team_member", map[string]any{
+		"team_id": teamID, "user_email": fixture.BobEmail, "confirm": true,
+	}))
+
+	members := mustStructuredContent(t, callTool(t, alice, "list_team_members", map[string]any{"team_id": teamID}))
+	if len(members["members"].([]any)) != 1 {
+		t.Fatalf("expected 1 member, got %v", members["members"])
+	}
+
+	// Manager edge: Alice manages Bob.
+	edge := mustStructuredContent(t, callTool(t, alice, "assign_manager", map[string]any{
+		"user_email": fixture.BobEmail, "manager_email": fixture.AliceEmail, "confirm": true,
+	}))
+	if edge["manager_user_id"] == nil {
+		t.Fatalf("expected manager_user_id in edge response, got %v", edge)
+	}
+
+	// Cycle: trying to set Bob as Alice's manager now must fail.
+	cycleResult, _ := callToolRaw(t, alice, "assign_manager", map[string]any{
+		"user_email": fixture.AliceEmail, "manager_email": fixture.BobEmail, "confirm": true,
+	})
+	if isErr, _ := cycleResult["isError"].(bool); !isErr {
+		t.Fatal("expected cycle detection to reject reciprocal manager edge")
+	}
+
+	// get_manager_chain returns the upward walk.
+	chain := mustStructuredContent(t, callTool(t, alice, "get_manager_chain", map[string]any{
+		"user_email": fixture.BobEmail,
+	}))
+	rawChain := chain["chain"].([]any)
+	if len(rawChain) != 1 {
+		t.Fatalf("expected 1-hop chain, got %d", len(rawChain))
+	}
+
+	// list_teams returns the team we created.
+	teams := mustStructuredContent(t, callTool(t, alice, "list_teams", nil))
+	if len(teams["teams"].([]any)) == 0 {
+		t.Fatal("expected at least one team")
+	}
+
+	// remove_team_member + revoke_manager both require confirm=true; the
+	// happy-path calls below also drive the zero-coverage slices.
+	mustStructuredContent(t, callTool(t, alice, "remove_team_member", map[string]any{
+		"team_id": teamID, "user_email": fixture.BobEmail, "confirm": true,
+	}))
+	mustStructuredContent(t, callTool(t, alice, "revoke_manager", map[string]any{
+		"user_email": fixture.BobEmail, "confirm": true,
+	}))
+
+	// confirm=false gating fires on each destructive tool — verifies the
+	// same guard is present across all admin-gated writes.
+	for _, tool := range []string{"remove_team_member", "revoke_manager", "assign_manager", "add_team_member", "create_team"} {
+		raw, _ := callToolRaw(t, alice, tool, map[string]any{
+			"team_id": teamID, "user_email": "x@y", "manager_email": "y@z", "name": "x",
+		})
+		if isErr, _ := raw["isError"].(bool); !isErr {
+			t.Fatalf("%s without confirm must fail", tool)
+		}
+	}
+}

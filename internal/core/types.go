@@ -438,6 +438,48 @@ const (
 	RiskDecisionDeny            RiskDecisionAction = "deny"
 )
 
+// TeamMemberRole is the role a user holds within a team. `lead` is purely
+// informational today; visibility decisions treat leads and members
+// identically.
+type TeamMemberRole string
+
+const (
+	TeamMemberRoleMember TeamMemberRole = "member"
+	TeamMemberRoleLead   TeamMemberRole = "lead"
+)
+
+// Team is an admin-managed grouping of users within a single org. Teams are
+// a sealed visibility scope: they do not inherit from their parent. The
+// parent pointer exists purely for display / reporting structure.
+type Team struct {
+	TeamID       string    `json:"team_id"`
+	OrgID        string    `json:"org_id"`
+	Name         string    `json:"name"`
+	ParentTeamID string    `json:"parent_team_id,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// TeamMember is a point-in-time membership record. Removing a user from a
+// team deletes the row; no soft-delete history is retained.
+type TeamMember struct {
+	TeamID   string         `json:"team_id"`
+	UserID   string         `json:"user_id"`
+	Role     TeamMemberRole `json:"role"`
+	JoinedAt time.Time      `json:"joined_at"`
+}
+
+// ManagerEdge is an append-only row in the reporting graph. The current
+// manager for a user is the most recent edge with RevokedAt == nil. A user
+// may have at most one active edge at a time — the service revokes the
+// prior edge when AssignManager is called.
+type ManagerEdge struct {
+	EdgeID        string     `json:"edge_id"`
+	UserID        string     `json:"user_id"`
+	ManagerUserID string     `json:"manager_user_id"`
+	EffectiveAt   time.Time  `json:"effective_at"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
+}
+
 type AuditEvent struct {
 	AuditEventID  string         `json:"audit_event_id"`
 	OrgID         string         `json:"org_id"`

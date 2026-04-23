@@ -20,7 +20,6 @@ Read `docs/technical-spec.md` for architecture, `docs/threat-model.md` for trust
 
 | Plan | Scope | Rough size |
 |---|---|---|
-| [org-graph-and-scoped-visibility.md](org-graph-and-scoped-visibility.md) | Rich org graph + `team_scope` / `manager_scope` visibility | large — schema + service + policy |
 | [admin-ui.md](admin-ui.md) | Browser-facing admin surface, CORS/CSRF | large — new frontend |
 
 ## workflow for future sessions

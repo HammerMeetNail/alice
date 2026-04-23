@@ -627,7 +627,7 @@ No one can query anyone else unless permission exists.
 - `max_sensitivity` is not checked against artifact sensitivity
 - `allowed_purposes` is not checked against the query's purpose
 - `requires_approval_above_risk` is not checked against the query's risk level
-- `team_scope` and `manager_scope` visibility modes behave identically to `explicit_grants_only`
+- `team_scope` and `manager_scope` visibility modes are enforced via org graph checks (same-team and upward manager-chain visibility)
 - grants with a set `expires_at` are not filtered at evaluation time
 - no cross-org isolation exists — agents in different orgs can currently interact
 
@@ -879,7 +879,7 @@ Policy and authorization:
 - [ ] grant revocation via `DELETE /v1/policy-grants/:id` and `revoke_permission` MCP tool
 - [ ] grant expiry enforcement at evaluation time
 - [ ] risk-based approval enforcement (`requires_approval_above_risk` stored but never checked)
-- [ ] visibility mode enforcement for `team_scope` and `manager_scope` (currently behave like `explicit_grants_only`)
+- [x] visibility mode enforcement for `team_scope` and `manager_scope` (org graph evaluator enforces same-team and upward manager-chain checks)
 - [ ] request and approval expiry enforcement (expired records must not be listable or resolvable)
 - [ ] approval state guard (`AND state = 'pending'` in SQL UPDATE to prevent re-resolution races)
 

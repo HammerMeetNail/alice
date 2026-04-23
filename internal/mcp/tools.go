@@ -330,6 +330,83 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			}),
 			Handler: s.handleSetGatekeeperTuning,
 		},
+		"create_team": {
+			Name:        "create_team",
+			Description: "Create a team in the caller's org. Admin-only. team_scope artifacts are visible to any member of a team the owner belongs to.",
+			InputSchema: objectSchema(map[string]any{
+				"name":           stringSchema("Team name."),
+				"parent_team_id": stringSchema("Optional parent team id, for display only. Parents do not inherit visibility."),
+				"confirm":        map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleCreateTeam,
+		},
+		"list_teams": {
+			Name:        "list_teams",
+			Description: "List teams in the caller's org.",
+			InputSchema: objectSchema(map[string]any{
+				"limit":  map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor": stringSchema("Opaque pagination cursor from a previous response."),
+			}),
+			Handler: s.handleListTeams,
+		},
+		"add_team_member": {
+			Name:        "add_team_member",
+			Description: "Add a user to a team by email. Admin-only. Role defaults to member; pass role=lead for leads (visibility treats leads and members identically today).",
+			InputSchema: objectSchema(map[string]any{
+				"team_id":    stringSchema("Team id."),
+				"user_email": stringSchema("Member email."),
+				"role":       stringSchema("Optional role: 'member' or 'lead'. Defaults to 'member'."),
+				"confirm":    map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleAddTeamMember,
+		},
+		"remove_team_member": {
+			Name:        "remove_team_member",
+			Description: "Remove a user from a team by email. Admin-only. A removed user immediately loses team_scope access for that team's visibility decisions.",
+			InputSchema: objectSchema(map[string]any{
+				"team_id":    stringSchema("Team id."),
+				"user_email": stringSchema("Member email to remove."),
+				"confirm":    map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleRemoveTeamMember,
+		},
+		"list_team_members": {
+			Name:        "list_team_members",
+			Description: "List the members of a team.",
+			InputSchema: objectSchema(map[string]any{
+				"team_id": stringSchema("Team id."),
+				"limit":   map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor":  stringSchema("Opaque pagination cursor from a previous response."),
+			}),
+			Handler: s.handleListTeamMembers,
+		},
+		"assign_manager": {
+			Name:        "assign_manager",
+			Description: "Set manager_email as the active manager of user_email. Admin-only. Rejects self-manager edges and cycles.",
+			InputSchema: objectSchema(map[string]any{
+				"user_email":    stringSchema("User whose manager is being set."),
+				"manager_email": stringSchema("Manager to assign."),
+				"confirm":       map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleAssignManager,
+		},
+		"revoke_manager": {
+			Name:        "revoke_manager",
+			Description: "Clear the active manager edge for a user. Admin-only. The row is not deleted; revoked_at is stamped so history survives.",
+			InputSchema: objectSchema(map[string]any{
+				"user_email": stringSchema("User whose manager edge should be revoked."),
+				"confirm":    map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleRevokeManager,
+		},
+		"get_manager_chain": {
+			Name:        "get_manager_chain",
+			Description: "Return the upward manager chain for a user (direct manager first). Cap at 10 hops.",
+			InputSchema: objectSchema(map[string]any{
+				"user_email": stringSchema("User whose manager chain to read."),
+			}),
+			Handler: s.handleGetManagerChain,
+		},
 	}
 }
 

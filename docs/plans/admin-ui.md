@@ -60,6 +60,6 @@ None block it, but several plans get UI screens once this ships:
 
 - per-org-gatekeeper-tuning.md → tuning editor screen
 - risk-policy-engine.md → policy editor screen
-- org-graph-and-scoped-visibility.md → team / manager management screen
+- org graph + scoped visibility (landed) → team / manager management screen
 
 Ship the admin-ui skeleton first, add per-feature screens as those plans land.

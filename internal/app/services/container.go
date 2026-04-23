@@ -98,6 +98,22 @@ type ActionCreateParams struct {
 	RequestType string
 }
 
+// OrgGraphService is the admin-gated surface httpapi / MCP / CLI use to
+// manage teams and the manager reporting graph. Read-only visibility
+// checks flow through orggraph.Evaluator, not this interface, because
+// the queries service consumes them on a hot path.
+type OrgGraphService interface {
+	CreateTeam(ctx context.Context, agent core.Agent, name, parentTeamID string) (core.Team, error)
+	DeleteTeam(ctx context.Context, agent core.Agent, teamID string) error
+	ListTeams(ctx context.Context, agent core.Agent, limit, offset int) ([]core.Team, error)
+	AddTeamMember(ctx context.Context, agent core.Agent, teamID, userID string, role core.TeamMemberRole) (core.TeamMember, error)
+	RemoveTeamMember(ctx context.Context, agent core.Agent, teamID, userID string) error
+	ListTeamMembers(ctx context.Context, agent core.Agent, teamID string, limit, offset int) ([]core.TeamMember, error)
+	AssignManager(ctx context.Context, agent core.Agent, userID, managerUserID string) (core.ManagerEdge, error)
+	RevokeManager(ctx context.Context, agent core.Agent, userID string) error
+	ManagerChain(ctx context.Context, agent core.Agent, userID string) ([]core.ManagerEdge, error)
+}
+
 type Container struct {
 	Agents     AgentService
 	Artifacts  ArtifactService
@@ -108,4 +124,5 @@ type Container struct {
 	Audit      AuditService
 	RiskPolicy RiskPolicyService
 	Actions    ActionService
+	OrgGraph   OrgGraphService
 }

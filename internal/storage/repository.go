@@ -163,6 +163,49 @@ type RiskPolicyRepository interface {
 	NextPolicyVersionForOrg(ctx context.Context, orgID string) (int, error)
 }
 
+// ErrTeamNotFound is returned when no team matches the given ID.
+var ErrTeamNotFound = errors.New("team not found")
+
+// ErrTeamMemberNotFound is returned when a (team, user) pair has no membership row.
+var ErrTeamMemberNotFound = errors.New("team member not found")
+
+// ErrManagerEdgeCycle is returned by SaveManagerEdge when the proposed edge
+// would form a cycle in the reporting graph. Detected lazily at write time
+// by walking upward from the proposed manager.
+var ErrManagerEdgeCycle = errors.New("manager edge would form a cycle")
+
+// OrgGraphRepository persists teams, team memberships, and the append-only
+// manager reporting graph. All methods operate within a single org because
+// cross-org edges are not permitted; callers must validate OrgID at the
+// service layer.
+//
+// ManagerEdges are append-only. SaveManagerEdge revokes the prior active
+// edge for the same user atomically — the implementation sets RevokedAt on
+// any matching row before inserting the new one. Read-side helpers skip
+// revoked rows so viewers always see the current chain.
+type OrgGraphRepository interface {
+	SaveTeam(ctx context.Context, team core.Team) (core.Team, error)
+	FindTeamByID(ctx context.Context, teamID string) (core.Team, bool, error)
+	ListTeamsForOrg(ctx context.Context, orgID string, limit, offset int) ([]core.Team, error)
+	DeleteTeam(ctx context.Context, teamID string) error
+
+	SaveTeamMember(ctx context.Context, member core.TeamMember) error
+	DeleteTeamMember(ctx context.Context, teamID, userID string) error
+	ListTeamMembers(ctx context.Context, teamID string, limit, offset int) ([]core.TeamMember, error)
+	ListTeamsForUser(ctx context.Context, userID string) ([]core.Team, error)
+	UsersShareTeam(ctx context.Context, userAID, userBID string) (bool, error)
+
+	SaveManagerEdge(ctx context.Context, edge core.ManagerEdge) (core.ManagerEdge, error)
+	RevokeCurrentManagerEdge(ctx context.Context, userID string, revokedAt time.Time) error
+	FindCurrentManagerEdge(ctx context.Context, userID string) (core.ManagerEdge, bool, error)
+	// WalkManagerChain walks upward from userID up to maxDepth hops. The
+	// returned slice starts at userID's direct manager (if any) and ends at
+	// either the root (a user with no manager edge) or the depth limit. The
+	// walk stops early on a revisit so cycles in legacy data don't loop
+	// forever.
+	WalkManagerChain(ctx context.Context, userID string, maxDepth int) ([]core.ManagerEdge, error)
+}
+
 // AuditFilter groups the parameters accepted by ListAuditEvents.
 // Non-empty string fields are combined as AND conditions.
 type AuditFilter struct {
@@ -198,6 +241,7 @@ type StoreTx interface {
 	RiskPolicyRepository
 	ActionRepository
 	UserPreferencesRepository
+	OrgGraphRepository
 }
 
 // Transactor runs fn inside a single atomic transaction.

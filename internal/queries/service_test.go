@@ -420,3 +420,188 @@ func TestQueryEvaluate_ProjectScope_Match(t *testing.T) {
 		t.Fatal("expected project-scoped artifact in response")
 	}
 }
+
+// fakeGraph is a minimal OrgGraphEvaluator the visibility tests drive by
+// hand so we can exercise team_scope and manager_scope independently of
+// the orggraph.Service wiring (which these tests already cover).
+type fakeGraph struct {
+	teams   map[string]map[string]bool // userID → set of teamIDs
+	mgrUp   map[string][]string        // userID → upward chain
+}
+
+func (g fakeGraph) UserSharesTeamWith(_ context.Context, viewer, owner string) (bool, error) {
+	if viewer == owner {
+		return true, nil
+	}
+	va, vb := g.teams[viewer], g.teams[owner]
+	for t := range va {
+		if vb[t] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (g fakeGraph) ViewerInOwnerManagerChain(_ context.Context, viewer, owner string) (bool, error) {
+	if viewer == owner {
+		return false, nil
+	}
+	for _, id := range g.mgrUp[owner] {
+		if id == viewer {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func TestQueryEvaluate_TeamScope_Allows(t *testing.T) {
+	store, fromUserID, toUserID, artifact := setupQueryTest(t)
+	ctx := context.Background()
+
+	fromAgent, _, _ := store.FindAgentByUserID(ctx, fromUserID)
+	toAgent, _, _ := store.FindAgentByUserID(ctx, toUserID)
+
+	// Re-save the artifact with team_scope visibility.
+	artifact.VisibilityMode = core.VisibilityModeTeamScope
+	store.SaveArtifact(ctx, artifact)
+
+	graph := fakeGraph{teams: map[string]map[string]bool{
+		fromUserID: {"t1": true},
+		toUserID:   {"t1": true},
+	}}
+	svc := queries.NewService(store, store, store, store, store).WithOrgGraph(graph)
+	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
+		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
+
+	resp, err := svc.Evaluate(ctx, query)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if len(resp.Artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(resp.Artifacts))
+	}
+	if !containsBasis(resp.PolicyBasis, "visibility:team_scope") {
+		t.Fatalf("expected visibility:team_scope in policy_basis, got %v", resp.PolicyBasis)
+	}
+}
+
+func TestQueryEvaluate_TeamScope_DeniesWhenNotSharedTeam(t *testing.T) {
+	store, fromUserID, toUserID, artifact := setupQueryTest(t)
+	ctx := context.Background()
+
+	fromAgent, _, _ := store.FindAgentByUserID(ctx, fromUserID)
+	toAgent, _, _ := store.FindAgentByUserID(ctx, toUserID)
+	artifact.VisibilityMode = core.VisibilityModeTeamScope
+	store.SaveArtifact(ctx, artifact)
+
+	graph := fakeGraph{teams: map[string]map[string]bool{
+		fromUserID: {"t2": true},
+		toUserID:   {"t1": true},
+	}}
+	svc := queries.NewService(store, store, store, store, store).WithOrgGraph(graph)
+	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
+		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
+
+	resp, err := svc.Evaluate(ctx, query)
+	if err != nil {
+		t.Fatalf("expected success with empty result, got %v", err)
+	}
+	if len(resp.Artifacts) != 0 {
+		t.Fatalf("expected 0 artifacts, got %d", len(resp.Artifacts))
+	}
+}
+
+func TestQueryEvaluate_ManagerScope_AllowsUpward(t *testing.T) {
+	store, fromUserID, toUserID, artifact := setupQueryTest(t)
+	ctx := context.Background()
+
+	fromAgent, _, _ := store.FindAgentByUserID(ctx, fromUserID)
+	toAgent, _, _ := store.FindAgentByUserID(ctx, toUserID)
+
+	artifact.VisibilityMode = core.VisibilityModeManagerScope
+	store.SaveArtifact(ctx, artifact)
+
+	// toUser reports to fromUser, so fromUser is in toUser's upward chain.
+	graph := fakeGraph{mgrUp: map[string][]string{
+		toUserID: {fromUserID},
+	}}
+	svc := queries.NewService(store, store, store, store, store).WithOrgGraph(graph)
+	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
+		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeManagerUpdate)
+
+	resp, err := svc.Evaluate(ctx, query)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if len(resp.Artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(resp.Artifacts))
+	}
+	if !containsBasis(resp.PolicyBasis, "visibility:manager_scope") {
+		t.Fatalf("expected visibility:manager_scope in policy_basis, got %v", resp.PolicyBasis)
+	}
+}
+
+func TestQueryEvaluate_ManagerScope_DeniesDownward(t *testing.T) {
+	store, fromUserID, toUserID, artifact := setupQueryTest(t)
+	ctx := context.Background()
+
+	fromAgent, _, _ := store.FindAgentByUserID(ctx, fromUserID)
+	toAgent, _, _ := store.FindAgentByUserID(ctx, toUserID)
+
+	artifact.VisibilityMode = core.VisibilityModeManagerScope
+	store.SaveArtifact(ctx, artifact)
+
+	// fromUser reports to toUser, so fromUser is NOT in toUser's upward chain.
+	graph := fakeGraph{mgrUp: map[string][]string{
+		fromUserID: {toUserID},
+	}}
+	svc := queries.NewService(store, store, store, store, store).WithOrgGraph(graph)
+	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
+		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeManagerUpdate)
+
+	resp, err := svc.Evaluate(ctx, query)
+	if err != nil {
+		t.Fatalf("expected success with empty result, got %v", err)
+	}
+	if len(resp.Artifacts) != 0 {
+		t.Fatal("downward relationship must not grant manager-scope visibility")
+	}
+}
+
+func TestQueryEvaluate_NoGrantsButScopeMatches(t *testing.T) {
+	// Regression: the old "no grants for pair → ErrPermissionDenied" early
+	// exit would have blocked scope-based access entirely. With a graph
+	// attached, a team-scope artifact is reachable without any grants.
+	store, fromUserID, toUserID, artifact := setupQueryTest(t)
+	ctx := context.Background()
+
+	fromAgent, _, _ := store.FindAgentByUserID(ctx, fromUserID)
+	toAgent, _, _ := store.FindAgentByUserID(ctx, toUserID)
+	artifact.VisibilityMode = core.VisibilityModeTeamScope
+	store.SaveArtifact(ctx, artifact)
+
+	graph := fakeGraph{teams: map[string]map[string]bool{
+		fromUserID: {"t1": true},
+		toUserID:   {"t1": true},
+	}}
+	svc := queries.NewService(store, store, store, store, store).WithOrgGraph(graph)
+	query := makeQuery(fromAgent.AgentID, fromUserID, toAgent.AgentID, toUserID,
+		[]core.ArtifactType{core.ArtifactTypeSummary}, core.QueryPurposeStatusCheck)
+
+	resp, err := svc.Evaluate(ctx, query)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if len(resp.Artifacts) != 1 {
+		t.Fatalf("expected 1 artifact via scope, got %d", len(resp.Artifacts))
+	}
+}
+
+func containsBasis(basis []string, want string) bool {
+	for _, b := range basis {
+		if b == want {
+			return true
+		}
+	}
+	return false
+}

@@ -192,6 +192,8 @@ var subcommands = map[string]subcommandFunc{
 	"policy":     cmdPolicy,
 	"actions":    cmdActions,
 	"operator":   cmdOperator,
+	"team":       cmdTeam,
+	"manager":    cmdManager,
 }
 
 func printUsage(w io.Writer) {
@@ -239,6 +241,15 @@ ADMIN
   actions approve <id>    approve a pending action
   actions cancel <id>     cancel an action you own
   actions execute <id>    execute an approved action
+  team create             create an org team (admin)
+  team list               list teams in your org
+  team delete <team_id>   delete a team (admin)
+  team add-member         add a user to a team by email (admin)
+  team remove-member      remove a user from a team by email (admin)
+  team members <team_id>  list a team's members
+  manager set             set user's manager by email (admin)
+  manager revoke          clear user's active manager edge (admin)
+  manager chain           show a user's upward manager chain
 
 GLOBAL FLAGS
   --server URL            coordination server URL (or set ALICE_SERVER_URL)
@@ -1451,7 +1462,7 @@ func cmdCompletion(_ context.Context, _ GlobalOptions, args []string, _ io.Reade
 
 // completionSubcommands is the canonical list sourced by every shell script.
 // Keep in sync with the subcommands map above; tests assert both lists match.
-const completionSubcommands = "init register whoami publish query result grant revoke peers request inbox outbox respond approvals approve deny audit logout completion tuning policy actions operator"
+const completionSubcommands = "init register whoami publish query result grant revoke peers request inbox outbox respond approvals approve deny audit logout completion tuning policy actions operator team manager"
 
 const completionBash = `# alice bash completion. Install by running:
 #   alice completion bash > /usr/local/etc/bash_completion.d/alice

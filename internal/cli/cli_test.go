@@ -291,6 +291,144 @@ func TestCLITuning(t *testing.T) {
 	}
 }
 
+// TestCLIOrgGraph exercises `alice team` and `alice manager` end-to-end.
+// Alice registers first in a fresh org so she auto-acquires the `admin`
+// role; Bob registers second as a plain member. The test verifies:
+//   - non-admin can list teams but can't create/add-member
+//   - admin can create a team, add a member, and list members
+//   - admin can assign and revoke a manager edge and read the chain back
+func TestCLIOrgGraph(t *testing.T) {
+	container, closeFn, err := app.NewContainer(config.Config{
+		DefaultOrgName:   "CLI Dev Org",
+		AuthChallengeTTL: 5 * time.Minute,
+		AuthTokenTTL:     15 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("build app container: %v", err)
+	}
+	if closeFn != nil {
+		t.Cleanup(func() { _ = closeFn() })
+	}
+	srv := httptest.NewServer(httpapi.NewRouter(container))
+	t.Cleanup(srv.Close)
+
+	tmp := t.TempDir()
+	aliceState := filepath.Join(tmp, "alice.json")
+	bobState := filepath.Join(tmp, "bob.json")
+	carolState := filepath.Join(tmp, "carol.json")
+	orgSlug := "cli-orggraph-" + time.Now().UTC().Format("20060102150405.000000000")
+
+	aliceOut := runOK(t, "alice register",
+		"--server", srv.URL, "--state", aliceState, "--json",
+		"register", "--server", srv.URL, "--org", orgSlug,
+		"--email", "alice@example.com", "--agent", "alice-cli",
+	)
+	inviteToken := extractFirstInviteToken(aliceOut)
+
+	for state, email := range map[string]string{bobState: "bob@example.com", carolState: "carol@example.com"} {
+		args := []string{"--server", srv.URL, "--state", state, "--json",
+			"register", "--server", srv.URL, "--org", orgSlug,
+			"--email", email, "--agent", email + "-cli"}
+		if inviteToken != "" {
+			args = append(args, "--invite-token", inviteToken)
+		}
+		runOK(t, "register "+email, args...)
+	}
+
+	// Admin creates a team and captures the id.
+	createOut := runOK(t, "team create", "--state", aliceState, "--json",
+		"team", "create", "--name", "eng")
+	var created map[string]any
+	if err := json.Unmarshal([]byte(createOut), &created); err != nil {
+		t.Fatalf("decode create: %v body=%s", err, createOut)
+	}
+	teamID, _ := created["team_id"].(string)
+	if teamID == "" {
+		t.Fatalf("expected team_id in create output, got %s", createOut)
+	}
+
+	// Non-admin Bob can't create a team.
+	_, _, code := runCLI(t, "--state", bobState, "--json",
+		"team", "create", "--name", "bob-team")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for non-admin team create")
+	}
+
+	// Non-admin can list teams.
+	listOut := runOK(t, "team list", "--state", bobState, "--json",
+		"team", "list")
+	if !strings.Contains(listOut, teamID) {
+		t.Fatalf("expected team list to include %s, got %s", teamID, listOut)
+	}
+
+	// Admin adds Bob and Carol to the team.
+	runOK(t, "team add-member bob", "--state", aliceState, "--json",
+		"team", "add-member", "--team", teamID, "--email", "bob@example.com")
+	runOK(t, "team add-member carol", "--state", aliceState, "--json",
+		"team", "add-member", "--team", teamID, "--email", "carol@example.com", "--role", "lead")
+
+	// Non-admin can't add.
+	_, _, code = runCLI(t, "--state", bobState, "--json",
+		"team", "add-member", "--team", teamID, "--email", "alice@example.com")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for non-admin add-member")
+	}
+
+	// Members list reflects the adds.
+	membersOut := runOK(t, "team members", "--state", aliceState, "--json",
+		"team", "members", teamID)
+	var membersPayload map[string]any
+	if err := json.Unmarshal([]byte(membersOut), &membersPayload); err != nil {
+		t.Fatalf("decode members: %v body=%s", err, membersOut)
+	}
+	items, _ := membersPayload["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 members, got %d in %s", len(items), membersOut)
+	}
+
+	// Admin can remove a member.
+	runOK(t, "team remove-member carol", "--state", aliceState, "--json",
+		"team", "remove-member", "--team", teamID, "--email", "carol@example.com")
+
+	// Manager edges: Alice manages Bob.
+	runOK(t, "manager set", "--state", aliceState, "--json",
+		"manager", "set", "--user", "bob@example.com", "--manager", "alice@example.com")
+
+	// Reading the chain returns a non-empty walk.
+	chainOut := runOK(t, "manager chain", "--state", aliceState, "--json",
+		"manager", "chain", "--user", "bob@example.com")
+	if !strings.Contains(chainOut, "manager_user_id") {
+		t.Fatalf("expected chain to include an edge, got %s", chainOut)
+	}
+
+	// Non-admin can't revoke.
+	_, _, code = runCLI(t, "--state", bobState, "--json",
+		"manager", "revoke", "--user", "bob@example.com")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for non-admin manager revoke")
+	}
+
+	// Admin revokes cleanly.
+	runOK(t, "manager revoke", "--state", aliceState, "--json",
+		"manager", "revoke", "--user", "bob@example.com")
+
+	// Missing required flags surface as non-zero exits.
+	for _, tc := range [][]string{
+		{"team", "create"},
+		{"team", "add-member", "--team", teamID},
+		{"manager", "set", "--user", "bob@example.com"},
+	} {
+		_, _, code := runCLI(t, append([]string{"--state", aliceState, "--json"}, tc...)...)
+		if code == 0 {
+			t.Fatalf("expected missing-flag exit for %v", tc)
+		}
+	}
+
+	// Admin can delete the team.
+	runOK(t, "team delete", "--state", aliceState, "--json",
+		"team", "delete", teamID)
+}
+
 func runCLI(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer

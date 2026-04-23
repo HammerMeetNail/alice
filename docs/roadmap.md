@@ -22,7 +22,7 @@ Quick status view. Every unchecked item points at a plan in `docs/plans/` that a
 
 - [x] Email OTP, invite tokens, admin approval queue, verification-mode management API
 - [x] Field-level artifact redaction, fine-grained audit queries
-- [ ] `team_scope` / `manager_scope` visibility + rich org graph — [plans/org-graph-and-scoped-visibility.md](plans/org-graph-and-scoped-visibility.md)
+- [x] `team_scope` / `manager_scope` visibility + rich org graph
 - [x] Operator phase (per-user opt-in, risk-policy-gated `acknowledge_blocker` executor, idempotent lifecycle, audit emission on every transition)
 - [x] Advanced risk policy engine (per-org versioned JSON policies, admin-gated apply/history/activate, evaluator overrides the grant ladder in queries service)
 
