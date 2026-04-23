@@ -190,6 +190,8 @@ var subcommands = map[string]subcommandFunc{
 	"completion": cmdCompletion,
 	"tuning":     cmdTuning,
 	"policy":     cmdPolicy,
+	"actions":    cmdActions,
+	"operator":   cmdOperator,
 }
 
 func printUsage(w io.Writer) {
@@ -231,6 +233,12 @@ ADMIN
   policy apply            apply a new risk policy (admin)
   policy history          list the org's risk policy versions
   policy activate         roll back (or forward) to a saved policy version
+  operator enable|disable toggle the operator-phase opt-in for your account
+  actions list            list your operator-phase actions
+  actions create          create a new action (e.g. acknowledge_blocker)
+  actions approve <id>    approve a pending action
+  actions cancel <id>     cancel an action you own
+  actions execute <id>    execute an approved action
 
 GLOBAL FLAGS
   --server URL            coordination server URL (or set ALICE_SERVER_URL)
@@ -1289,6 +1297,139 @@ func cmdPolicyActivate(ctx context.Context, opts GlobalOptions, args []string, r
 	}, false)
 }
 
+func cmdOperator(ctx context.Context, opts GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
+	if len(args) == 0 {
+		return errors.New("usage: alice operator enable|disable")
+	}
+	var enabled bool
+	switch args[0] {
+	case "enable":
+		enabled = true
+	case "disable":
+		enabled = false
+	default:
+		return fmt.Errorf("unknown operator subcommand %q (valid: enable, disable)", args[0])
+	}
+
+	client, state, err := loadClient(opts)
+	if err != nil {
+		return err
+	}
+	if err := mustHaveSession(state); err != nil {
+		return err
+	}
+
+	resp, err := client.Do(ctx, http.MethodPost, "/v1/users/me/operator-enabled", map[string]any{
+		"enabled": enabled,
+	}, false)
+	if err != nil {
+		return err
+	}
+	verb := "disabled"
+	if enabled {
+		verb = "enabled"
+	}
+	return r.Emit("operator phase "+verb, map[string]any{
+		"user_id":          stringFrom(resp, "user_id"),
+		"operator_enabled": resp["operator_enabled"],
+	}, false)
+}
+
+func cmdActions(ctx context.Context, opts GlobalOptions, args []string, stdin io.Reader, r *Renderer) error {
+	if len(args) == 0 {
+		return errors.New("usage: alice actions list|create|approve|cancel|execute [flags]")
+	}
+	sub := args[0]
+	rest := args[1:]
+
+	client, state, err := loadClient(opts)
+	if err != nil {
+		return err
+	}
+	if err := mustHaveSession(state); err != nil {
+		return err
+	}
+
+	switch sub {
+	case "list":
+		fs := flag.NewFlagSet("actions list", flag.ContinueOnError)
+		fs.SetOutput(r.stderr)
+		stateFilter := fs.String("state", "", "optional state filter (pending|approved|executing|executed|failed|cancelled|expired)")
+		limit := fs.Int("limit", 20, "max results")
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		q := fmt.Sprintf("?limit=%d", *limit)
+		if *stateFilter != "" {
+			q += "&state=" + url.QueryEscape(*stateFilter)
+		}
+		resp, err := client.Do(ctx, http.MethodGet, "/v1/actions"+q, nil, false)
+		if err != nil {
+			return err
+		}
+		return r.EmitList("actions", ExtractList(resp, "actions"), false)
+
+	case "create":
+		fs := flag.NewFlagSet("actions create", flag.ContinueOnError)
+		fs.SetOutput(r.stderr)
+		var (
+			kind        = fs.String("kind", "", "action kind (e.g. acknowledge_blocker)")
+			requestID   = fs.String("request", "", "request id that authorises this action")
+			message     = fs.String("message", "", "inline message for acknowledge_blocker; pass @path or - for stdin")
+			riskLevel   = fs.String("risk-level", "L1", "risk level (L0..L4)")
+			requestType = fs.String("request-type", "", "optional request type for risk-policy evaluation")
+		)
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		if *kind == "" {
+			return errors.New("--kind is required")
+		}
+		inputs := map[string]any{}
+		if *message != "" {
+			msg, err := resolveInlineValue(*message)
+			if err != nil {
+				return fmt.Errorf("--message: %w", err)
+			}
+			inputs["message"] = msg
+		}
+		body := map[string]any{
+			"kind":         *kind,
+			"inputs":       inputs,
+			"risk_level":   *riskLevel,
+			"request_id":   *requestID,
+			"request_type": *requestType,
+		}
+		resp, err := client.Do(ctx, http.MethodPost, "/v1/actions", body, false)
+		if err != nil {
+			return err
+		}
+		return r.Emit("action created", map[string]any{
+			"action_id": stringFrom(resp, "action_id"),
+			"state":     resp["state"],
+			"kind":      resp["kind"],
+		}, false)
+
+	case "approve", "cancel", "execute":
+		if len(rest) == 0 {
+			return fmt.Errorf("usage: alice actions %s <action_id>", sub)
+		}
+		actionID := rest[0]
+		resp, err := client.Do(ctx, http.MethodPost, "/v1/actions/"+actionID+"/"+sub, nil, false)
+		if err != nil {
+			return err
+		}
+		return r.Emit("action "+sub, map[string]any{
+			"action_id":      stringFrom(resp, "action_id"),
+			"state":          resp["state"],
+			"failure_reason": stringFrom(resp, "failure_reason"),
+		}, false)
+
+	default:
+		return fmt.Errorf("unknown actions subcommand %q (valid: list, create, approve, cancel, execute)", sub)
+	}
+}
+
 func cmdCompletion(_ context.Context, _ GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
 	if len(args) == 0 {
 		return errors.New("usage: alice completion bash|zsh|fish")
@@ -1310,7 +1451,7 @@ func cmdCompletion(_ context.Context, _ GlobalOptions, args []string, _ io.Reade
 
 // completionSubcommands is the canonical list sourced by every shell script.
 // Keep in sync with the subcommands map above; tests assert both lists match.
-const completionSubcommands = "init register whoami publish query result grant revoke peers request inbox outbox respond approvals approve deny audit logout completion tuning policy"
+const completionSubcommands = "init register whoami publish query result grant revoke peers request inbox outbox respond approvals approve deny audit logout completion tuning policy actions operator"
 
 const completionBash = `# alice bash completion. Install by running:
 #   alice completion bash > /usr/local/etc/bash_completion.d/alice

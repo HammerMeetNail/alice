@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"alice/internal/actions"
 	"alice/internal/agents"
 	"alice/internal/app/services"
 	"alice/internal/approvals"
@@ -47,6 +48,8 @@ type repositories interface {
 	storage.EmailVerificationRepository
 	storage.AgentApprovalRepository
 	storage.RiskPolicyRepository
+	storage.ActionRepository
+	storage.UserPreferencesRepository
 	storage.Transactor
 }
 
@@ -135,6 +138,10 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 		WithAutoAnswerer(gatekeeperService.AsRequestsAutoAnswerer()).
 		WithAuditRecorder(auditService)
 
+	actionService := actions.NewService(repos, repos, repos, repos).
+		WithRiskPolicyEvaluator(riskPolicyService).
+		WithExecutor(actions.NewAcknowledgeBlockerExecutor(repos))
+
 	return services.Container{
 		Agents:     agentService,
 		Artifacts:  artifactService,
@@ -144,5 +151,6 @@ func buildContainer(repos repositories, cfg config.Config) services.Container {
 		Approvals:  approvalService,
 		Audit:      auditService,
 		RiskPolicy: riskPolicyService,
+		Actions:    actionService,
 	}
 }

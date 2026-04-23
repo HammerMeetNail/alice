@@ -232,6 +232,65 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			}),
 			Handler: s.handleUpdateVerificationMode,
 		},
+		"enable_operator": {
+			Name:        "enable_operator",
+			Description: "Enable (or disable) the operator phase for the caller's user account. Defaults off; flipping it on is required before any action can be created.",
+			InputSchema: objectSchema(map[string]any{
+				"enabled": map[string]any{"type": "boolean", "description": "true to enable the operator phase; false to disable it."},
+				"confirm": map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleSetOperatorEnabled,
+		},
+		"create_action": {
+			Name:        "create_action",
+			Description: "Create an operator-phase action for the caller's user. Risk policy decides whether the action starts approved (executable immediately) or pending (requires a separate approve call).",
+			InputSchema: objectSchema(map[string]any{
+				"kind":         stringSchema("Action kind; currently supports acknowledge_blocker."),
+				"request_id":   stringSchema("Optional request id that authorises this action."),
+				"inputs":       map[string]any{"type": "object", "description": "Kind-specific inputs."},
+				"risk_level":   stringSchema("Optional risk level override (L0..L4). Defaults to L1."),
+				"request_type": stringSchema("Optional request type (for risk-policy evaluation)."),
+				"confirm":      map[string]any{"type": "boolean", "description": "Set true to confirm you want to create this action."},
+			}),
+			Handler: s.handleCreateAction,
+		},
+		"list_actions": {
+			Name:        "list_actions",
+			Description: "List the caller's operator-phase actions, newest first.",
+			InputSchema: objectSchema(map[string]any{
+				"state":  stringSchema("Optional state filter (pending|approved|executing|executed|failed|cancelled|expired)."),
+				"limit":  map[string]any{"type": "integer", "description": "Max items to return."},
+				"cursor": stringSchema("Opaque pagination cursor from a previous response."),
+			}),
+			Handler: s.handleListActions,
+		},
+		"approve_action": {
+			Name:        "approve_action",
+			Description: "Approve a pending action the caller owns. No-op if the action is already approved.",
+			InputSchema: objectSchema(map[string]any{
+				"action_id": stringSchema("Action id to approve."),
+				"confirm":   map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleApproveAction,
+		},
+		"cancel_action": {
+			Name:        "cancel_action",
+			Description: "Cancel an action the caller owns. Fails if the action is already in a terminal state.",
+			InputSchema: objectSchema(map[string]any{
+				"action_id": stringSchema("Action id to cancel."),
+				"confirm":   map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleCancelAction,
+		},
+		"execute_action": {
+			Name:        "execute_action",
+			Description: "Execute an approved action. The action transitions to executed (or failed); replays of the same action_id are rejected.",
+			InputSchema: objectSchema(map[string]any{
+				"action_id": stringSchema("Action id to execute."),
+				"confirm":   map[string]any{"type": "boolean", "description": "Set true to confirm."},
+			}),
+			Handler: s.handleExecuteAction,
+		},
 		"apply_risk_policy": {
 			Name:        "apply_risk_policy",
 			Description: "Apply a new risk policy for the caller's org. Caller must be an org admin. Source is the parsed JSON policy document; name is optional but recommended for audit.",
@@ -478,6 +537,71 @@ func (s *Server) handleUpdateVerificationMode(ctx context.Context, args map[stri
 	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/orgs/verification-mode", map[string]any{
 		"verification_mode": mode,
 	})
+}
+
+func (s *Server) handleSetOperatorEnabled(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
+	enabled, _ := args["enabled"].(bool)
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/users/me/operator-enabled", map[string]any{
+		"enabled": enabled,
+	})
+}
+
+func (s *Server) handleCreateAction(ctx context.Context, args map[string]any) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
+	kind := stringArg(args, "kind")
+	if kind == "" {
+		return nil, fmt.Errorf("kind is required")
+	}
+	body := map[string]any{
+		"kind":         kind,
+		"request_id":   stringArg(args, "request_id"),
+		"risk_level":   stringArg(args, "risk_level"),
+		"request_type": stringArg(args, "request_type"),
+	}
+	if inputs, ok := args["inputs"].(map[string]any); ok {
+		body["inputs"] = inputs
+	}
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/actions", body)
+}
+
+func (s *Server) handleListActions(ctx context.Context, args map[string]any) (any, error) {
+	q := paginationQuery(args, "")
+	if state := stringArg(args, "state"); state != "" {
+		if q == "" {
+			q = "?state=" + state
+		} else {
+			q += "&state=" + state
+		}
+	}
+	return s.callAuthedJSON(ctx, http.MethodGet, "/v1/actions"+q, nil)
+}
+
+func (s *Server) handleApproveAction(ctx context.Context, args map[string]any) (any, error) {
+	return s.postActionAction(ctx, args, "approve")
+}
+
+func (s *Server) handleCancelAction(ctx context.Context, args map[string]any) (any, error) {
+	return s.postActionAction(ctx, args, "cancel")
+}
+
+func (s *Server) handleExecuteAction(ctx context.Context, args map[string]any) (any, error) {
+	return s.postActionAction(ctx, args, "execute")
+}
+
+func (s *Server) postActionAction(ctx context.Context, args map[string]any, verb string) (any, error) {
+	if args["confirm"] != true {
+		return nil, fmt.Errorf("refusing to perform sensitive action without confirm=true; re-run with confirm=true if intended")
+	}
+	actionID := stringArg(args, "action_id")
+	if actionID == "" {
+		return nil, fmt.Errorf("action_id is required")
+	}
+	return s.callAuthedJSON(ctx, http.MethodPost, "/v1/actions/"+actionID+"/"+verb, nil)
 }
 
 func (s *Server) handleApplyRiskPolicy(ctx context.Context, args map[string]any) (any, error) {

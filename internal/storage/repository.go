@@ -114,6 +114,42 @@ type EmailVerificationRepository interface {
 // ErrRiskPolicyNotFound is returned when no risk policy matches the given criteria.
 var ErrRiskPolicyNotFound = errors.New("risk policy not found")
 
+// ErrActionNotFound is returned when no action matches the given criteria.
+var ErrActionNotFound = errors.New("action not found")
+
+// ErrActionInTerminalState is returned when a caller tries to transition an
+// action out of a terminal state (executed, failed, cancelled, expired).
+// The storage layer enforces the invariant centrally so multiple callers
+// race-test consistently.
+var ErrActionInTerminalState = errors.New("action is already in a terminal state")
+
+// ActionFilter is a small filter shape for listing actions; zero values
+// mean "no constraint".
+type ActionFilter struct {
+	OwnerUserID string
+	State       core.ActionState
+	Limit       int
+	Offset      int
+}
+
+// ActionRepository persists operator-phase actions. SaveAction writes or
+// overwrites an action; UpdateActionState enforces the one-way transition
+// from pending to a terminal state. Callers should prefer UpdateActionState
+// for lifecycle transitions so the terminal-state check is not duplicated.
+type ActionRepository interface {
+	SaveAction(ctx context.Context, action core.Action) (core.Action, error)
+	FindActionByID(ctx context.Context, actionID string) (core.Action, bool, error)
+	ListActions(ctx context.Context, filter ActionFilter) ([]core.Action, error)
+	UpdateActionState(ctx context.Context, action core.Action) (core.Action, error)
+}
+
+// UserPreferencesRepository persists the small set of per-user toggles that
+// govern agent behaviour. Each toggle is represented by its own method so
+// the wire contract stays explicit.
+type UserPreferencesRepository interface {
+	SetOperatorEnabled(ctx context.Context, userID string, enabled bool) error
+}
+
 // RiskPolicyRepository persists per-org risk policies. SavePolicy writes a
 // new version; ActivatePolicy atomically flips the active_at flag, ensuring
 // only one policy per org is active at a time. Rollback works by calling
@@ -160,6 +196,8 @@ type StoreTx interface {
 	EmailVerificationRepository
 	AgentApprovalRepository
 	RiskPolicyRepository
+	ActionRepository
+	UserPreferencesRepository
 }
 
 // Transactor runs fn inside a single atomic transaction.

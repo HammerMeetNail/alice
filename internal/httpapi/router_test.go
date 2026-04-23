@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"alice/internal/actions"
 	"alice/internal/agents"
 	"alice/internal/app/services"
 	"alice/internal/approvals"
@@ -337,6 +338,8 @@ type testRepositories interface {
 	storage.AuditRepository
 	storage.EmailVerificationRepository
 	storage.RiskPolicyRepository
+	storage.ActionRepository
+	storage.UserPreferencesRepository
 	storage.Transactor
 }
 
@@ -357,6 +360,9 @@ func buildTestHandlerWithSender(cfg config.Config, repos testRepositories, sende
 	requestService := requests.NewService(repos, repos, repos)
 	approvalService := approvals.NewService(repos, repos, repos, repos)
 	auditService := audit.NewService(repos)
+	actionService := actions.NewService(repos, repos, repos, repos).
+		WithRiskPolicyEvaluator(riskPolicyService).
+		WithExecutor(actions.NewAcknowledgeBlockerExecutor(repos))
 
 	return NewRouter(services.Container{
 		Agents:     agentService,
@@ -367,6 +373,7 @@ func buildTestHandlerWithSender(cfg config.Config, repos testRepositories, sende
 		Approvals:  approvalService,
 		Audit:      auditService,
 		RiskPolicy: riskPolicyService,
+		Actions:    actionService,
 	})
 }
 
@@ -964,6 +971,117 @@ func TestUpdateGatekeeperTuning(t *testing.T) {
 	})
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-admin, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestActionsLifecycleHTTP(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+	bob := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+
+	// Bob opts into operator phase.
+	rec := performJSON(t, handler, http.MethodPost, "/v1/users/me/operator-enabled", bob.AccessToken, map[string]any{"enabled": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable operator status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Alice sends Bob a blocker request the action will acknowledge.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/requests", alice.AccessToken, map[string]any{
+		"to_user_email": fixture.BobEmail,
+		"request_type":  "blocker",
+		"title":         "Queue backlog",
+		"content":       "Service 500s on retry",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("send request status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var requestPayload map[string]any
+	json.NewDecoder(rec.Body).Decode(&requestPayload)
+	requestID := requestPayload["request_id"].(string)
+
+	// Bob creates an acknowledge_blocker action targeting the request.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/actions", bob.AccessToken, map[string]any{
+		"kind":       "acknowledge_blocker",
+		"request_id": requestID,
+		"inputs":     map[string]any{"message": "on it, ETA 30 min"},
+		"risk_level": "L0",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create action status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	json.NewDecoder(rec.Body).Decode(&created)
+	actionID := created["action_id"].(string)
+	if created["state"] != "approved" {
+		t.Fatalf("expected default policy to approve the action, got %v", created["state"])
+	}
+
+	// Execute it — this writes to the request and closes it.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/actions/"+actionID+"/execute", bob.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("execute action status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var executed map[string]any
+	json.NewDecoder(rec.Body).Decode(&executed)
+	if executed["state"] != "executed" {
+		t.Fatalf("expected executed state, got %v (failure_reason=%v)", executed["state"], executed["failure_reason"])
+	}
+
+	// Listing shows the executed action.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/actions", bob.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list actions status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var listed map[string]any
+	json.NewDecoder(rec.Body).Decode(&listed)
+	if len(listed["actions"].([]any)) != 1 {
+		t.Fatalf("expected 1 action in list, got %d", len(listed["actions"].([]any)))
+	}
+
+	// Replay is rejected (409).
+	rec = performJSON(t, handler, http.MethodPost, "/v1/actions/"+actionID+"/execute", bob.AccessToken, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 on replay, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// A user who has not opted in cannot create an action.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/actions", alice.AccessToken, map[string]any{
+		"kind":       "acknowledge_blocker",
+		"request_id": requestID,
+		"inputs":     map[string]any{"message": "hi"},
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for operator-disabled user, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Unknown action kind must be a 400.
+	rec = performJSON(t, handler, http.MethodPost, "/v1/actions", bob.AccessToken, map[string]any{
+		"kind":   "send_carrier_pigeon",
+		"inputs": map[string]any{},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown kind, got %d", rec.Code)
+	}
+
+	// The originating request is now completed with Bob's acknowledgement.
+	rec = performJSON(t, handler, http.MethodGet, "/v1/requests/sent?limit=10", alice.AccessToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list sent requests status = %d", rec.Code)
+	}
+	var sent map[string]any
+	json.NewDecoder(rec.Body).Decode(&sent)
+	sentItems := sent["requests"].([]any)
+	if len(sentItems) == 0 {
+		t.Fatal("expected at least one sent request")
+	}
+	first := sentItems[0].(map[string]any)
+	if first["state"] != "completed" {
+		t.Fatalf("expected request state=completed, got %v", first["state"])
+	}
+	if first["response_message"] != "on it, ETA 30 min" {
+		t.Fatalf("expected response_message to match action input, got %v", first["response_message"])
 	}
 }
 

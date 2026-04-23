@@ -159,15 +159,16 @@ func OrgRequiresAdminApproval(mode string) bool {
 }
 
 type User struct {
-	UserID        string    `json:"user_id"`
-	OrgID         string    `json:"org_id"`
-	Email         string    `json:"email"`
-	DisplayName   string    `json:"display_name"`
-	RoleTitles    []string  `json:"role_titles"`
-	ManagerUserID string    `json:"manager_user_id,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	Status        string    `json:"status"`
-	Role          string    `json:"role"` // "member" or "admin"
+	UserID          string    `json:"user_id"`
+	OrgID           string    `json:"org_id"`
+	Email           string    `json:"email"`
+	DisplayName     string    `json:"display_name"`
+	RoleTitles      []string  `json:"role_titles"`
+	ManagerUserID   string    `json:"manager_user_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	Status          string    `json:"status"`
+	Role            string    `json:"role"` // "member" or "admin"
+	OperatorEnabled bool      `json:"operator_enabled"`
 }
 
 type Agent struct {
@@ -354,6 +355,59 @@ type EmailVerification struct {
 	ExpiresAt      time.Time  `json:"expires_at"`
 	VerifiedAt     *time.Time `json:"verified_at,omitempty"`
 	Attempts       int        `json:"attempts"`
+}
+
+// ActionKind enumerates the operator-phase side effects an agent may
+// execute on the user's behalf. Each kind is implemented by exactly one
+// Executor — the kind string is the routing key from request to executor.
+type ActionKind string
+
+const (
+	// ActionKindAcknowledgeBlocker completes a "blocker" style request by
+	// updating the linked request's response_message. Purely internal —
+	// no external side effect.
+	ActionKindAcknowledgeBlocker ActionKind = "acknowledge_blocker"
+	// ActionKindAcceptMeeting is reserved for calendar-writing executors
+	// that will land in a later change.
+	ActionKindAcceptMeeting ActionKind = "accept_meeting"
+	// ActionKindSendReply is reserved for reply-writing executors that
+	// will land in a later change.
+	ActionKindSendReply ActionKind = "send_reply"
+)
+
+// ActionState is the lifecycle of a single Action.
+type ActionState string
+
+const (
+	ActionStatePending   ActionState = "pending"
+	ActionStateApproved  ActionState = "approved"
+	ActionStateExecuting ActionState = "executing"
+	ActionStateExecuted  ActionState = "executed"
+	ActionStateFailed    ActionState = "failed"
+	ActionStateCancelled ActionState = "cancelled"
+	ActionStateExpired   ActionState = "expired"
+)
+
+// Action is one side-effectful unit of work the user's agent may execute
+// on the user's behalf. Inputs are the parameters the executor needs;
+// Result is the opaque output the executor records when it finishes.
+// Actions are execute-once: the storage layer rejects transitions away
+// from terminal states, so replays are no-ops.
+type Action struct {
+	ActionID      string         `json:"action_id"`
+	OrgID         string         `json:"org_id"`
+	RequestID     string         `json:"request_id,omitempty"`
+	OwnerUserID   string         `json:"owner_user_id"`
+	OwnerAgentID  string         `json:"owner_agent_id"`
+	Kind          ActionKind     `json:"kind"`
+	Inputs        map[string]any `json:"inputs,omitempty"`
+	RiskLevel     RiskLevel      `json:"risk_level"`
+	State         ActionState    `json:"state"`
+	Result        map[string]any `json:"result,omitempty"`
+	FailureReason string         `json:"failure_reason,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	ExpiresAt     time.Time      `json:"expires_at"`
+	ExecutedAt    *time.Time     `json:"executed_at,omitempty"`
 }
 
 // RiskPolicy is one versioned evaluable policy belonging to an org. A policy

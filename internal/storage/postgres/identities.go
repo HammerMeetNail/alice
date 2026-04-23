@@ -72,8 +72,8 @@ func (s *Store) UpsertUser(ctx context.Context, user core.User) (core.User, erro
 
 	_, err = s.db.ExecContext(
 		ctx,
-		`INSERT INTO users (user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status, role)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+		`INSERT INTO users (user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status, role, operator_enabled)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
 		ON CONFLICT (user_id) DO UPDATE
 		SET org_id = EXCLUDED.org_id,
 		    email = EXCLUDED.email,
@@ -82,7 +82,8 @@ func (s *Store) UpsertUser(ctx context.Context, user core.User) (core.User, erro
 		    manager_user_id = EXCLUDED.manager_user_id,
 		    created_at = EXCLUDED.created_at,
 		    status = EXCLUDED.status,
-		    role = EXCLUDED.role`,
+		    role = EXCLUDED.role,
+		    operator_enabled = EXCLUDED.operator_enabled`,
 		user.UserID,
 		user.OrgID,
 		normalizeEmail(user.Email),
@@ -92,6 +93,7 @@ func (s *Store) UpsertUser(ctx context.Context, user core.User) (core.User, erro
 		user.CreatedAt,
 		user.Status,
 		user.Role,
+		user.OperatorEnabled,
 	)
 	if err != nil {
 		return core.User{}, fmt.Errorf("upsert user: %w", err)
@@ -109,12 +111,12 @@ func (s *Store) FindUserByEmail(ctx context.Context, orgID, email string) (core.
 
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status, role
+		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status, role, operator_enabled
 		FROM users
 		WHERE org_id = $1 AND email = $2`,
 		orgID,
 		normalizeEmail(email),
-	).Scan(&user.UserID, &user.OrgID, &user.Email, &user.DisplayName, &roleTitles, &managerUser, &user.CreatedAt, &user.Status, &user.Role)
+	).Scan(&user.UserID, &user.OrgID, &user.Email, &user.DisplayName, &roleTitles, &managerUser, &user.CreatedAt, &user.Status, &user.Role, &user.OperatorEnabled)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return core.User{}, false, nil
@@ -138,11 +140,11 @@ func (s *Store) FindUserByID(ctx context.Context, userID string) (core.User, boo
 
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status, role
+		`SELECT user_id, org_id, email, display_name, role_titles, manager_user_id, created_at, status, role, operator_enabled
 		FROM users
 		WHERE user_id = $1`,
 		userID,
-	).Scan(&user.UserID, &user.OrgID, &user.Email, &user.DisplayName, &roleTitles, &managerUser, &user.CreatedAt, &user.Status, &user.Role)
+	).Scan(&user.UserID, &user.OrgID, &user.Email, &user.DisplayName, &roleTitles, &managerUser, &user.CreatedAt, &user.Status, &user.Role, &user.OperatorEnabled)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return core.User{}, false, nil

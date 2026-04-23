@@ -39,6 +39,8 @@ type Store struct {
 	agentApprovals   map[string]core.AgentApproval      // approvalID → approval
 	agentApprovalsByAgent map[string]string             // agentID → approvalID
 	riskPolicies     map[string]core.RiskPolicy         // policyID → policy
+	actions          map[string]core.Action             // actionID → action
+	actionsByOwner   map[string][]string                // ownerUserID → actionIDs
 }
 
 var (
@@ -56,6 +58,8 @@ var (
 	_ storage.EmailVerificationRepository          = (*Store)(nil)
 	_ storage.AgentApprovalRepository              = (*Store)(nil)
 	_ storage.RiskPolicyRepository                 = (*Store)(nil)
+	_ storage.ActionRepository                     = (*Store)(nil)
+	_ storage.UserPreferencesRepository            = (*Store)(nil)
 )
 
 func New() *Store {
@@ -83,6 +87,8 @@ func New() *Store {
 		agentApprovals:       make(map[string]core.AgentApproval),
 		agentApprovalsByAgent: make(map[string]string),
 		riskPolicies:         make(map[string]core.RiskPolicy),
+		actions:              make(map[string]core.Action),
+		actionsByOwner:       make(map[string][]string),
 	}
 }
 
@@ -896,6 +902,96 @@ func (s *Store) NextPolicyVersionForOrg(_ context.Context, orgID string) (int, e
 		}
 	}
 	return max + 1, nil
+}
+
+// --- Actions ---
+
+func (s *Store) SaveAction(_ context.Context, action core.Action) (core.Action, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, existing := s.actions[action.ActionID]; !existing {
+		s.actionsByOwner[action.OwnerUserID] = append(s.actionsByOwner[action.OwnerUserID], action.ActionID)
+	}
+	s.actions[action.ActionID] = action
+	return action, nil
+}
+
+func (s *Store) FindActionByID(_ context.Context, actionID string) (core.Action, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	action, ok := s.actions[actionID]
+	return action, ok, nil
+}
+
+func (s *Store) ListActions(_ context.Context, filter storage.ActionFilter) ([]core.Action, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var candidates []core.Action
+	if filter.OwnerUserID != "" {
+		for _, id := range s.actionsByOwner[filter.OwnerUserID] {
+			if a, ok := s.actions[id]; ok {
+				candidates = append(candidates, a)
+			}
+		}
+	} else {
+		for _, a := range s.actions {
+			candidates = append(candidates, a)
+		}
+	}
+
+	out := candidates[:0]
+	for _, a := range candidates {
+		if filter.State != "" && a.State != filter.State {
+			continue
+		}
+		out = append(out, a)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return pageSlice(out, filter.Limit, filter.Offset), nil
+}
+
+func (s *Store) UpdateActionState(_ context.Context, action core.Action) (core.Action, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.actions[action.ActionID]
+	if !ok {
+		return core.Action{}, storage.ErrActionNotFound
+	}
+	if isTerminalActionState(existing.State) {
+		return core.Action{}, storage.ErrActionInTerminalState
+	}
+	s.actions[action.ActionID] = action
+	return action, nil
+}
+
+func isTerminalActionState(state core.ActionState) bool {
+	switch state {
+	case core.ActionStateExecuted, core.ActionStateFailed, core.ActionStateCancelled, core.ActionStateExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+// --- User preferences ---
+
+func (s *Store) SetOperatorEnabled(_ context.Context, userID string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, ok := s.users[userID]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	user.OperatorEnabled = enabled
+	s.users[userID] = user
+	return nil
 }
 
 // WithTx satisfies storage.Transactor. The memory store's mutex-based

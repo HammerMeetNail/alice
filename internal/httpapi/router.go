@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"alice/internal/actions"
 	"alice/internal/agents"
 	"alice/internal/app/services"
 	"alice/internal/approvals"
@@ -120,6 +122,10 @@ func (r *router) routes() {
 	r.mux.Handle("POST /v1/orgs/risk-policy", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleApplyRiskPolicy))))
 	r.mux.Handle("GET /v1/orgs/risk-policies", r.requireVerifiedAuth(http.HandlerFunc(r.handleListRiskPolicies)))
 	r.mux.Handle("POST /v1/orgs/risk-policies/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleActivateRiskPolicy))))
+	r.mux.Handle("POST /v1/actions", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleCreateAction))))
+	r.mux.Handle("GET /v1/actions", r.requireVerifiedAuth(http.HandlerFunc(r.handleListActions)))
+	r.mux.Handle("POST /v1/actions/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleActionAction))))
+	r.mux.Handle("POST /v1/users/me/operator-enabled", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleSetOperatorEnabled))))
 	r.mux.Handle("GET /v1/orgs/pending-agents", r.requireVerifiedAuth(http.HandlerFunc(r.handleListPendingAgents)))
 	r.mux.Handle("POST /v1/orgs/agents/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleReviewAgent))))
 }
@@ -1298,6 +1304,242 @@ func riskPolicyJSON(policy core.RiskPolicy) map[string]any {
 	}
 	if policy.CreatedByUserID != "" {
 		out["created_by_user_id"] = policy.CreatedByUserID
+	}
+	return out
+}
+
+type createActionRequest struct {
+	RequestID   string         `json:"request_id"`
+	Kind        string         `json:"kind"`
+	Inputs      map[string]any `json:"inputs"`
+	RiskLevel   string         `json:"risk_level"`
+	RequestType string         `json:"request_type"`
+}
+
+func (r *router) handleCreateAction(w http.ResponseWriter, req *http.Request) {
+	agent, user, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+	if r.services.Actions == nil {
+		writeError(w, http.StatusNotImplemented, "operator phase is not configured")
+		return
+	}
+
+	var input createActionRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeDecodeError(w, err)
+		return
+	}
+	if strings.TrimSpace(input.Kind) == "" {
+		writeError(w, http.StatusBadRequest, "kind is required")
+		return
+	}
+
+	riskLevel := core.RiskLevel(input.RiskLevel)
+	if riskLevel == "" {
+		riskLevel = core.RiskLevelL1
+	}
+
+	action, err := r.services.Actions.CreateFromServicesParams(req.Context(), services.ActionCreateParams{
+		OrgID:       agent.OrgID,
+		OwnerUser:   user,
+		OwnerAgent:  agent,
+		RequestID:   input.RequestID,
+		Kind:        core.ActionKind(input.Kind),
+		Inputs:      input.Inputs,
+		RiskLevel:   riskLevel,
+		RequestType: input.RequestType,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, actions.ErrOperatorNotEnabled):
+			writeError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, actions.ErrUnknownActionKind):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, actions.ErrActionPolicyDenied):
+			writeError(w, http.StatusForbidden, err.Error())
+		default:
+			writeServiceError(w, err, "create action failed")
+		}
+		return
+	}
+
+	if _, auditErr := r.services.Audit.Record(req.Context(), "action.created", "action", action.ActionID, action.OrgID, agent.AgentID, "", string(action.State), action.RiskLevel, nil, map[string]any{
+		"kind":       string(action.Kind),
+		"state":      string(action.State),
+		"request_id": action.RequestID,
+	}); auditErr != nil {
+		slog.Error("audit record failed", "op", "create_action", "err", auditErr)
+	}
+
+	writeJSON(w, http.StatusOK, actionJSON(action))
+}
+
+func (r *router) handleListActions(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+	if r.services.Actions == nil {
+		writeError(w, http.StatusNotImplemented, "operator phase is not configured")
+		return
+	}
+
+	limit, offset := parsePagination(req)
+	filter := storage.ActionFilter{Limit: limit, Offset: offset}
+	if state := strings.TrimSpace(req.URL.Query().Get("state")); state != "" {
+		filter.State = core.ActionState(state)
+	}
+	items, err := r.services.Actions.List(req.Context(), agent, filter)
+	if err != nil {
+		writeServiceError(w, err, "list actions failed")
+		return
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, actionJSON(item))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"actions":     out,
+		"next_cursor": nextCursor(len(items), limit, offset),
+	})
+}
+
+// handleActionAction is the shared handler for /v1/actions/:id/{approve|cancel|execute}.
+func (r *router) handleActionAction(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+	if r.services.Actions == nil {
+		writeError(w, http.StatusNotImplemented, "operator phase is not configured")
+		return
+	}
+
+	tail := strings.TrimPrefix(req.URL.Path, "/v1/actions/")
+	parts := strings.Split(tail, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		writeError(w, http.StatusNotFound, "POST /v1/actions/:id/{approve|cancel|execute}")
+		return
+	}
+	actionID, action := parts[0], parts[1]
+
+	var (
+		result core.Action
+		err    error
+	)
+	switch action {
+	case "approve":
+		result, err = r.services.Actions.Approve(req.Context(), agent, actionID)
+	case "cancel":
+		result, err = r.services.Actions.Cancel(req.Context(), agent, actionID)
+	case "execute":
+		result, err = r.services.Actions.Execute(req.Context(), agent, actionID)
+	default:
+		writeError(w, http.StatusNotFound, fmt.Sprintf("unknown action %q", action))
+		return
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, actions.ErrActionNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, actions.ErrActionForbidden):
+			writeError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, actions.ErrActionNotExecutable):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeServiceError(w, err, "action "+action+" failed")
+		}
+		return
+	}
+
+	eventKind := "action." + action + "d"
+	if action == "cancel" {
+		eventKind = "action.cancelled"
+	}
+	if action == "execute" {
+		if result.State == core.ActionStateExecuted {
+			eventKind = "action.executed"
+		} else {
+			eventKind = "action.failed"
+		}
+	}
+	if _, auditErr := r.services.Audit.Record(req.Context(), eventKind, "action", result.ActionID, result.OrgID, agent.AgentID, "", string(result.State), result.RiskLevel, nil, map[string]any{
+		"kind":           string(result.Kind),
+		"state":          string(result.State),
+		"request_id":     result.RequestID,
+		"failure_reason": result.FailureReason,
+	}); auditErr != nil {
+		slog.Error("audit record failed", "op", eventKind, "err", auditErr)
+	}
+
+	writeJSON(w, http.StatusOK, actionJSON(result))
+}
+
+type setOperatorEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (r *router) handleSetOperatorEnabled(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+	if r.services.Actions == nil {
+		writeError(w, http.StatusNotImplemented, "operator phase is not configured")
+		return
+	}
+
+	var input setOperatorEnabledRequest
+	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+		writeDecodeError(w, err)
+		return
+	}
+	if err := r.services.Actions.SetOperatorEnabled(req.Context(), agent, input.Enabled); err != nil {
+		writeServiceError(w, err, "set operator_enabled failed")
+		return
+	}
+	if _, auditErr := r.services.Audit.Record(req.Context(), "user.operator_enabled_updated", "user", agent.OwnerUserID, agent.OrgID, agent.AgentID, "", "allow", core.RiskLevelL1, nil, map[string]any{
+		"enabled": input.Enabled,
+	}); auditErr != nil {
+		slog.Error("audit record failed", "op", "set_operator_enabled", "err", auditErr)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id":          agent.OwnerUserID,
+		"operator_enabled": input.Enabled,
+	})
+}
+
+func actionJSON(action core.Action) map[string]any {
+	out := map[string]any{
+		"action_id":     action.ActionID,
+		"org_id":        action.OrgID,
+		"owner_user_id": action.OwnerUserID,
+		"kind":          action.Kind,
+		"state":         action.State,
+		"risk_level":    action.RiskLevel,
+		"created_at":    action.CreatedAt,
+		"expires_at":    action.ExpiresAt,
+	}
+	if action.RequestID != "" {
+		out["request_id"] = action.RequestID
+	}
+	if len(action.Inputs) > 0 {
+		out["inputs"] = action.Inputs
+	}
+	if len(action.Result) > 0 {
+		out["result"] = action.Result
+	}
+	if action.FailureReason != "" {
+		out["failure_reason"] = action.FailureReason
+	}
+	if action.ExecutedAt != nil {
+		out["executed_at"] = *action.ExecutedAt
 	}
 	return out
 }

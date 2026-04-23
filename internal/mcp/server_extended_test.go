@@ -328,6 +328,71 @@ func TestUpdateVerificationModeMCP(t *testing.T) {
 	}
 }
 
+func TestOperatorActionsMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	aliceKeys := generateKeys(t)
+	bobKeys := generateKeys(t)
+
+	alice := NewServer(handler)
+	bob := NewServer(handler)
+
+	callTool(t, alice, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice", "client_type": "mcp",
+		"public_key": aliceKeys.PublicKey, "private_key": aliceKeys.PrivateKey,
+	})
+	callTool(t, bob, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.BobEmail,
+		"agent_name": "bob", "client_type": "mcp",
+		"public_key": bobKeys.PublicKey, "private_key": bobKeys.PrivateKey,
+	})
+
+	// Bob opts in to the operator phase.
+	mustStructuredContent(t, callTool(t, bob, "enable_operator", map[string]any{
+		"enabled": true,
+		"confirm": true,
+	}))
+
+	// Alice sends Bob a blocker request so the action has something to
+	// acknowledge.
+	reqResp := mustStructuredContent(t, callTool(t, alice, "send_request_to_peer", map[string]any{
+		"to_user_email": fixture.BobEmail,
+		"request_type":  "blocker",
+		"title":         "Queue backlog",
+		"content":       "Service 500s on retry",
+	}))
+	requestID := reqResp["request_id"].(string)
+
+	created := mustStructuredContent(t, callTool(t, bob, "create_action", map[string]any{
+		"kind":       "acknowledge_blocker",
+		"request_id": requestID,
+		"inputs":     map[string]any{"message": "on it"},
+		"risk_level": "L0",
+		"confirm":    true,
+	}))
+	if created["state"] != "approved" {
+		t.Fatalf("expected action state=approved under default policy, got %v", created["state"])
+	}
+
+	executed := mustStructuredContent(t, callTool(t, bob, "execute_action", map[string]any{
+		"action_id": created["action_id"],
+		"confirm":   true,
+	}))
+	if executed["state"] != "executed" {
+		t.Fatalf("expected executed state, got %v", executed["state"])
+	}
+
+	// Replay surfaces as an MCP error result (isError=true).
+	replay, _ := callToolRaw(t, bob, "execute_action", map[string]any{
+		"action_id": created["action_id"],
+		"confirm":   true,
+	})
+	if isErr, _ := replay["isError"].(bool); !isErr {
+		t.Fatalf("expected isError=true on replay, got %v", replay)
+	}
+}
+
 func TestRiskPolicyMCP(t *testing.T) {
 	handler := newTestHandler(t)
 	fixture := newFixture(t)

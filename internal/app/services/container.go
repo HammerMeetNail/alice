@@ -7,6 +7,7 @@ import (
 	"alice/internal/agents"
 	"alice/internal/audit"
 	"alice/internal/core"
+	"alice/internal/storage"
 )
 
 type AgentService interface {
@@ -70,6 +71,33 @@ type RiskPolicyService interface {
 	History(ctx context.Context, agent core.Agent, limit, offset int) ([]core.RiskPolicy, error)
 }
 
+// ActionService is the surface the HTTP/CLI/MCP layers use to manage
+// operator-phase actions. The concrete actions package depends on the
+// storage and riskpolicy layers; this interface keeps httpapi free of
+// those transitive imports.
+type ActionService interface {
+	CreateFromServicesParams(ctx context.Context, params ActionCreateParams) (core.Action, error)
+	Approve(ctx context.Context, agent core.Agent, actionID string) (core.Action, error)
+	Cancel(ctx context.Context, agent core.Agent, actionID string) (core.Action, error)
+	Execute(ctx context.Context, agent core.Agent, actionID string) (core.Action, error)
+	List(ctx context.Context, agent core.Agent, filter storage.ActionFilter) ([]core.Action, error)
+	SetOperatorEnabled(ctx context.Context, agent core.Agent, enabled bool) error
+}
+
+// ActionCreateParams mirrors actions.CreateParams but lives in this
+// interface-only package so httpapi can populate it without importing
+// actions directly.
+type ActionCreateParams struct {
+	OrgID       string
+	OwnerUser   core.User
+	OwnerAgent  core.Agent
+	RequestID   string
+	Kind        core.ActionKind
+	Inputs      map[string]any
+	RiskLevel   core.RiskLevel
+	RequestType string
+}
+
 type Container struct {
 	Agents     AgentService
 	Artifacts  ArtifactService
@@ -79,4 +107,5 @@ type Container struct {
 	Approvals  ApprovalService
 	Audit      AuditService
 	RiskPolicy RiskPolicyService
+	Actions    ActionService
 }
