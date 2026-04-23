@@ -183,8 +183,8 @@ var subcommands = map[string]subcommandFunc{
 	"outbox":     cmdOutbox,
 	"respond":    cmdRespond,
 	"approvals":  cmdListApprovals,
-	"approve":    cmdResolveApproval("approve"),
-	"deny":       cmdResolveApproval("deny"),
+	"approve":    cmdResolveApproval("approved"),
+	"deny":       cmdResolveApproval("denied"),
 	"audit":      cmdAudit,
 	"logout":     cmdLogout,
 	"completion": cmdCompletion,
@@ -1033,9 +1033,13 @@ func cmdListApprovals(ctx context.Context, opts GlobalOptions, _ []string, _ io.
 }
 
 func cmdResolveApproval(decision string) subcommandFunc {
+	verb := map[string]string{"approved": "approve", "denied": "deny"}[decision]
+	if verb == "" {
+		verb = decision
+	}
 	return func(ctx context.Context, opts GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
 		if len(args) == 0 {
-			return fmt.Errorf("usage: alice %s <approval_id>", decision)
+			return fmt.Errorf("usage: alice %s <approval_id>", verb)
 		}
 		client, state, err := loadClient(opts)
 		if err != nil {
@@ -1049,7 +1053,7 @@ func cmdResolveApproval(decision string) subcommandFunc {
 		if err != nil {
 			return err
 		}
-		return r.Emit(fmt.Sprintf("Approval %s %sed.", args[0], decision), resp, false)
+		return r.Emit(fmt.Sprintf("Approval %s %s.", args[0], decision), resp, false)
 	}
 }
 
