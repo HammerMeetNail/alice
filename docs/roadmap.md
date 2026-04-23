@@ -29,7 +29,7 @@ Quick status view. Every unchecked item points at a plan in `docs/plans/` that a
 ## quality / operational
 
 - [x] Test coverage threshold, e2e tracker test, audit NDJSON sink
-- [ ] Admin UI + CORS/CSRF — [plans/admin-ui.md](plans/admin-ui.md)
+- [x] Admin UI + CORS/CSRF (feature-flagged, email-OTP sign-in, double-submit CSRF, strict CSP)
 
 ---
 

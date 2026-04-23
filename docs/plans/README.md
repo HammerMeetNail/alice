@@ -18,9 +18,7 @@ Read `docs/technical-spec.md` for architecture, `docs/threat-model.md` for trust
 
 ## index
 
-| Plan | Scope | Rough size |
-|---|---|---|
-| [admin-ui.md](admin-ui.md) | Browser-facing admin surface, CORS/CSRF | large — new frontend |
+No open plans. The roadmap is caught up — completed work lives in git history. Add a new plan here when a future work item crosses the "needs its own session" bar.
 
 ## workflow for future sessions
 

@@ -868,6 +868,32 @@ List endpoints accept `?limit=N&cursor=<opaque>` for pagination. Default limit i
 
 ---
 
+## Admin UI (optional)
+
+The coordination server ships an opt-in browser admin surface under `/admin/*`. It is off by default. Enable it on deployments that need a non-CLI path for reviewing pending agents, rotating invite tokens, and browsing audit events.
+
+To enable it locally:
+
+```sh
+ALICE_ADMIN_UI_ENABLED=true \
+ALICE_ADMIN_UI_DEV_MODE=true \
+ALICE_SMTP_HOST=noop \
+go run ./cmd/server
+```
+
+Open `http://127.0.0.1:8080/admin/sign-in`, enter your org slug and an email that's already registered as an agent owner with `role=admin`. The six-digit code is logged to stderr when `ALICE_SMTP_HOST=noop` (use a real SMTP host in production).
+
+Security posture:
+
+- short-lived session cookie (`Secure` + `HttpOnly` + `SameSite=Strict`; `Secure` is dropped only with `ALICE_ADMIN_UI_DEV_MODE=true`)
+- double-submit CSRF cookie + hidden form input on every mutation; `X-CSRF-Token` header is also accepted for future AJAX callers
+- strict `Content-Security-Policy` (no inline scripts, no `eval`, no remote CDN)
+- explicit CORS allow-list via `ALICE_ADMIN_UI_ALLOWED_ORIGINS`; empty means same-origin only, preflight from any other origin is denied
+- every state-changing action records the same audit event the CLI path would, plus an `admin_ui.*` marker carrying the session ID
+- the admin UI uses the same service layer as the JSON API — there's no admin-only back channel
+
+The sign-in flow requires the admin to already have a registered agent (run `alice register` once first). Users with `role=member` cannot sign in.
+
 ## Coordination server environment variables
 
 Set these on the `cmd/server` process.
@@ -890,6 +916,11 @@ Set these on the `cmd/server` process.
 | `ALICE_AUDIT_LOG_FILE` | _(none)_ | Path to an NDJSON audit log file. When set, every audit event is appended to this file in addition to the database, enabling external SIEM ingestion. |
 | `ALICE_GATEKEEPER_CONFIDENCE_THRESHOLD` | `0.6` | Minimum aggregate artifact confidence required before the gatekeeper auto-answers a request on the recipient's behalf. Accepts values in `[0, 1]`; anything outside the range is ignored and the compile-time default applies. Org admins can override this per-org via `alice tuning --confidence` (precedence: per-org > env > default). |
 | `ALICE_GATEKEEPER_LOOKBACK_WINDOW` | `336h` (14d) | How far back the gatekeeper searches for recent artifacts when synthesising an auto-answer query. Accepts Go duration strings (e.g. `72h`, `168h`). Org admins can override this per-org via `alice tuning --lookback` (precedence: per-org > env > default). |
+| `ALICE_ADMIN_UI_ENABLED` | `false` | When `true`, mounts the browser-facing admin UI under `/admin/*` on the coordination server's listener. Requires `ALICE_SMTP_HOST` (or `noop`) so the email-OTP sign-in flow can deliver codes. Off by default — existing deployments are not auto-exposed. |
+| `ALICE_ADMIN_UI_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated explicit CORS allow-list for the admin UI. Empty means same-origin only (no CORS headers are ever emitted, preflight requests are denied). Never use `*`. |
+| `ALICE_ADMIN_UI_DEV_MODE` | `false` | Disables the HTTPS guard and removes the `Secure` attribute from session cookies. Only safe for local development; leave unset in production. |
+| `ALICE_ADMIN_UI_SESSION_TTL` | `24h` | How long a signed-in admin browser session lives after the OTP exchange. Accepts Go duration strings. |
+| `ALICE_ADMIN_UI_SIGNIN_TTL` | `10m` | How long a pending sign-in OTP remains valid after delivery. |
 
 ## MCP server environment variables
 

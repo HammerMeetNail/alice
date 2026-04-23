@@ -41,6 +41,24 @@ type Config struct {
 	// GatekeeperLookbackWindow is how far back the gatekeeper looks for
 	// artifacts when synthesising a query. Zero leaves the default.
 	GatekeeperLookbackWindow time.Duration
+
+	// Admin UI feature flag and hardening.
+	//
+	// AdminUIEnabled gates the /admin/* browser surface. Off by default so
+	// existing deployments don't suddenly expose a new attack surface.
+	AdminUIEnabled bool
+	// AdminUIAllowedOrigins is the explicit CORS allow-list for the admin
+	// UI. Empty disables CORS entirely (same-origin only).
+	AdminUIAllowedOrigins []string
+	// AdminUIDevMode disables the HTTPS-only guard and the Secure cookie
+	// attribute. Only safe for local development; never set in production.
+	AdminUIDevMode bool
+	// AdminUISessionTTL is how long an admin browser session lives after
+	// sign-in. Zero leaves the 24 h default.
+	AdminUISessionTTL time.Duration
+	// AdminUISignInTTL is how long an email-OTP sign-in attempt remains
+	// valid after the code is sent. Zero leaves the 10 m default.
+	AdminUISignInTTL time.Duration
 }
 
 func FromEnv() Config {
@@ -70,7 +88,28 @@ func FromEnv() Config {
 
 		GatekeeperConfidenceThreshold: floatFromEnv("ALICE_GATEKEEPER_CONFIDENCE_THRESHOLD", 0),
 		GatekeeperLookbackWindow:      durationFromEnv("ALICE_GATEKEEPER_LOOKBACK_WINDOW", 0),
+
+		AdminUIEnabled:        boolFromEnv("ALICE_ADMIN_UI_ENABLED", false),
+		AdminUIAllowedOrigins: splitCSVFromEnv("ALICE_ADMIN_UI_ALLOWED_ORIGINS"),
+		AdminUIDevMode:        boolFromEnv("ALICE_ADMIN_UI_DEV_MODE", false),
+		AdminUISessionTTL:     durationFromEnv("ALICE_ADMIN_UI_SESSION_TTL", 24*time.Hour),
+		AdminUISignInTTL:      durationFromEnv("ALICE_ADMIN_UI_SIGNIN_TTL", 10*time.Minute),
 	}
+}
+
+func splitCSVFromEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func floatFromEnv(key string, fallback float64) float64 {

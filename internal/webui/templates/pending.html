@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Pending agents &mdash; alice admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/admin/static/css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/admin/dashboard">alice admin</a>
+  <nav>
+    <a href="/admin/dashboard">Dashboard</a>
+    <a href="/admin/invite-token">Invite token</a>
+    <a href="/admin/audit">Audit</a>
+    <form method="post" action="/admin/sign-out" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.Common.CSRFToken}}">
+      <button type="submit" class="link">Sign out ({{.Common.Email}})</button>
+    </form>
+  </nav>
+</header>
+<main>
+<section class="card">
+  <h1>Pending agent approvals</h1>
+  {{with .Notice}}<p class="notice" role="status">{{.}}</p>{{end}}
+  {{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+  {{if .Pending}}
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Agent ID</th>
+          <th>Requested at</th>
+          <th>Decision</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Pending}}
+        <tr>
+          <td><code>{{.AgentID}}</code></td>
+          <td>{{fmtTime .RequestedAt}}</td>
+          <td>
+            <form method="post" action="/admin/pending-agents/review" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.Common.CSRFToken}}">
+              <input type="hidden" name="agent_id" value="{{.AgentID}}">
+              <input type="hidden" name="decision" value="approved">
+              <button type="submit" class="primary">Approve</button>
+            </form>
+            <form method="post" action="/admin/pending-agents/review" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.Common.CSRFToken}}">
+              <input type="hidden" name="agent_id" value="{{.AgentID}}">
+              <input type="hidden" name="decision" value="rejected">
+              <button type="submit" class="danger">Reject</button>
+            </form>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{else}}
+    <p>No pending agents.</p>
+  {{end}}
+</section>
+</main>
+<footer class="bottombar">All actions are audit-logged.</footer>
+<script src="/admin/static/js/app.js"></script>
+</body>
+</html>

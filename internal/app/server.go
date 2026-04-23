@@ -16,6 +16,7 @@ import (
 	"alice/internal/artifacts"
 	"alice/internal/audit"
 	"alice/internal/config"
+	"alice/internal/core"
 	"alice/internal/email"
 	"alice/internal/gatekeeper"
 	"alice/internal/httpapi"
@@ -27,6 +28,8 @@ import (
 	"alice/internal/storage"
 	"alice/internal/storage/memory"
 	"alice/internal/storage/postgres"
+	"alice/internal/webui"
+	"alice/internal/websession"
 )
 
 type Server struct {
@@ -56,15 +59,23 @@ type repositories interface {
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
-	container, closeFn, err := NewContainer(cfg)
+	container, repos, closeFn, err := newContainerWithRepos(cfg)
 	if err != nil {
+		return nil, err
+	}
+
+	handler, err := buildHTTPHandler(cfg, container, repos)
+	if err != nil {
+		if closeFn != nil {
+			_ = closeFn()
+		}
 		return nil, err
 	}
 
 	return &Server{
 		httpServer: &http.Server{
 			Addr:              cfg.ListenAddr,
-			Handler:           httpapi.NewRouter(container),
+			Handler:           handler,
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       30 * time.Second,
 			WriteTimeout:      60 * time.Second,
@@ -73,6 +84,93 @@ func NewServer(cfg config.Config) (*Server, error) {
 		},
 		closeFn: closeFn,
 	}, nil
+}
+
+// buildHTTPHandler composes the JSON API with the optional admin UI. When
+// the admin UI is disabled the JSON API handler is returned as-is, so
+// /admin/* falls through to the default 404 behaviour of the API mux.
+func buildHTTPHandler(cfg config.Config, container services.Container, repos repositories) (http.Handler, error) {
+	apiHandler := httpapi.NewRouter(container)
+	if !cfg.AdminUIEnabled {
+		return apiHandler, nil
+	}
+
+	sender := email.NewSenderFromConfig(cfg)
+	if sender == nil {
+		return nil, errors.New("admin UI is enabled but SMTP is not configured; set ALICE_SMTP_HOST to send sign-in codes or ALICE_SMTP_HOST=noop for local development")
+	}
+
+	sessionSvc := websession.NewService(websession.Options{
+		Lookup:        webui.NewAdminLookup(adminRepoAdapter{repos: repos}),
+		Mailer:        sender,
+		SessionTTL:    cfg.AdminUISessionTTL,
+		SignInTTL:     cfg.AdminUISignInTTL,
+		CookieSecure:  !cfg.AdminUIDevMode,
+		SessionCookie: "alice_admin_session",
+		CSRFCookie:    "alice_admin_csrf",
+		CookiePath:    "/admin",
+	})
+
+	adminHandler, err := webui.NewHandler(webui.Options{
+		Sessions:       sessionSvc,
+		Services:       adminServices{container: container},
+		AllowedOrigins: cfg.AdminUIAllowedOrigins,
+		DevMode:        cfg.AdminUIDevMode,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build admin UI: %w", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/admin/", adminHandler)
+	mux.Handle("/", apiHandler)
+	return mux, nil
+}
+
+// adminRepoAdapter narrows the full repositories interface down to the
+// AdminRepo surface the webui lookup needs.
+type adminRepoAdapter struct {
+	repos repositories
+}
+
+func (a adminRepoAdapter) FindOrganizationBySlug(ctx context.Context, slug string) (core.Organization, bool, error) {
+	return a.repos.FindOrganizationBySlug(ctx, slug)
+}
+
+func (a adminRepoAdapter) FindUserByEmail(ctx context.Context, orgID, email string) (core.User, bool, error) {
+	return a.repos.FindUserByEmail(ctx, orgID, email)
+}
+
+func (a adminRepoAdapter) FindAgentByUserID(ctx context.Context, userID string) (core.Agent, bool, error) {
+	return a.repos.FindAgentByUserID(ctx, userID)
+}
+
+// adminServices adapts services.Container to webui.Services. It exposes
+// exactly the admin-gated methods the UI needs, routed through the same
+// service instances the JSON API uses.
+type adminServices struct {
+	container services.Container
+}
+
+func (a adminServices) ListPendingAgentApprovals(ctx context.Context, orgID, callerAgentID string, limit, offset int) ([]core.AgentApproval, error) {
+	return a.container.Agents.ListPendingAgentApprovals(ctx, orgID, callerAgentID, limit, offset)
+}
+
+func (a adminServices) ReviewAgentApproval(ctx context.Context, orgID, targetAgentID, callerAgentID, decision, reason string) error {
+	return a.container.Agents.ReviewAgentApproval(ctx, orgID, targetAgentID, callerAgentID, decision, reason)
+}
+
+func (a adminServices) RotateInviteToken(ctx context.Context, orgID, callerAgentID string) (string, error) {
+	return a.container.Agents.RotateInviteToken(ctx, orgID, callerAgentID)
+}
+
+func (a adminServices) AuditSummary(ctx context.Context, agentID string, since time.Time, limit, offset int, filter audit.SummaryFilter) ([]core.AuditEvent, error) {
+	return a.container.Audit.Summary(ctx, agentID, since, limit, offset, filter)
+}
+
+func (a adminServices) RecordAudit(ctx context.Context, eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision string, riskLevel core.RiskLevel, policyBasis []string, metadata map[string]any) error {
+	_, err := a.container.Audit.Record(ctx, eventKind, subjectType, subjectID, orgID, actorAgentID, targetAgentID, decision, riskLevel, policyBasis, metadata)
+	return err
 }
 
 func (s *Server) Start() error {
@@ -88,20 +186,28 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func NewContainer(cfg config.Config) (services.Container, func() error, error) {
+	container, _, closeFn, err := newContainerWithRepos(cfg)
+	return container, closeFn, err
+}
+
+// newContainerWithRepos is like NewContainer but also returns the
+// repositories handle so the admin UI can reach the storage layer for
+// the org-slug lookup the JSON surface doesn't expose today.
+func newContainerWithRepos(cfg config.Config) (services.Container, repositories, func() error, error) {
 	if cfg.DatabaseURL != "" {
 		store, err := postgres.Open(context.Background(), cfg.DatabaseURL)
 		if err != nil {
-			return services.Container{}, nil, fmt.Errorf("open postgres store: %w", err)
+			return services.Container{}, nil, nil, fmt.Errorf("open postgres store: %w", err)
 		}
 		if err := store.Migrate(context.Background()); err != nil {
 			_ = store.Close()
-			return services.Container{}, nil, fmt.Errorf("migrate postgres store: %w", err)
+			return services.Container{}, nil, nil, fmt.Errorf("migrate postgres store: %w", err)
 		}
-		return buildContainer(store, cfg), store.Close, nil
+		return buildContainer(store, cfg), store, store.Close, nil
 	}
 
 	store := memory.New()
-	return buildContainer(store, cfg), nil, nil
+	return buildContainer(store, cfg), store, nil, nil
 }
 
 func buildContainer(repos repositories, cfg config.Config) services.Container {

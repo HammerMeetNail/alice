@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Dashboard &mdash; alice admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/admin/static/css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/admin/dashboard">alice admin</a>
+  <nav>
+    <a href="/admin/pending-agents">Pending agents</a>
+    <a href="/admin/invite-token">Invite token</a>
+    <a href="/admin/audit">Audit</a>
+    <form method="post" action="/admin/sign-out" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.Common.CSRFToken}}">
+      <button type="submit" class="link">Sign out ({{.Common.Email}})</button>
+    </form>
+  </nav>
+</header>
+<main>
+<section class="card">
+  <h1>Dashboard</h1>
+  <p>Signed in as <strong>{{.Common.Email}}</strong> for org <code>{{.Common.OrgID}}</code>.</p>
+  <ul>
+    <li><a href="/admin/pending-agents">Review pending agent approvals</a></li>
+    <li><a href="/admin/invite-token">Rotate the org invite token</a></li>
+    <li><a href="/admin/audit">Browse recent audit events</a></li>
+  </ul>
+  <p class="hint">Every action taken here is recorded as an audit event just like the CLI.</p>
+</section>
+</main>
+<footer class="bottombar">All actions are audit-logged.</footer>
+<script src="/admin/static/js/app.js"></script>
+</body>
+</html>

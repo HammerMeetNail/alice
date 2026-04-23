@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Verify code &mdash; alice admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/admin/static/css/app.css">
+</head>
+<body>
+<header class="topbar"><a class="brand" href="/admin/">alice admin</a></header>
+<main>
+<section class="card">
+  <h1>Enter code</h1>
+  <p>Check your email for a 6-digit code and enter it below.</p>
+  {{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+  <form method="post" action="/admin/sign-in/verify" autocomplete="off">
+    <input type="hidden" name="sign_in_id" value="{{.SignInID}}">
+    <label>Code
+      <input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required autofocus>
+    </label>
+    <button type="submit">Verify</button>
+  </form>
+  <p class="hint">Codes expire shortly. <a href="/admin/sign-in">Start again</a> if your code doesn't arrive.</p>
+</section>
+</main>
+<footer class="bottombar">All actions are audit-logged.</footer>
+<script src="/admin/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Audit &mdash; alice admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/admin/static/css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/admin/dashboard">alice admin</a>
+  <nav>
+    <a href="/admin/dashboard">Dashboard</a>
+    <a href="/admin/pending-agents">Pending agents</a>
+    <a href="/admin/invite-token">Invite token</a>
+    <form method="post" action="/admin/sign-out" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.Common.CSRFToken}}">
+      <button type="submit" class="link">Sign out ({{.Common.Email}})</button>
+    </form>
+  </nav>
+</header>
+<main>
+<section class="card">
+  <h1>Audit events</h1>
+  {{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+  <form method="get" action="/admin/audit" class="filter">
+    <label>Event kind
+      <input type="text" name="event_kind" value="{{.Filter.EventKind}}" placeholder="policy.applied">
+    </label>
+    <label>Subject type
+      <input type="text" name="subject_type" value="{{.Filter.SubjectType}}" placeholder="agent">
+    </label>
+    <label>Decision
+      <input type="text" name="decision" value="{{.Filter.Decision}}" placeholder="allow">
+    </label>
+    <label>Since (RFC3339)
+      <input type="text" name="since" value="{{.Filter.Since}}" placeholder="2026-04-01T00:00:00Z">
+    </label>
+    <button type="submit">Filter</button>
+  </form>
+  {{if .Events}}
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Kind</th>
+          <th>Subject</th>
+          <th>Actor agent</th>
+          <th>Decision</th>
+          <th>Risk</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Events}}
+        <tr>
+          <td>{{fmtTime .CreatedAt}}</td>
+          <td><code>{{.EventKind}}</code></td>
+          <td><code>{{.SubjectType}}:{{.SubjectID}}</code></td>
+          <td><code>{{.ActorAgentID}}</code></td>
+          <td>{{.Decision}}</td>
+          <td>{{.RiskLevel}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{else}}
+    <p>No events match that filter.</p>
+  {{end}}
+</section>
+</main>
+<footer class="bottombar">All actions are audit-logged.</footer>
+<script src="/admin/static/js/app.js"></script>
+</body>
+</html>

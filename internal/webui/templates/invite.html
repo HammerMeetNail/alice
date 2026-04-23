@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Invite token &mdash; alice admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/admin/static/css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/admin/dashboard">alice admin</a>
+  <nav>
+    <a href="/admin/dashboard">Dashboard</a>
+    <a href="/admin/pending-agents">Pending agents</a>
+    <a href="/admin/audit">Audit</a>
+    <form method="post" action="/admin/sign-out" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.Common.CSRFToken}}">
+      <button type="submit" class="link">Sign out ({{.Common.Email}})</button>
+    </form>
+  </nav>
+</header>
+<main>
+<section class="card">
+  <h1>Org invite token</h1>
+  <p>Rotating replaces the existing token immediately. The new value is shown once; copy it now.</p>
+  {{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+  {{with .NewToken}}
+    <p class="notice" role="status">New invite token (shown once; copy it now):</p>
+    <pre class="token">{{.}}</pre>
+  {{end}}
+  <form method="post" action="/admin/invite-token/rotate">
+    <input type="hidden" name="csrf_token" value="{{.Common.CSRFToken}}">
+    <button type="submit" class="danger">Rotate invite token</button>
+  </form>
+</section>
+</main>
+<footer class="bottombar">All actions are audit-logged.</footer>
+<script src="/admin/static/js/app.js"></script>
+</body>
+</html>

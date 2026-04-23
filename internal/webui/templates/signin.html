@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sign in &mdash; alice admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/admin/static/css/app.css">
+</head>
+<body>
+<header class="topbar"><a class="brand" href="/admin/">alice admin</a></header>
+<main>
+<section class="card">
+  <h1>Admin sign-in</h1>
+  <p>Enter your org slug and email. A one-time code will be sent to your address.</p>
+  {{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+  <form method="post" action="/admin/sign-in" autocomplete="off">
+    <label>Org slug
+      <input type="text" name="org_slug" value="{{.OrgSlug}}" required autofocus>
+    </label>
+    <label>Email
+      <input type="email" name="email" value="{{.Email}}" required>
+    </label>
+    <button type="submit">Send code</button>
+  </form>
+  <p class="hint">You must have registered at least one agent with <code>alice register</code> and hold the admin role in your org.</p>
+</section>
+</main>
+<footer class="bottombar">All actions are audit-logged.</footer>
+<script src="/admin/static/js/app.js"></script>
+</body>
+</html>
