@@ -73,7 +73,7 @@ func (r *Runtime) registerGCalWebhookWatches(ctx context.Context) (ConnectorWatc
 		return ConnectorWatchReport{}, fmt.Errorf("gcal webhook secret is required to register provider watches")
 	}
 
-	state, err := LoadState(r.cfg.StatePath())
+	state, err := r.loadState()
 	if err != nil {
 		return ConnectorWatchReport{}, err
 	}
@@ -128,7 +128,7 @@ func (r *Runtime) registerGCalWebhookWatches(ctx context.Context) (ConnectorWatc
 	}
 
 	if updated {
-		if err := SaveState(r.cfg.StatePath(), state); err != nil {
+		if err := r.saveState(state); err != nil {
 			return ConnectorWatchReport{}, err
 		}
 	}

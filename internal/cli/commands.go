@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"alice/internal/core"
 )
 
 // Env names used by the CLI.
@@ -111,36 +113,43 @@ func Run(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.
 	return 0
 }
 
-// splitGlobalArgs separates leading global-flag arguments from the
-// subcommand and its own arguments.
+// splitGlobalArgs separates global-flag arguments from the subcommand and its
+// arguments. Global flags may appear either before or after the subcommand
+// name so that both of the following forms work:
+//
+//	alice --server https://example.com publish --type summary …
+//	alice publish --server https://example.com --type summary …
 func splitGlobalArgs(argv []string, fs *flag.FlagSet) ([]string, string, error) {
 	var globalArgs []string
-	remaining := argv
-	for len(remaining) > 0 {
-		arg := remaining[0]
-		if !strings.HasPrefix(arg, "-") {
-			break
-		}
-		if !isGlobalFlag(arg, fs) {
-			break
-		}
-		globalArgs = append(globalArgs, arg)
-		remaining = remaining[1:]
-		if len(globalArgs) > 0 {
-			last := globalArgs[len(globalArgs)-1]
-			if !strings.Contains(last, "=") && !isBooleanFlag(last, fs) && len(remaining) > 0 {
-				globalArgs = append(globalArgs, remaining[0])
-				remaining = remaining[1:]
+	var subArgs []string
+	var subcommand string
+
+	i := 0
+	for i < len(argv) {
+		arg := argv[i]
+		if strings.HasPrefix(arg, "-") && isGlobalFlag(arg, fs) {
+			// Global flag: collect it and, when it takes a value, its value too.
+			globalArgs = append(globalArgs, arg)
+			i++
+			if !strings.Contains(arg, "=") && !isBooleanFlag(arg, fs) && i < len(argv) {
+				globalArgs = append(globalArgs, argv[i])
+				i++
 			}
+		} else if !strings.HasPrefix(arg, "-") && subcommand == "" {
+			// First non-flag token: this is the subcommand.
+			subcommand = arg
+			i++
+		} else {
+			// Subcommand-specific flags and positional args.
+			subArgs = append(subArgs, arg)
+			i++
 		}
 	}
+
 	if err := fs.Parse(globalArgs); err != nil {
 		return nil, "", err
 	}
-	if len(remaining) == 0 {
-		return nil, "", nil
-	}
-	return remaining[1:], remaining[0], nil
+	return subArgs, subcommand, nil
 }
 
 func isGlobalFlag(arg string, fs *flag.FlagSet) bool {
@@ -215,7 +224,7 @@ COORDINATION
   query                   ask a teammate's agent a permission-checked question
   result <query_id>       fetch the result of a prior query
   request                 send a request that may defer to a teammate's human
-  respond <request_id>    respond to an incoming request (accept/decline/defer)
+  respond <request_id>    respond to an incoming request (--response accepted|deferred|denied|completed)
   inbox                   list incoming requests
   outbox                  list requests you have sent
   peers                   list peers who can reach you via an active grant
@@ -570,7 +579,7 @@ func cmdPublish(ctx context.Context, opts GlobalOptions, args []string, _ io.Rea
 		},
 	}
 	if *project != "" {
-		artifact["structured_payload"] = map[string]any{"project": *project}
+		artifact["structured_payload"] = map[string]any{"project_refs": []string{*project}}
 	}
 	if *supersedes != "" {
 		artifact["supersedes_artifact_id"] = *supersedes
@@ -803,7 +812,7 @@ func cmdPeers(ctx context.Context, opts GlobalOptions, _ []string, _ io.Reader, 
 		return err
 	}
 	items := ExtractList(resp, "peers", "items")
-	return r.EmitList("Peers with active grants:", items, false)
+	return r.EmitList("Peers with active grants:", items, true)
 }
 
 // ---- requests ----
@@ -987,12 +996,12 @@ func listRequests(ctx context.Context, opts GlobalOptions, args []string, r *Ren
 
 func cmdRespond(ctx context.Context, opts GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
 	if len(args) == 0 {
-		return errors.New("usage: alice respond <request_id> [--response accept|decline|defer] [--message \"...\"]")
+		return errors.New("usage: alice respond <request_id> [--response accepted|deferred|denied|completed] [--message \"...\"]")
 	}
 	requestID := args[0]
 	fs := flag.NewFlagSet("respond", flag.ContinueOnError)
 	fs.SetOutput(r.stderr)
-	response := fs.String("response", "accept", "response action (accept, decline, defer)")
+	response := fs.String("response", "accepted", "response action (accepted, deferred, denied, completed; aliases: accept, defer, decline)")
 	message := fs.String("message", "", "optional message to the sender")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -1004,14 +1013,34 @@ func cmdRespond(ctx context.Context, opts GlobalOptions, args []string, _ io.Rea
 	if err := mustHaveSession(state); err != nil {
 		return err
 	}
+	// Map friendly verb aliases to the server-expected enum values.
+	action := mapResponseAlias(*response)
 	resp, err := client.Do(ctx, http.MethodPost, "/v1/requests/"+url.PathEscape(requestID)+"/respond", map[string]any{
-		"response": *response,
+		"response": action,
 		"message":  *message,
 	}, false)
 	if err != nil {
 		return err
 	}
-	return r.Emit(fmt.Sprintf("Responded to %s with %s.", requestID, *response), resp, false)
+	return r.Emit(fmt.Sprintf("Responded to %s with %s.", requestID, action), resp, false)
+}
+
+// mapResponseAlias converts friendly verb aliases to the canonical server enum.
+// Unknown values are passed through unchanged so the server can return a
+// validation error with the full list of accepted values.
+func mapResponseAlias(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "accept":
+		return string(core.RequestResponseAccept)
+	case "decline", "deny":
+		return string(core.RequestResponseDeny)
+	case "defer":
+		return string(core.RequestResponseDefer)
+	case "complete":
+		return string(core.RequestResponseComplete)
+	default:
+		return v
+	}
 }
 
 // ---- approvals ----
@@ -1104,7 +1133,7 @@ func cmdAudit(ctx context.Context, opts GlobalOptions, args []string, _ io.Reade
 		return err
 	}
 	items := ExtractList(resp, "events", "items")
-	return r.EmitList("Audit events:", items, false)
+	return r.EmitList("Audit events:", items, true)
 }
 
 // ---- shell completion ----
@@ -1279,7 +1308,7 @@ func cmdPolicyHistory(ctx context.Context, opts GlobalOptions, args []string, r 
 		}
 		rendered = append(rendered, row)
 	}
-	return r.EmitList("risk policy history", rendered, false)
+	return r.EmitList("risk policy history", rendered, true)
 }
 
 func cmdPolicyActivate(ctx context.Context, opts GlobalOptions, args []string, r *Renderer) error {
@@ -1382,7 +1411,7 @@ func cmdActions(ctx context.Context, opts GlobalOptions, args []string, stdin io
 		if err != nil {
 			return err
 		}
-		return r.EmitList("actions", ExtractList(resp, "actions"), false)
+		return r.EmitList("actions", ExtractList(resp, "actions"), true)
 
 	case "create":
 		fs := flag.NewFlagSet("actions create", flag.ContinueOnError)
@@ -1485,14 +1514,18 @@ _alice_complete() {
     if [[ "${cur}" == --* ]]; then
         case "${words[1]}" in
             register) COMPREPLY=( $(compgen -W "--server --org --email --agent --invite-token --state --json" -- "${cur}") ) ;;
-            publish) COMPREPLY=( $(compgen -W "--type --title --content --sensitivity --visibility --confidence --ttl --state --json" -- "${cur}") ) ;;
+            publish) COMPREPLY=( $(compgen -W "--type --title --content --sensitivity --visibility --confidence --project --supersedes --expires-in --state --json" -- "${cur}") ) ;;
             query) COMPREPLY=( $(compgen -W "--to --purpose --question --types --sensitivity --state --json" -- "${cur}") ) ;;
-            grant) COMPREPLY=( $(compgen -W "--to --types --sensitivity --purposes --scope-kind --scope-id --expires --state --json" -- "${cur}") ) ;;
+            grant) COMPREPLY=( $(compgen -W "--to --types --sensitivity --purposes --scope-type --scope-ref --expires-in --state --json" -- "${cur}") ) ;;
             request) COMPREPLY=( $(compgen -W "--to --type --title --content --expires --state --json" -- "${cur}") ) ;;
             inbox) COMPREPLY=( $(compgen -W "--watch --interval --limit --cursor --state --json" -- "${cur}") ) ;;
             respond) COMPREPLY=( $(compgen -W "--response --message --state --json" -- "${cur}") ) ;;
             tuning) COMPREPLY=( $(compgen -W "--confidence --lookback --clear --state --json" -- "${cur}") ) ;;
             policy) COMPREPLY=( $(compgen -W "apply history activate" -- "${cur}") ) ;;
+            actions) COMPREPLY=( $(compgen -W "list create approve cancel execute" -- "${cur}") ) ;;
+            operator) COMPREPLY=( $(compgen -W "enable disable" -- "${cur}") ) ;;
+            team) COMPREPLY=( $(compgen -W "create list delete add-member remove-member members" -- "${cur}") ) ;;
+            manager) COMPREPLY=( $(compgen -W "set revoke chain" -- "${cur}") ) ;;
             *) COMPREPLY=( $(compgen -W "--server --state --json" -- "${cur}") ) ;;
         esac
         return 0
@@ -1509,7 +1542,7 @@ const completionZsh = `#compdef alice
 _alice() {
     local -a subcommands
     subcommands=(` + "`echo \"" + completionSubcommands + "\" | tr ' ' '\\n' | sed 's/^/\"/;s/$/\"/' | paste -sd' ' -`" + `)
-    local subs=(init:"start a new session" register:"register with an org" whoami:"print current identity" publish:"publish an artifact" query:"query a peer" result:"fetch query result" grant:"grant a peer access" revoke:"revoke a grant" peers:"list peers with active grants" request:"send a request" inbox:"list incoming requests" outbox:"list sent requests" respond:"respond to a request" approvals:"list pending approvals" approve:"approve a pending approval" deny:"deny a pending approval" audit:"show audit events" logout:"clear local session" completion:"emit shell completion" tuning:"set per-org gatekeeper overrides" policy:"manage org risk policies")
+    local subs=(init:"start a new session" register:"register with an org" whoami:"print current identity" publish:"publish an artifact" query:"query a peer" result:"fetch query result" grant:"grant a peer access" revoke:"revoke a grant" peers:"list peers with active grants" request:"send a request" inbox:"list incoming requests" outbox:"list sent requests" respond:"respond to a request" approvals:"list pending approvals" approve:"approve a pending approval" deny:"deny a pending approval" audit:"show audit events" logout:"clear local session" completion:"emit shell completion" tuning:"set per-org gatekeeper overrides" policy:"manage org risk policies" actions:"manage operator actions" operator:"enable or disable operator phase" team:"manage org teams" manager:"manage manager edges")
     _arguments -C \
         '1: :->sub' \
         '*:: :->args'
@@ -1523,6 +1556,10 @@ _alice() {
                 inbox) _values 'flag' --watch --interval --limit --cursor --state --json ;;
                 tuning) _values 'flag' --confidence --lookback --clear --state --json ;;
                 policy) _values 'policy sub' apply history activate ;;
+                actions) _values 'actions sub' list create approve cancel execute ;;
+                operator) _values 'operator sub' enable disable ;;
+                team) _values 'team sub' create list delete add-member remove-member members ;;
+                manager) _values 'manager sub' set revoke chain ;;
                 *) _values 'flag' --server --state --json ;;
             esac
             ;;
@@ -1543,6 +1580,10 @@ complete -c alice -n '__fish_seen_subcommand_from tuning' -l confidence -d 'conf
 complete -c alice -n '__fish_seen_subcommand_from tuning' -l lookback -d 'Go duration string'
 complete -c alice -n '__fish_seen_subcommand_from tuning' -l clear -d 'revert to server default'
 complete -c alice -n '__fish_seen_subcommand_from policy' -a 'apply history activate'
+complete -c alice -n '__fish_seen_subcommand_from actions' -a 'list create approve cancel execute'
+complete -c alice -n '__fish_seen_subcommand_from operator' -a 'enable disable'
+complete -c alice -n '__fish_seen_subcommand_from team' -a 'create list delete add-member remove-member members'
+complete -c alice -n '__fish_seen_subcommand_from manager' -a 'set revoke chain'
 complete -c alice -l server -d 'coordination server URL'
 complete -c alice -l state -d 'path to state file'
 complete -c alice -l json -d 'emit JSON output'

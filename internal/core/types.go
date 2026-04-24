@@ -124,9 +124,10 @@ const (
 type QueryState string
 
 const (
-	QueryStateQueued    QueryState = "queued"
-	QueryStateCompleted QueryState = "completed"
-	QueryStateDenied    QueryState = "denied"
+	QueryStateQueued          QueryState = "queued"
+	QueryStateCompleted       QueryState = "completed"
+	QueryStateDenied          QueryState = "denied"
+	QueryStatePendingApproval QueryState = "pending_approval"
 )
 
 type Organization struct {
@@ -325,6 +326,11 @@ type AgentApproval struct {
 	ReviewedAt  *time.Time `json:"reviewed_at,omitempty"`
 	Decision    string     `json:"decision,omitempty"` // "approved" or "rejected"
 	Reason      string     `json:"reason,omitempty"`
+	// Context fields populated by the service layer for display; not stored in the
+	// approval record itself.
+	AgentName  string `json:"agent_name,omitempty"`
+	OwnerEmail string `json:"owner_email,omitempty"`
+	ClientType string `json:"client_type,omitempty"`
 }
 
 type PolicyGrant struct {

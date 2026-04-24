@@ -912,6 +912,21 @@ func TestRotateInviteToken(t *testing.T) {
 	}
 }
 
+func TestRotateInviteToken_NonAdminForbidden(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	// First agent is admin.
+	_ = registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+	// Second agent is a member.
+	member := registerAgent(t, handler, fixture.OrgSlug, "member@example.com")
+
+	rec := performJSON(t, handler, http.MethodPost, "/v1/orgs/rotate-invite-token", member.AccessToken, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin rotate, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUpdateGatekeeperTuning(t *testing.T) {
 	handler := newTestHandler(t, "")
 	fixture := newFixture(t)
@@ -1550,5 +1565,101 @@ func TestOrgGraphLifecycle(t *testing.T) {
 	})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for cross-org manager, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestQueryApprovalPendingStatus(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	// Alice is the first registrant (admin). Bob is the second.
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+	bob := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+
+	// Bob publishes a summary.
+	publishArtifact(t, handler, bob.AccessToken, core.Artifact{
+		Type:              core.ArtifactTypeSummary,
+		Title:             "Working on infra",
+		Content:           "Fixing deployment pipeline.",
+		StructuredPayload: map[string]any{"project_refs": []string{fixture.ProjectScope}},
+		SourceRefs: []core.SourceReference{{
+			SourceSystem: "github",
+			SourceType:   "pull_request",
+			SourceID:     "repo:org/infra:pr:1",
+			ObservedAt:   time.Now().UTC(),
+			TrustClass:   core.TrustClassStructuredSystem,
+			Sensitivity:  core.SensitivityLow,
+		}},
+		VisibilityMode: core.VisibilityModeExplicitGrantsOnly,
+		Sensitivity:    core.SensitivityLow,
+		Confidence:     0.8,
+	})
+
+	// Bob grants Alice access.
+	grantPermission(t, handler, bob.AccessToken, map[string]any{
+		"grantee_user_email":     fixture.AliceEmail,
+		"scope_type":             "project",
+		"scope_ref":              fixture.ProjectScope,
+		"allowed_artifact_types": []string{"summary"},
+		"max_sensitivity":        "medium",
+		"allowed_purposes":       []string{"status_check"},
+	})
+
+	// Alice (admin) applies a policy that requires approval for every query.
+	rec := performJSON(t, handler, http.MethodPost, "/v1/orgs/risk-policy", alice.AccessToken, map[string]any{
+		"name": "require-all",
+		"source": map[string]any{
+			"rules": []map[string]any{
+				{"when": map[string]any{}, "then": "require_approval"},
+			},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply policy status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Alice queries Bob. Under the active policy every query needs approval.
+	qrec := performJSON(t, handler, http.MethodPost, "/v1/queries", alice.AccessToken, map[string]any{
+		"to_user_email":   fixture.BobEmail,
+		"purpose":         "status_check",
+		"question":        "What is Bob working on?",
+		"requested_types": []string{"summary"},
+		"project_scope":   []string{fixture.ProjectScope},
+		"time_window": map[string]any{
+			"start": time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
+			"end":   time.Now().UTC().Add(1 * time.Hour).Format(time.RFC3339),
+		},
+	})
+	if qrec.Code != http.StatusOK {
+		t.Fatalf("query status = %d body=%s", qrec.Code, qrec.Body.String())
+	}
+	var qpayload map[string]any
+	if err := json.NewDecoder(qrec.Body).Decode(&qpayload); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+
+	if qpayload["status"] != string(core.QueryStatePendingApproval) {
+		t.Fatalf("expected status=%q, got %v", core.QueryStatePendingApproval, qpayload["status"])
+	}
+	if qpayload["approval_state"] != string(core.ApprovalStatePending) {
+		t.Fatalf("expected approval_state=%q, got %v", core.ApprovalStatePending, qpayload["approval_state"])
+	}
+
+	// Follow-up GET /v1/queries/:id must also reflect pending_approval, not the
+	// stale "queued" state that existed before the state-persistence fix.
+	queryID, _ := qpayload["query_id"].(string)
+	if queryID == "" {
+		t.Fatal("expected non-empty query_id in POST response")
+	}
+	grec := performJSON(t, handler, http.MethodGet, "/v1/queries/"+queryID, alice.AccessToken, nil)
+	if grec.Code != http.StatusOK {
+		t.Fatalf("GET query status = %d body=%s", grec.Code, grec.Body.String())
+	}
+	var gpayload map[string]any
+	if err := json.NewDecoder(grec.Body).Decode(&gpayload); err != nil {
+		t.Fatalf("decode GET query response: %v", err)
+	}
+	if gpayload["state"] != string(core.QueryStatePendingApproval) {
+		t.Fatalf("GET: expected state=%q (persisted), got %v", core.QueryStatePendingApproval, gpayload["state"])
 	}
 }

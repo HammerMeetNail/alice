@@ -23,6 +23,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+code.small { font-size: 11px; color: var(--muted); }
 
 .topbar {
   display: flex;

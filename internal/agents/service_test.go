@@ -852,3 +852,80 @@ func TestDeletedOrgSlugCannotBeReused(t *testing.T) {
 		t.Fatalf("expected ErrOrgSlugTaken after org deletion, got %v", err)
 	}
 }
+
+func TestRotateInviteToken_NonAdminDenied(t *testing.T) {
+	store := memory.New()
+	ctx := context.Background()
+	cfg := config.Config{AuthChallengeTTL: 5 * time.Minute, AuthTokenTTL: time.Hour, DefaultOrgName: "Test Org"}
+	svc := agents.NewService(store, store, store, store, store, cfg, store).WithApprovalRepository(store)
+
+	// Register first agent (becomes admin).
+	pub1, priv1, _ := ed25519.GenerateKey(rand.Reader)
+	res1, _ := svc.BeginRegistration(ctx, "admincheckorg", "admin@example.com", "Admin", "edge", base64.StdEncoding.EncodeToString(pub1), "")
+	sig1 := base64.StdEncoding.EncodeToString(ed25519.Sign(priv1, []byte(res1.Payload)))
+	completeRes1, err := svc.CompleteRegistration(ctx, res1.Challenge.ChallengeID, sig1)
+	if err != nil {
+		t.Fatalf("CompleteRegistration admin: %v", err)
+	}
+
+	// Register second agent (becomes member).
+	pub2, priv2, _ := ed25519.GenerateKey(rand.Reader)
+	res2, _ := svc.BeginRegistration(ctx, "admincheckorg", "member@example.com", "Member", "edge", base64.StdEncoding.EncodeToString(pub2), "")
+	sig2 := base64.StdEncoding.EncodeToString(ed25519.Sign(priv2, []byte(res2.Payload)))
+	completeRes2, err := svc.CompleteRegistration(ctx, res2.Challenge.ChallengeID, sig2)
+	if err != nil {
+		t.Fatalf("CompleteRegistration member: %v", err)
+	}
+
+	// Member tries to rotate invite token — must fail.
+	_, err = svc.RotateInviteToken(ctx, completeRes2.Agent.OrgID, completeRes2.Agent.AgentID)
+	if !errors.Is(err, agents.ErrNotOrgAdmin) {
+		t.Fatalf("expected ErrNotOrgAdmin for member, got %v", err)
+	}
+
+	// Admin can still rotate.
+	_, err = svc.RotateInviteToken(ctx, completeRes1.Agent.OrgID, completeRes1.Agent.AgentID)
+	if err != nil {
+		t.Fatalf("RotateInviteToken admin: %v", err)
+	}
+}
+
+func TestListPendingAgentApprovals_EnrichedContext(t *testing.T) {
+	svc, store := newAgentServiceWithApprovals()
+	ctx := context.Background()
+
+	// First registrant becomes admin.
+	pub1, priv1, _ := ed25519.GenerateKey(rand.Reader)
+	res1, _ := svc.BeginRegistration(ctx, "enrichorg1", "admin@example.com", "AdminBot", "edge", base64.StdEncoding.EncodeToString(pub1), "")
+	sig1 := base64.StdEncoding.EncodeToString(ed25519.Sign(priv1, []byte(res1.Payload)))
+	completeRes1, _ := svc.CompleteRegistration(ctx, res1.Challenge.ChallengeID, sig1)
+
+	if err := store.UpdateOrgVerificationMode(ctx, completeRes1.Agent.OrgID, "admin_approval"); err != nil {
+		t.Fatalf("UpdateOrgVerificationMode: %v", err)
+	}
+
+	// Second registrant is pending approval.
+	pub2, priv2, _ := ed25519.GenerateKey(rand.Reader)
+	res2, _ := svc.BeginRegistration(ctx, "enrichorg1", "member@example.com", "MemberBot", "mcp_client", base64.StdEncoding.EncodeToString(pub2), "")
+	sig2 := base64.StdEncoding.EncodeToString(ed25519.Sign(priv2, []byte(res2.Payload)))
+	_, _ = svc.CompleteRegistration(ctx, res2.Challenge.ChallengeID, sig2)
+
+	// List pending approvals as admin; context fields must be populated.
+	list, err := svc.ListPendingAgentApprovals(ctx, completeRes1.Agent.OrgID, completeRes1.Agent.AgentID, 50, 0)
+	if err != nil {
+		t.Fatalf("ListPendingAgentApprovals: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 pending approval, got %d", len(list))
+	}
+	a := list[0]
+	if a.AgentName != "MemberBot" {
+		t.Errorf("AgentName = %q, want %q", a.AgentName, "MemberBot")
+	}
+	if a.OwnerEmail != "member@example.com" {
+		t.Errorf("OwnerEmail = %q, want %q", a.OwnerEmail, "member@example.com")
+	}
+	if a.ClientType != "mcp_client" {
+		t.Errorf("ClientType = %q, want %q", a.ClientType, "mcp_client")
+	}
+}

@@ -19,6 +19,7 @@ func main() {
 	bootstrapConnector := flag.String("bootstrap-connector", "", "connector to bootstrap via local oauth callback (github, jira, gcal)")
 	registerWatches := flag.String("register-watches", "", "register provider-side push watches for a connector (gcal)")
 	serveWebhooks := flag.Bool("serve-webhooks", false, "serve configured connector webhook endpoints")
+	dryRun := flag.Bool("dry-run", false, "preview what would be published without contacting the coordination server")
 	bootstrapTimeout := flag.Duration("bootstrap-timeout", 5*time.Minute, "how long to wait for the local oauth callback")
 	flag.Parse()
 
@@ -101,6 +102,24 @@ func main() {
 		}
 		if err := runtime.ServeWebhooks(rootCtx); err != nil {
 			slog.Error("edge webhook server failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *dryRun {
+		artifacts, err := runtime.PreviewArtifacts(rootCtx)
+		if err != nil {
+			slog.Error("dry-run preview failed", "err", err)
+			os.Exit(1)
+		}
+		preview := map[string]any{
+			"dry_run":        true,
+			"artifact_count": len(artifacts),
+			"artifacts":      artifacts,
+		}
+		if err := encoder.Encode(preview); err != nil {
+			slog.Error("encode dry-run report", "err", err)
 			os.Exit(1)
 		}
 		return

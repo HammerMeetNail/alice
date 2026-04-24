@@ -759,6 +759,20 @@ func (r *router) handleQueryPeerStatus(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
+	if response.ApprovalState == core.ApprovalStatePending {
+		if _, err := r.services.Audit.Record(req.Context(), "query.approval_requested", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", core.RiskLevelL1, response.PolicyBasis, map[string]any{
+			"artifact_count": len(response.Artifacts),
+		}); err != nil {
+			slog.Error("audit record failed", "op", "query_approval_requested", "err", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"query_id":       query.QueryID,
+			"status":         core.QueryStatePendingApproval,
+			"approval_state": response.ApprovalState,
+		})
+		return
+	}
+
 	if _, err := r.services.Audit.Record(req.Context(), "query.completed", "query", query.QueryID, agent.OrgID, agent.AgentID, targetAgent.AgentID, "allow", core.RiskLevelL1, response.PolicyBasis, map[string]any{
 		"artifact_count": len(response.Artifacts),
 	}); err != nil {

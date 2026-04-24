@@ -767,3 +767,32 @@ func TestOrgGraphMCP(t *testing.T) {
 		}
 	}
 }
+
+func TestRotateInviteTokenMCP_NonAdminDenied(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+
+	// Register admin (first registrant).
+	adminKeys := generateKeys(t)
+	adminServer := NewServer(handler)
+	callTool(t, adminServer, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "admin-agent", "client_type": "mcp",
+		"public_key": adminKeys.PublicKey, "private_key": adminKeys.PrivateKey,
+	})
+
+	// Register member (second registrant, same org).
+	memberKeys := generateKeys(t)
+	memberServer := NewServer(handler)
+	callTool(t, memberServer, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": "member@example.com",
+		"agent_name": "member-agent", "client_type": "mcp",
+		"public_key": memberKeys.PublicKey, "private_key": memberKeys.PrivateKey,
+	})
+
+	// Member tries to rotate invite token — must return an error.
+	raw, _ := callToolRaw(t, memberServer, "rotate_invite_token", map[string]any{"confirm": true})
+	if isErr, _ := raw["isError"].(bool); !isErr {
+		t.Fatal("expected error when non-admin rotates invite token")
+	}
+}

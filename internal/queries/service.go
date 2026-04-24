@@ -239,7 +239,9 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 		return core.QueryResponse{}, fmt.Errorf("save query response: %w", err)
 	}
 
-	// If approval is required, create an approval record and leave the query queued.
+	// If approval is required, create an approval record and mark the query
+	// as pending_approval so that GET /v1/queries/:id and alice query --wait
+	// reflect the real state rather than returning "queued".
 	if approvalRequiredByGrant != nil {
 		approval := core.Approval{
 			ApprovalID:  id.New("approval"),
@@ -255,6 +257,9 @@ func (s *Service) Evaluate(ctx context.Context, query core.Query) (core.QueryRes
 		}
 		if _, err := s.approvals.SaveApproval(ctx, approval); err != nil {
 			return core.QueryResponse{}, fmt.Errorf("save risk-based approval: %w", err)
+		}
+		if _, _, err := s.store.UpdateQueryState(ctx, query.QueryID, core.QueryStatePendingApproval); err != nil {
+			return core.QueryResponse{}, fmt.Errorf("update query state to pending_approval: %w", err)
 		}
 		return response, nil
 	}

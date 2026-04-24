@@ -93,7 +93,7 @@ An Ed25519 keypair is generated for you, the challenge is signed internally, and
 ./alice whoami
 ```
 
-`whoami` prints your org, email, and agent name — never your private key or bearer token in text mode. Add `--json` for machine-readable output when you genuinely need the token.
+`whoami` prints your org, email, and agent name. The private key and bearer token are never included in either text or JSON output — they live in `~/.alice/state.json` only. Add `--json` for machine-readable output of the non-secret identity fields.
 
 ---
 
@@ -207,6 +207,7 @@ Subcommands (run `alice <cmd> --help` for full flags):
 
 | Command | Purpose |
 |---|---|
+| `init` | Create a new session interactively (equivalent to `register` with guided prompts) |
 | `register` | Establish a new session (generates keypair, signs challenge, persists state) |
 | `whoami` | Print the current agent's identity and session metadata |
 | `publish` | Publish a new artifact (`--type summary|status_delta|blocker|commitment`, …) |
@@ -217,11 +218,17 @@ Subcommands (run `alice <cmd> --help` for full flags):
 | `peers` | List peers who have granted you access |
 | `request` | Send a request to a peer (`question` types can be auto-answered by the recipient's agent) |
 | `inbox` / `outbox` | List incoming / outgoing requests. `inbox --watch` polls on a configurable `--interval` (default 5s) and surfaces newly-arrived requests until Ctrl-C |
-| `respond <request_id>` | Respond to an incoming request (`--action accept|defer|deny|complete`) |
+| `respond <request_id>` | Respond to an incoming request (`--response accepted\|deferred\|denied\|completed`) |
 | `approvals` / `approve` / `deny` | Manage pending approvals raised by risk or sensitivity thresholds |
 | `audit` | Print the authenticated agent's recent audit events |
 | `logout` | Clear the local session without touching server state |
 | `completion <bash\|zsh\|fish>` | Emit a shell-completion script. Install with e.g. `source <(alice completion bash)` or drop into the shell's completion directory |
+| `tuning` | Override per-org gatekeeper confidence threshold and lookback window |
+| `policy apply\|history\|activate` | Manage org risk policies (admin only) |
+| `actions list\|create\|approve\|cancel\|execute` | Manage operator-phase actions |
+| `operator enable\|disable` | Opt the current user in or out of the operator phase |
+| `team create\|list\|delete\|add-member\|remove-member\|members` | Manage org teams (admin-gated mutations) |
+| `manager set\|revoke\|chain` | Manage manager edges in the org graph (admin only) |
 
 ---
 
@@ -383,7 +390,7 @@ After restarting OpenCode, the alice tools appear in the tool list. The registra
 
 ## Local git tracking
 
-The MCP server includes a built-in tracker that silently monitors local git repositories and publishes status artifacts to the coordination server. Enable it by setting `ALICE_TRACK_REPOS` to a comma-separated list of repository paths.
+The MCP server includes a built-in tracker that periodically reads local git repositories and publishes status artifacts to the coordination server. Enable it by setting `ALICE_TRACK_REPOS` to a comma-separated list of repository paths. Set `ALICE_TRACK_DRY_RUN=true` to log what would be published without sending anything to the server — useful for previewing collection before first use.
 
 ### With Claude Code (remote mode)
 
@@ -953,6 +960,7 @@ Set these on the `cmd/mcp-server` process (per user machine).
 | `ALICE_TRACK_CALENDAR_IDS` | `primary` | Comma-separated calendar IDs the calendar connector polls. |
 | `ALICE_TRACK_CALENDAR_API_URL` | `https://www.googleapis.com/calendar/v3` | Override for the Google Calendar API base URL. |
 | `ALICE_TRACK_SUMMARISER` | `heuristic` | Selects the summariser the git connector uses to turn local git state into artifacts. Valid names: `heuristic`. `claude` is reserved for a future LLM-backed summariser and is rejected at startup today so misconfiguration fails loudly. |
+| `ALICE_TRACK_DRY_RUN` | `false` | When `true`, the tracker logs what would be published on each tick without sending anything to the server. Useful for previewing artifact collection before first use. |
 
 ## Edge agent environment variables
 
@@ -964,6 +972,8 @@ Set these when running the `cmd/edge-agent` process.
 | `ALICE_JIRA_TOKEN` | _(none)_ | Jira API token used by the edge agent's Jira connector. |
 | `ALICE_GCAL_TOKEN` | _(none)_ | Google Calendar OAuth access token used by the edge agent's calendar connector. |
 | `ALICE_EDGE_CREDENTIAL_KEY` | _(none)_ | AES-GCM encryption key for the connector credentials file at rest. |
+
+The edge agent binary also supports a `-dry-run` flag: `./alice-edge-agent -config config.json -dry-run` prints a JSON preview of all artifacts that would be published on the next run, without contacting the server or changing any state.
 
 ---
 
@@ -998,6 +1008,7 @@ The edge agent reads a JSON config file passed via `-config`. All paths in the c
 | `artifact_fixture_file` | Optional path to a JSON file with manually authored artifacts to publish on each run. |
 | `query_watch_ids` | Array of query IDs to check for results on each run. |
 | `poll_incoming_requests` | If `true`, the agent polls for and logs incoming requests on each run. |
+| `allow_plaintext_state` | **Insecure opt-in.** If `true`, the state file (private key + bearer token) may be written without encryption when no `credentials_key_env_var` / `credentials_key_file` is set. Do not use in production. |
 
 ### `connectors.github`
 
@@ -1068,7 +1079,7 @@ Run from the repository root. Requires Podman and `podman-compose` (or `podman c
 | `make logs` | Tail coordination server logs |
 | `make test` | Run the full Go test suite (in-memory storage) |
 | `make test-race` | Run the test suite with the race detector enabled |
-| `make test-cover` | Run tests with coverage report; fails if coverage is below 80% |
+| `make test-cover` | Run tests with coverage report; fails if coverage is below 70% |
 | `make test-postgres` | Start PostgreSQL and run the test suite with `ALICE_TEST_DATABASE_URL` set |
 | `make e2e` | Run end-to-end tests using an in-process HTTP server (no external deps) |
 | `make e2e-postgres` | Start PostgreSQL and run e2e tests against it |

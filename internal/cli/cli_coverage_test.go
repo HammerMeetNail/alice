@@ -464,6 +464,14 @@ func TestCLIDispatchErrors(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("init in JSON mode without flags should fail")
 	}
+
+	// Global flags work when placed after the subcommand.
+	// `whoami --state <path>` must not be treated as an unknown flag.
+	stdout, _, code = runCLI(t, "whoami", "--state", stateFile)
+	if code != 0 {
+		// whoami exits 0 with "no active session" even without a session.
+		t.Fatalf("whoami with --state after subcommand exit = %d, want 0 (stdout=%q)", code, stdout)
+	}
 }
 
 // TestCLIAuthErrorPaths covers the "no session" branches each command enters

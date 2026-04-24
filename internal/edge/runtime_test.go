@@ -48,7 +48,7 @@ func TestRuntimeRunOncePublishesFixturesAndPollsState(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile:           "bob-state.json",
 			ArtifactFixtureFile: "bob-fixtures.json",
 		},
@@ -120,7 +120,7 @@ func TestRuntimeRunOncePublishesFixturesAndPollsState(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile:            "bob-state.json",
 			QueryWatchIDs:        []string{queryID},
 			PollIncomingRequests: true,
@@ -171,7 +171,7 @@ func TestRuntimeRunOnceDerivesArtifactsFromConnectorFixtures(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile:       "sam-state.json",
 			CredentialsFile: "sam-credentials.json",
 		},
@@ -260,7 +260,7 @@ func TestRuntimeRunOnceSupersedesUpdatedGitHubArtifact(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -402,7 +402,7 @@ func TestRuntimeRunOncePollsLiveGitHub(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -559,7 +559,7 @@ func TestRuntimeRunOnceRetriesAndPaginatesLiveGitHub(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -622,7 +622,7 @@ func TestRuntimeGitHubWebhookPublishesArtifact(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -724,7 +724,7 @@ func TestRuntimeGitHubWebhookRejectsInvalidSignature(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: "http://127.0.0.1:8080",
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -801,7 +801,7 @@ func TestRuntimeGitHubWebhookIgnoresDuplicateDelivery(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -901,7 +901,7 @@ func TestRuntimeJiraWebhookPublishesArtifact(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -1009,7 +1009,7 @@ func TestRuntimeJiraWebhookRejectsInvalidSecret(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: "http://127.0.0.1:8080",
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -1086,7 +1086,7 @@ func TestRuntimeJiraWebhookIgnoresDuplicateDelivery(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -1227,7 +1227,7 @@ func TestRuntimeGCalWebhookPublishesArtifacts(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -1327,7 +1327,7 @@ func TestRuntimeGCalWebhookRejectsInvalidChannelToken(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: "http://127.0.0.1:8080",
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -1426,7 +1426,7 @@ func TestRuntimeGCalWebhookIgnoresDuplicateAndOutOfOrderDeliveries(t *testing.T)
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -1566,7 +1566,7 @@ func TestRuntimeRunOncePollsLiveJira(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -1728,7 +1728,7 @@ func TestRuntimeRunOncePaginatesLiveJira(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -1829,7 +1829,7 @@ func TestRuntimeRunOncePollsLiveGCal(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -1989,7 +1989,7 @@ func TestRuntimeRunOncePaginatesLiveGCal(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -2092,7 +2092,7 @@ func TestRuntimeRunOncePersistsJiraCursorState(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -2132,7 +2132,7 @@ func TestRuntimeRunOncePersistsJiraCursorState(t *testing.T) {
 	}
 
 	state.PublishedArtifacts = map[string]string{}
-	if err := SaveState(cfg.StatePath(), state); err != nil {
+	if err := SaveStateWithOptions(cfg.StatePath(), state, StateOptions{AllowPlaintext: true}); err != nil {
 		t.Fatalf("save state with cleared artifacts: %v", err)
 	}
 
@@ -2198,7 +2198,7 @@ func TestRuntimeRunOnceLoadsGitHubTokenFromFile(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -2259,7 +2259,7 @@ func TestRuntimeRunOncePublishesAggregateProjectArtifacts(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -2382,7 +2382,7 @@ func TestRuntimeRunOnceSupersedesResolvedBlockerAndCompletedCommitmentArtifacts(
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -2588,7 +2588,7 @@ func TestRuntimeBootstrapGitHubConnectorPersistsCredentialAndUsesIt(t *testing.T
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile: "sam-state.json",
 		},
 		Connectors: ConnectorsConfig{
@@ -2684,7 +2684,7 @@ func TestRuntimeBootstrapConnectorRejectsStateMismatch(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: "http://127.0.0.1:8080",
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile:       "sam-state.json",
 			CredentialsFile: "sam-credentials.json",
 		},
@@ -2822,7 +2822,7 @@ func TestRuntimeRunOnceRefreshesExpiredGitHubConnectorToken(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: server.URL,
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile:       "sam-state.json",
 			CredentialsFile: "sam-credentials.json",
 		},
@@ -2993,7 +2993,7 @@ func TestPrepareCredentialStoreRewritesPlaintextStoreWhenKeyConfigured(t *testin
 		Server: ServerConfig{
 			BaseURL: "http://127.0.0.1:8080",
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile:       "sam-state.json",
 			CredentialsFile: "sam-credentials.json",
 		},
@@ -3045,7 +3045,7 @@ func TestRuntimeRunOnceReturnsConnectorReauthRequiredError(t *testing.T) {
 		Server: ServerConfig{
 			BaseURL: "http://127.0.0.1:8080",
 		},
-		Runtime: RuntimeConfig{
+		Runtime: RuntimeConfig{AllowPlaintextState: true,
 			StateFile:       "sam-state.json",
 			CredentialsFile: "sam-credentials.json",
 		},

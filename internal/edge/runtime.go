@@ -53,7 +53,10 @@ func (r *Runtime) stateOptions() (StateOptions, error) {
 	if err != nil {
 		return StateOptions{}, err
 	}
-	return StateOptions{EncryptionSecret: secret}, nil
+	return StateOptions{
+		EncryptionSecret: secret,
+		AllowPlaintext:   r.cfg.Runtime.AllowPlaintextState,
+	}, nil
 }
 
 func (r *Runtime) loadState() (State, error) {
@@ -369,6 +372,32 @@ func (r *Runtime) withSession(ctx context.Context, state *State, registrationPer
 		*registrationPerformed = true
 	}
 	return call(state.AccessToken)
+}
+
+// PreviewArtifacts collects the artifacts that would be published in the next
+// RunOnce call without actually contacting the coordination server. It reads
+// local state and connector credentials so that live connectors can be polled,
+// but it does not register, publish, or mutate any persistent state.
+//
+// If no state file exists yet the preview still works: it generates ephemeral
+// key material in memory and returns whatever the configured connectors surface.
+func (r *Runtime) PreviewArtifacts(ctx context.Context) ([]core.Artifact, error) {
+	state, err := r.loadState()
+	if err != nil {
+		return nil, err
+	}
+	if err := r.ensureKeyMaterial(&state); err != nil {
+		return nil, err
+	}
+	credentials, err := r.prepareCredentialStore(ctx, &state)
+	if err != nil {
+		return nil, err
+	}
+	artifacts, _, err := r.configuredArtifacts(ctx, &state, credentials)
+	if err != nil {
+		return nil, err
+	}
+	return artifacts, nil
 }
 
 func loadFixtureFile(path string) (fixtureFile, error) {

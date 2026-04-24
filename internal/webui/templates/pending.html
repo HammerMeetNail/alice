@@ -28,7 +28,9 @@
     <table class="data">
       <thead>
         <tr>
-          <th>Agent ID</th>
+          <th>Agent</th>
+          <th>Owner</th>
+          <th>Type</th>
           <th>Requested at</th>
           <th>Decision</th>
         </tr>
@@ -36,7 +38,12 @@
       <tbody>
       {{range .Pending}}
         <tr>
-          <td><code>{{.AgentID}}</code></td>
+          <td>
+            {{if .AgentName}}<strong>{{.AgentName}}</strong><br>{{end}}
+            <code class="small">{{.AgentID}}</code>
+          </td>
+          <td>{{if .OwnerEmail}}{{.OwnerEmail}}{{else}}&mdash;{{end}}</td>
+          <td>{{if .ClientType}}<code>{{.ClientType}}</code>{{else}}&mdash;{{end}}</td>
           <td>{{fmtTime .RequestedAt}}</td>
           <td>
             <form method="post" action="/admin/pending-agents/review" class="inline">

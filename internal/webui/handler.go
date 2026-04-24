@@ -209,8 +209,11 @@ func (h *Handler) setCSP(w http.ResponseWriter) {
 }
 
 // enforceHTTPS rejects plaintext requests outside dev mode. Requests that
-// arrive via an HTTPS-terminating proxy (X-Forwarded-Proto) are accepted.
-// Returns true when the request is allowed to proceed.
+// arrive via an HTTPS-terminating proxy are accepted only when the request
+// originates from a configured trusted proxy CIDR and carries an
+// X-Forwarded-Proto: https header. When no TrustedProxies are configured the
+// header is never trusted — callers must either use direct TLS or configure
+// the allowed proxy range. Returns true when the request is allowed to proceed.
 func (h *Handler) enforceHTTPS(w http.ResponseWriter, r *http.Request) bool {
 	if h.opts.DevMode {
 		return true
@@ -218,11 +221,34 @@ func (h *Handler) enforceHTTPS(w http.ResponseWriter, r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") && h.isTrustedProxy(r) {
 		return true
 	}
 	h.applySecurityHeaders(w)
 	http.Error(w, "HTTPS required for admin UI", http.StatusBadRequest)
+	return false
+}
+
+// isTrustedProxy reports whether the request's remote IP falls within one of
+// the configured TrustedProxies CIDRs. Returns false when no proxies are
+// configured, ensuring X-Forwarded-Proto is never trusted by default.
+func (h *Handler) isTrustedProxy(r *http.Request) bool {
+	if len(h.opts.TrustedProxies) == 0 {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range h.opts.TrustedProxies {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
 	return false
 }
 

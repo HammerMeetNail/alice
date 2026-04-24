@@ -26,6 +26,7 @@ type Config struct {
 	OwnerEmail string
 	AgentName  string
 	ClientType string
+	DryRun     bool
 }
 
 // ConfigFromEnv reads tracker configuration from environment variables.
@@ -62,6 +63,7 @@ func ConfigFromEnv() (Config, bool) {
 		OwnerEmail: strings.TrimSpace(os.Getenv("ALICE_TRACK_OWNER_EMAIL")),
 		AgentName:  strings.TrimSpace(os.Getenv("ALICE_TRACK_AGENT_NAME")),
 		ClientType: "mcp_tracker",
+		DryRun:     strings.TrimSpace(os.Getenv("ALICE_TRACK_DRY_RUN")) == "true",
 	}, true
 }
 
@@ -113,7 +115,12 @@ func (t *Tracker) Run(ctx context.Context) {
 	for _, c := range t.connectors {
 		names = append(names, c.Name())
 	}
-	slog.Info("tracker started", "connectors", names, "repos", t.cfg.RepoPaths, "interval", t.cfg.Interval)
+	if t.cfg.DryRun {
+		slog.Info("tracker dry-run: will log artifacts that would be published without sending them to the server",
+			"connectors", names, "repos", t.cfg.RepoPaths, "interval", t.cfg.Interval)
+	} else {
+		slog.Info("tracker started", "connectors", names, "repos", t.cfg.RepoPaths, "interval", t.cfg.Interval)
+	}
 
 	t.Tick(ctx)
 
@@ -162,6 +169,18 @@ func (t *Tracker) Tick(ctx context.Context) {
 				if prev, ok := t.latest[derivationKey]; ok && prev != "" {
 					artifact.SupersedesArtifactID = &prev
 				}
+			}
+
+			// In dry-run mode log what would be published and skip the
+			// actual publish call so no data leaves the local machine.
+			if t.cfg.DryRun {
+				slog.Info("tracker dry-run: would publish",
+					"connector", connector.Name(),
+					"type", artifact.Type,
+					"title", artifact.Title,
+					"sensitivity", artifact.Sensitivity,
+					"digest", digest)
+				continue
 			}
 
 			body := map[string]any{"artifact": artifactToMap(artifact)}

@@ -536,7 +536,15 @@ func TestForwardedProtoHTTPSIsAccepted(t *testing.T) {
 	lookup := &stubLookupAdmin{}
 	mailer := &capturingMailer{}
 	sessions := websession.NewService(websession.Options{Lookup: lookup, Mailer: mailer, CookieSecure: true})
-	h, err := NewHandler(Options{Sessions: sessions, Services: &stubServices{}, DevMode: false})
+	// httptest.NewRequest sets RemoteAddr to 192.0.2.1:1234 by default; trust
+	// that /32 so the X-Forwarded-Proto header is honoured.
+	_, proxyNet, _ := net.ParseCIDR("192.0.2.1/32")
+	h, err := NewHandler(Options{
+		Sessions:       sessions,
+		Services:       &stubServices{},
+		DevMode:        false,
+		TrustedProxies: []*net.IPNet{proxyNet},
+	})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -546,7 +554,26 @@ func TestForwardedProtoHTTPSIsAccepted(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("x-forwarded-proto=https status = %d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("x-forwarded-proto=https from trusted proxy status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestForwardedProtoHTTPSUntrustedProxyRejected(t *testing.T) {
+	lookup := &stubLookupAdmin{}
+	mailer := &capturingMailer{}
+	sessions := websession.NewService(websession.Options{Lookup: lookup, Mailer: mailer, CookieSecure: true})
+	// No TrustedProxies configured → X-Forwarded-Proto must never be trusted.
+	h, err := NewHandler(Options{Sessions: sessions, Services: &stubServices{}, DevMode: false})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/sign-in", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("x-forwarded-proto=https from untrusted proxy status = %d, want 400", rec.Code)
 	}
 }
 

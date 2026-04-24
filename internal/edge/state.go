@@ -15,6 +15,11 @@ const stateSecretsAAD = "alice.edge.state.secrets.v1"
 // StateOptions controls optional encryption for the state file.
 type StateOptions struct {
 	EncryptionSecret string
+	// AllowPlaintext permits writing the private key and bearer token as
+	// plaintext when no EncryptionSecret is configured.  Only set this in
+	// local-dev or test environments.  When false (the default),
+	// SaveStateWithOptions returns an error if no encryption key is supplied.
+	AllowPlaintext bool
 }
 
 type stateSecrets struct {
@@ -135,8 +140,10 @@ func SaveStateWithOptions(path string, state State, options StateOptions) error 
 		state.PrivateKey = ""
 		state.AccessToken = ""
 		state.EncryptedSecrets = envelope
-	} else {
+	} else if options.AllowPlaintext {
 		fmt.Fprintf(os.Stderr, "warning: state file %q contains plaintext credentials; set ALICE_EDGE_CREDENTIAL_KEY to enable encryption\n", path)
+	} else {
+		return fmt.Errorf("state file %q would contain plaintext credentials; set ALICE_EDGE_CREDENTIAL_KEY or set runtime.allow_plaintext_state to opt in", path)
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")

@@ -226,7 +226,7 @@ func (s *Service) UpdateGatekeeperTuning(ctx context.Context, agent core.Agent, 
 }
 
 // RotateInviteToken generates a new invite token for an org, replacing the previous one.
-// The caller's agent must belong to the org.
+// The caller's agent must belong to the org and the owner user must have admin role.
 func (s *Service) RotateInviteToken(ctx context.Context, orgID, callerAgentID string) (string, error) {
 	callerAgent, ok, err := s.agents.FindAgentByID(ctx, callerAgentID)
 	if err != nil {
@@ -237,6 +237,17 @@ func (s *Service) RotateInviteToken(ctx context.Context, orgID, callerAgentID st
 	}
 	if callerAgent.OrgID != orgID {
 		return "", core.ForbiddenError{Message: "caller does not belong to this org"}
+	}
+
+	callerUser, ok, err := s.users.FindUserByID(ctx, callerAgent.OwnerUserID)
+	if err != nil {
+		return "", fmt.Errorf("find caller user: %w", err)
+	}
+	if !ok {
+		return "", ErrUnknownAgentOwner
+	}
+	if callerUser.Role != core.UserRoleAdmin {
+		return "", ErrNotOrgAdmin
 	}
 
 	rawToken, err := randomToken(32)
@@ -730,7 +741,26 @@ func (s *Service) ListPendingAgentApprovals(ctx context.Context, orgID, callerAg
 	if callerUser.Role != core.UserRoleAdmin {
 		return nil, ErrNotOrgAdmin
 	}
-	return s.approvals.FindPendingAgentApprovals(ctx, orgID, limit, offset)
+	approvals, err := s.approvals.FindPendingAgentApprovals(ctx, orgID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	// Enrich each approval with human-readable context (agent name, owner email,
+	// client type) so callers (admin UI, HTTP API) don't need a second round-trip.
+	for i := range approvals {
+		a, ok, aErr := s.agents.FindAgentByID(ctx, approvals[i].AgentID)
+		if aErr != nil || !ok {
+			continue
+		}
+		approvals[i].AgentName = a.AgentName
+		approvals[i].ClientType = a.ClientType
+		u, ok, uErr := s.users.FindUserByID(ctx, a.OwnerUserID)
+		if uErr != nil || !ok {
+			continue
+		}
+		approvals[i].OwnerEmail = u.Email
+	}
+	return approvals, nil
 }
 
 // ReviewAgentApproval approves or rejects a pending agent registration. The caller must be an org admin.
