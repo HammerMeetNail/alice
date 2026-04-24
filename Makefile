@@ -9,8 +9,10 @@ POSTGRES_CONTAINER_NAME ?= alice-db
 POSTGRES_WAIT_TIMEOUT ?= 60
 
 COVERAGE_THRESHOLD ?= 70
+# Threshold used when all packages (including postgres) are measured.
+COVERAGE_THRESHOLD_FULL ?= 75
 
-.PHONY: local down status logs postgres-up postgres-down test test-race test-cover test-postgres e2e e2e-postgres test-all ci mailpit-ui
+.PHONY: local down status logs postgres-up postgres-down test test-race test-cover test-cover-postgres test-postgres e2e e2e-postgres test-all ci mailpit-ui
 
 local:
 	@$(PODMAN_COMPOSE) up --build -d
@@ -73,6 +75,25 @@ test-cover:
 		echo "OK: testable coverage $$total% meets threshold $$threshold%"; \
 	fi
 
+# test-cover-postgres runs coverage including internal/storage/postgres (requires
+# a running Postgres instance). Used by CI to measure full package coverage.
+test-cover-postgres: postgres-up
+	@ALICE_TEST_DATABASE_URL=$(TEST_POSTGRES_URL) go test -coverprofile=coverage.out -covermode=atomic ./...
+	@echo "--- Per-package coverage (all packages including postgres) ---"
+	@go tool cover -func=coverage.out | grep "^total:" | head -1
+	@echo "--- Testable-package coverage (excluding cmd/, app/) ---"
+	@grep -v -E '^(alice/cmd/|alice/internal/app/)' coverage.out > coverage-testable.out || true
+	@go tool cover -func=coverage-testable.out | grep "^total:" | head -1
+	@total=$$(go tool cover -func=coverage-testable.out | grep "^total:" | awk '{print $$NF}' | tr -d '%'); \
+	threshold=$(COVERAGE_THRESHOLD_FULL); \
+	result=$$(echo "$$total < $$threshold" | bc -l 2>/dev/null || awk "BEGIN{print ($$total < $$threshold)}"); \
+	if [ "$$result" = "1" ]; then \
+		echo "FAIL: testable coverage $$total% is below threshold $$threshold%" >&2; \
+		exit 1; \
+	else \
+		echo "OK: testable coverage $$total% meets threshold $$threshold%"; \
+	fi
+
 test-postgres: postgres-up
 	@ALICE_TEST_DATABASE_URL=$(TEST_POSTGRES_URL) go test -race -count=1 ./...
 
@@ -84,7 +105,7 @@ e2e-postgres: postgres-up
 
 test-all: test e2e
 
-ci: test-cover e2e
+ci: test-cover-postgres e2e
 
 mailpit-ui:
 	@echo "http://localhost:8025"

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"alice/internal/audit"
 	"alice/internal/core"
 	"alice/internal/id"
+	"alice/internal/metrics"
 	"alice/internal/queries"
 	"alice/internal/requests"
 	"alice/internal/riskpolicy"
@@ -75,41 +77,156 @@ func (l *ipRateLimiter) allow(ip string) bool {
 	return true
 }
 
+// agentBucket is a per-agent token-bucket entry.
+type agentBucket struct {
+	mu       sync.Mutex
+	tokens   float64
+	lastSeen time.Time
+}
+
+// agentRateLimiter holds per-agent token buckets for authenticated endpoint protection.
+type agentRateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*agentBucket
+	rate    float64 // tokens per nanosecond
+	burst   float64
+}
+
+func newAgentRateLimiter(ratePerMin float64) *agentRateLimiter {
+	if ratePerMin <= 0 {
+		ratePerMin = 60
+	}
+	burst := ratePerMin // allow full burst equal to 1-minute quota
+	return &agentRateLimiter{
+		buckets: make(map[string]*agentBucket),
+		rate:    ratePerMin / 60e9,
+		burst:   burst,
+	}
+}
+
+func (l *agentRateLimiter) allow(agentID string) bool {
+	l.mu.Lock()
+	b, ok := l.buckets[agentID]
+	if !ok {
+		b = &agentBucket{tokens: l.burst, lastSeen: time.Now()}
+		l.buckets[agentID] = b
+	}
+	l.mu.Unlock()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	elapsed := now.Sub(b.lastSeen)
+	b.tokens += float64(elapsed) * l.rate
+	if b.tokens > l.burst {
+		b.tokens = l.burst
+	}
+	b.lastSeen = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+// requestIDContextKey carries the request ID through the context.
+type requestIDContextKey struct{}
+
+// loggerContextKey carries a slog.Logger pre-seeded with the request ID.
+type loggerContextKey struct{}
+
+// agentIDHolder is a mutable slot injected by accessLog so that requireAuth
+// can backfill the agent ID after authentication succeeds. The holder is
+// read by accessLog after the handler chain returns, giving the log line an
+// accurate agent_id even though requireAuth stores auth info in a derived
+// request context that accessLog never sees directly.
+type agentIDHolder struct{ id string }
+
+type agentIDHolderKey struct{}
+
+// RouterOptions configures the HTTP router.
+type RouterOptions struct {
+	// Services is the service container (required).
+	Services services.Container
+	// Pinger, when non-nil, is called by GET /readyz to check DB health.
+	Pinger func(ctx context.Context) error
+	// TLSTerminated adds Strict-Transport-Security when true.
+	TLSTerminated bool
+	// TrustedProxies is a list of parsed CIDRs whose X-Forwarded-For is trusted.
+	TrustedProxies []*net.IPNet
+	// AgentRatePerMin is the per-agent rate on heavy endpoints (default 60).
+	AgentRatePerMin float64
+	// AdminSignInRatePerMin is the per-IP rate on /admin/sign-in endpoints.
+	// Used by the top-level handler in app/server.go.
+	AdminSignInRatePerMin float64
+}
+
 type router struct {
-	services    services.Container
-	mux         *http.ServeMux
-	rateLimiter *ipRateLimiter
+	services       services.Container
+	mux            *http.ServeMux
+	rateLimiter    *ipRateLimiter
+	agentLimiter   *agentRateLimiter
+	pinger         func(ctx context.Context) error
+	tlsTerminated  bool
+	trustedProxies []*net.IPNet
 }
 
 type currentAgentContextKey struct{}
 type currentUserContextKey struct{}
 
-func NewRouter(services services.Container) http.Handler {
+// ParseCIDRs parses a list of CIDR strings and returns the parsed nets.
+// Unparseable entries are silently skipped (logged at WARN).
+func ParseCIDRs(cidrs []string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, s := range cidrs {
+		_, ipNet, err := net.ParseCIDR(strings.TrimSpace(s))
+		if err != nil {
+			slog.Warn("could not parse trusted proxy CIDR; skipping", "cidr", s, "err", err)
+			continue
+		}
+		out = append(out, ipNet)
+	}
+	return out
+}
+
+func NewRouter(opts RouterOptions) http.Handler {
 	r := &router{
-		services:    services,
-		mux:         http.NewServeMux(),
-		rateLimiter: newIPRateLimiter(10, 10),
+		services:       opts.Services,
+		mux:            http.NewServeMux(),
+		rateLimiter:    newIPRateLimiter(10, 10),
+		agentLimiter:   newAgentRateLimiter(opts.AgentRatePerMin),
+		pinger:         opts.Pinger,
+		tlsTerminated:  opts.TLSTerminated,
+		trustedProxies: opts.TrustedProxies,
 	}
 	r.routes()
-	return r.securityHeaders(r.mux)
+	handler := http.Handler(r.mux)
+	handler = metrics.InstrumentHandler(handler)
+	handler = r.accessLog(handler)
+	handler = r.requestID(handler)
+	handler = r.securityHeaders(handler)
+	return handler
 }
 
 func (r *router) routes() {
 	r.mux.HandleFunc("GET /healthz", r.handleHealthz)
+	r.mux.HandleFunc("GET /livez", r.handleLivez)
+	r.mux.HandleFunc("GET /readyz", r.handleReadyz)
 	r.mux.Handle("POST /v1/agents/register/challenge", r.rateLimit(r.limitBody(http.HandlerFunc(r.handleBeginRegisterAgent))))
 	r.mux.Handle("POST /v1/agents/register", r.rateLimit(r.limitBody(http.HandlerFunc(r.handleRegisterAgent))))
 	// Email verification endpoints: require auth but are exempt from email-verified check.
 	r.mux.Handle("POST /v1/agents/verify-email", r.limitBody(r.requireAuth(http.HandlerFunc(r.handleVerifyEmail))))
 	r.mux.Handle("POST /v1/agents/resend-verification", r.requireAuth(http.HandlerFunc(r.handleResendVerification)))
 	// All other authenticated routes enforce email verification.
-	r.mux.Handle("POST /v1/artifacts", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handlePublishArtifact))))
+	// Heavy write endpoints also enforce per-agent rate limiting.
+	r.mux.Handle("POST /v1/artifacts", r.limitBody(r.requireVerifiedAuth(r.agentRateLimit("artifacts", http.HandlerFunc(r.handlePublishArtifact)))))
 	r.mux.Handle("POST /v1/artifacts/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleCorrectArtifact))))
 	r.mux.Handle("POST /v1/policy-grants", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleGrantPermission))))
 	r.mux.Handle("DELETE /v1/policy-grants/", r.requireVerifiedAuth(http.HandlerFunc(r.handleRevokePermission)))
 	r.mux.Handle("GET /v1/peers", r.requireVerifiedAuth(http.HandlerFunc(r.handleListAllowedPeers)))
-	r.mux.Handle("POST /v1/queries", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleQueryPeerStatus))))
+	r.mux.Handle("POST /v1/queries", r.limitBody(r.requireVerifiedAuth(r.agentRateLimit("queries", http.HandlerFunc(r.handleQueryPeerStatus)))))
 	r.mux.Handle("GET /v1/queries/", r.requireVerifiedAuth(http.HandlerFunc(r.handleGetQueryResult)))
-	r.mux.Handle("POST /v1/requests", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleSendRequestToPeer))))
+	r.mux.Handle("POST /v1/requests", r.limitBody(r.requireVerifiedAuth(r.agentRateLimit("requests", http.HandlerFunc(r.handleSendRequestToPeer)))))
 	r.mux.Handle("GET /v1/requests/incoming", r.requireVerifiedAuth(http.HandlerFunc(r.handleListIncomingRequests)))
 	r.mux.Handle("GET /v1/requests/sent", r.requireVerifiedAuth(http.HandlerFunc(r.handleListSentRequests)))
 	r.mux.Handle("POST /v1/requests/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleRespondToRequest))))
@@ -126,8 +243,10 @@ func (r *router) routes() {
 	r.mux.Handle("GET /v1/actions", r.requireVerifiedAuth(http.HandlerFunc(r.handleListActions)))
 	r.mux.Handle("POST /v1/actions/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleActionAction))))
 	r.mux.Handle("POST /v1/users/me/operator-enabled", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleSetOperatorEnabled))))
+	r.mux.Handle("DELETE /v1/users/me", r.requireVerifiedAuth(http.HandlerFunc(r.handleDeleteSelf)))
 	r.mux.Handle("GET /v1/orgs/pending-agents", r.requireVerifiedAuth(http.HandlerFunc(r.handleListPendingAgents)))
 	r.mux.Handle("POST /v1/orgs/agents/", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleReviewAgent))))
+	r.mux.Handle("DELETE /v1/orgs/", r.requireVerifiedAuth(http.HandlerFunc(r.handleDeleteOrg)))
 	r.mux.Handle("POST /v1/org/teams", r.limitBody(r.requireVerifiedAuth(http.HandlerFunc(r.handleCreateTeam))))
 	r.mux.Handle("GET /v1/org/teams", r.requireVerifiedAuth(http.HandlerFunc(r.handleListTeams)))
 	r.mux.Handle("GET /v1/org/teams/", r.requireVerifiedAuth(http.HandlerFunc(r.handleListTeamMembers)))
@@ -139,6 +258,27 @@ func (r *router) routes() {
 }
 
 func (r *router) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleLivez reports that the process is alive. Always returns 200.
+func (r *router) handleLivez(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReadyz reports that the server is ready to serve traffic. When a
+// Pinger is configured it verifies DB reachability before returning 200.
+func (r *router) handleReadyz(w http.ResponseWriter, req *http.Request) {
+	if r.pinger != nil {
+		if err := r.pinger(req.Context()); err != nil {
+			slog.Error("readyz: db ping failed", "err", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status": "unavailable",
+				"reason": "database unreachable",
+			})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -207,6 +347,9 @@ func (r *router) handleRegisterAgent(w http.ResponseWriter, req *http.Request) {
 			errors.Is(err, agents.ErrUsedRegistrationChallenge),
 			errors.Is(err, agents.ErrInvalidRegistrationSignature):
 			writeAuthError(w, err.Error())
+			return
+		case errors.Is(err, agents.ErrOrgSlugTaken):
+			writeError(w, http.StatusConflict, err.Error())
 			return
 		default:
 			writeServiceError(w, err, "agent registration failed")
@@ -1639,8 +1782,10 @@ func (r *router) handleReviewAgent(w http.ResponseWriter, req *http.Request) {
 
 func (r *router) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		ip := clientIP(req)
+		ip := r.clientIP(req)
 		if !r.rateLimiter.allow(ip) {
+			metrics.RecordRateLimitRejection("registration")
+			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
@@ -1648,18 +1793,82 @@ func (r *router) rateLimit(next http.Handler) http.Handler {
 	})
 }
 
-func clientIP(req *http.Request) string {
-	if forwarded := req.Header.Get("X-Forwarded-For"); forwarded != "" {
-		if idx := strings.IndexByte(forwarded, ','); idx >= 0 {
-			return strings.TrimSpace(forwarded[:idx])
+// agentRateLimit limits per-agent request rates on heavy endpoints.
+// It must be applied after requireAuth (needs agent in context).
+func (r *router) agentRateLimit(limiterName string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		agent, _, ok := currentActor(req)
+		if ok {
+			if !r.agentLimiter.allow(agent.AgentID) {
+				metrics.RecordRateLimitRejection(limiterName)
+				w.Header().Set("Retry-After", "60")
+				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+				return
+			}
 		}
-		return strings.TrimSpace(forwarded)
+		next.ServeHTTP(w, req)
+	})
+}
+
+// clientIP returns the best-effort client IP, honouring X-Forwarded-For only
+// when the request originated from a trusted proxy.
+func (r *router) clientIP(req *http.Request) string {
+	return clientIPFromRequest(req, r.trustedProxies)
+}
+
+// clientIPFromRequest is the package-level form of clientIP so that exported
+// middleware (e.g. NewAdminSignInLimiter) can reuse the same logic without
+// holding a *router reference.
+func clientIPFromRequest(req *http.Request, trustedProxies []*net.IPNet) string {
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		// RemoteAddr has no port (unusual but possible in tests).
+		host = req.RemoteAddr
 	}
-	host := req.RemoteAddr
-	if idx := strings.LastIndexByte(host, ':'); idx >= 0 {
-		return host[:idx]
+	remoteIP := net.ParseIP(host)
+
+	// If the remote address is a trusted proxy, use X-Forwarded-For.
+	if len(trustedProxies) > 0 && remoteIP != nil {
+		for _, cidr := range trustedProxies {
+			if cidr.Contains(remoteIP) {
+				xff := req.Header.Get("X-Forwarded-For")
+				if xff == "" {
+					// Trusted proxy sent no XFF — fall back to the proxy's own IP
+					// rather than returning an empty string.
+					return host
+				}
+				return xffClientIP(xff, trustedProxies)
+			}
+		}
 	}
 	return host
+}
+
+// xffClientIP walks X-Forwarded-For from right to left and returns the
+// rightmost IP that is NOT in the trusted-proxies list.
+func xffClientIP(xff string, trusted []*net.IPNet) string {
+	if xff == "" {
+		return ""
+	}
+	parts := strings.Split(xff, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		candidate := strings.TrimSpace(parts[i])
+		ip := net.ParseIP(candidate)
+		if ip == nil {
+			continue
+		}
+		inTrusted := false
+		for _, cidr := range trusted {
+			if cidr.Contains(ip) {
+				inTrusted = true
+				break
+			}
+		}
+		if !inTrusted {
+			return candidate
+		}
+	}
+	return strings.TrimSpace(parts[0])
 }
 
 func (r *router) securityHeaders(next http.Handler) http.Handler {
@@ -1667,8 +1876,116 @@ func (r *router) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Cache-Control", "no-store")
+		// Add CSP for the JSON API: disallow everything except the response itself.
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		// Emit HSTS when the server is TLS-terminated or the request arrived via HTTPS.
+		if r.tlsTerminated || req.Header.Get("X-Forwarded-Proto") == "https" {
+			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		}
 		next.ServeHTTP(w, req)
 	})
+}
+
+// responseCapture wraps http.ResponseWriter to capture the status code and bytes written.
+type responseCapture struct {
+	http.ResponseWriter
+	status int
+	size   int
+}
+
+func (rc *responseCapture) WriteHeader(status int) {
+	rc.status = status
+	rc.ResponseWriter.WriteHeader(status)
+}
+
+func (rc *responseCapture) Write(b []byte) (int, error) {
+	n, err := rc.ResponseWriter.Write(b)
+	rc.size += n
+	return n, err
+}
+
+// requestID reads X-Request-ID from the incoming request (or generates a new
+// one) and injects it into the context and the response header. It also stores
+// a slog.Logger pre-seeded with the request ID under loggerContextKey so that
+// handlers can call LoggerFromContext(ctx) without repeating the attribute.
+func (r *router) requestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		reqID := strings.TrimSpace(req.Header.Get("X-Request-ID"))
+		if reqID == "" {
+			reqID = id.New("req")
+		}
+		// Propagate W3C trace context headers to the outgoing response so
+		// downstream callers can correlate traces.
+		if tp := req.Header.Get("Traceparent"); tp != "" {
+			w.Header().Set("Traceparent", tp)
+		}
+		w.Header().Set("X-Request-ID", reqID)
+		ctx := context.WithValue(req.Context(), requestIDContextKey{}, reqID)
+		logger := slog.Default().With("request_id", reqID)
+		ctx = context.WithValue(ctx, loggerContextKey{}, logger)
+		next.ServeHTTP(w, req.WithContext(ctx))
+	})
+}
+
+// accessLog wraps the mux with a per-request structured log line.
+// Health-check endpoints are skipped to keep logs clean.
+func (r *router) accessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Skip the health probes to avoid flooding access logs.
+		if req.URL.Path == "/healthz" || req.URL.Path == "/livez" || req.URL.Path == "/readyz" {
+			next.ServeHTTP(w, req)
+			return
+		}
+		start := time.Now()
+		rc := &responseCapture{ResponseWriter: w, status: http.StatusOK}
+
+		// Inject a mutable agent-ID slot into the context. requireAuth will
+		// backfill it after a successful authentication so the log line sees
+		// the real agent ID even though auth runs in a derived request context.
+		holder := &agentIDHolder{}
+		ctx := context.WithValue(req.Context(), agentIDHolderKey{}, holder)
+		next.ServeHTTP(rc, req.WithContext(ctx))
+		dur := time.Since(start)
+
+		agentID := holder.id
+		reqID, _ := req.Context().Value(requestIDContextKey{}).(string)
+
+		level := slog.LevelInfo
+		if rc.status >= 500 {
+			level = slog.LevelError
+		} else if rc.status == http.StatusTooManyRequests ||
+			rc.status == http.StatusUnauthorized ||
+			rc.status == http.StatusForbidden {
+			level = slog.LevelWarn
+		}
+
+		slog.Log(req.Context(), level, "http request",
+			"method", req.Method,
+			"path", req.URL.Path,
+			"status", rc.status,
+			"duration_ms", dur.Milliseconds(),
+			"bytes_out", rc.size,
+			"ip", r.clientIP(req),
+			"request_id", reqID,
+			"agent_id", agentID,
+		)
+	})
+}
+
+// RequestIDFromContext returns the request ID stored by the requestID middleware,
+// or empty string when called outside a request context.
+func RequestIDFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(requestIDContextKey{}).(string)
+	return v
+}
+
+// LoggerFromContext returns a slog.Logger pre-seeded with the request ID, or
+// slog.Default() when called outside a request context.
+func LoggerFromContext(ctx context.Context) *slog.Logger {
+	if l, ok := ctx.Value(loggerContextKey{}).(*slog.Logger); ok {
+		return l
+	}
+	return slog.Default()
 }
 
 func (r *router) limitBody(next http.Handler) http.Handler {
@@ -1705,6 +2022,10 @@ func (r *router) requireAuth(next http.Handler) http.Handler {
 
 		ctx := context.WithValue(req.Context(), currentAgentContextKey{}, agent)
 		ctx = context.WithValue(ctx, currentUserContextKey{}, user)
+		// Backfill the agent ID into the access-log holder if present.
+		if h, ok := ctx.Value(agentIDHolderKey{}).(*agentIDHolder); ok && h != nil {
+			h.id = agent.AgentID
+		}
 		next.ServeHTTP(w, req.WithContext(ctx))
 	})
 }
@@ -1835,6 +2156,74 @@ func writeServiceError(w http.ResponseWriter, err error, fallback string) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, fallback)
+}
+
+// handleDeleteSelf soft-deletes the calling agent and its user account.
+// All tokens are revoked first; the response is 204 No Content.
+func (r *router) handleDeleteSelf(w http.ResponseWriter, req *http.Request) {
+	agent, _, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	if err := r.services.Agents.DeleteSelf(req.Context(), agent); err != nil {
+		writeServiceError(w, err, "delete self failed")
+		return
+	}
+
+	if _, auditErr := r.services.Audit.Record(
+		req.Context(),
+		"user.deleted_self", "user", agent.OwnerUserID,
+		agent.OrgID, agent.AgentID, "", "allow",
+		core.RiskLevelL1, nil, nil,
+	); auditErr != nil {
+		slog.Error("audit record failed", "op", "delete_self", "err", auditErr)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteOrg soft-deletes the org identified by the trailing slug in the
+// URL path. The caller must be an org admin whose org matches the slug.
+func (r *router) handleDeleteOrg(w http.ResponseWriter, req *http.Request) {
+	agent, user, ok := currentActor(req)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "missing authenticated actor context")
+		return
+	}
+
+	slug := strings.TrimPrefix(req.URL.Path, "/v1/orgs/")
+	slug = strings.Trim(slug, "/")
+	if slug == "" {
+		writeError(w, http.StatusBadRequest, "org slug is required in path")
+		return
+	}
+
+	if err := r.services.Agents.DeleteOrg(req.Context(), agent, user, slug); err != nil {
+		switch {
+		case errors.Is(err, agents.ErrNotOrgAdmin):
+			writeError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, storage.ErrOrgNotFound):
+			writeError(w, http.StatusNotFound, "org not found")
+		case core.IsForbiddenError(err):
+			writeError(w, http.StatusForbidden, err.Error())
+		default:
+			writeServiceError(w, err, "delete org failed")
+		}
+		return
+	}
+
+	if _, auditErr := r.services.Audit.Record(
+		req.Context(),
+		"org.deleted", "org", agent.OrgID,
+		agent.OrgID, agent.AgentID, "", "allow",
+		core.RiskLevelL1, nil, nil,
+	); auditErr != nil {
+		slog.Error("audit record failed", "op", "delete_org", "err", auditErr)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeDecodeError(w http.ResponseWriter, err error) {

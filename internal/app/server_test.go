@@ -28,11 +28,11 @@ func TestAdminUIDisabledReturns404(t *testing.T) {
 		AuthTokenTTL:     time.Minute,
 		AdminUIEnabled:   false,
 	}
-	container, repos, _, err := newContainerWithRepos(cfg)
+	container, repos, _, _, err := newContainerWithRepos(cfg)
 	if err != nil {
 		t.Fatalf("newContainerWithRepos: %v", err)
 	}
-	handler, err := buildHTTPHandler(cfg, container, repos)
+	handler, err := buildHTTPHandler(cfg, container, repos, nil)
 	if err != nil {
 		t.Fatalf("buildHTTPHandler: %v", err)
 	}
@@ -63,11 +63,11 @@ func TestAdminUIEnabledServesSignIn(t *testing.T) {
 		AdminUIDevMode:   true,
 		SMTPHost:         "noop",
 	}
-	container, repos, _, err := newContainerWithRepos(cfg)
+	container, repos, _, _, err := newContainerWithRepos(cfg)
 	if err != nil {
 		t.Fatalf("newContainerWithRepos: %v", err)
 	}
-	handler, err := buildHTTPHandler(cfg, container, repos)
+	handler, err := buildHTTPHandler(cfg, container, repos, nil)
 	if err != nil {
 		t.Fatalf("buildHTTPHandler: %v", err)
 	}
@@ -102,11 +102,11 @@ func TestAdminUIWithoutSMTPRefuses(t *testing.T) {
 		AdminUIEnabled:   true,
 		// SMTPHost deliberately empty.
 	}
-	container, repos, _, err := newContainerWithRepos(cfg)
+	container, repos, _, _, err := newContainerWithRepos(cfg)
 	if err != nil {
 		t.Fatalf("newContainerWithRepos: %v", err)
 	}
-	if _, err := buildHTTPHandler(cfg, container, repos); err == nil {
+	if _, err := buildHTTPHandler(cfg, container, repos, nil); err == nil {
 		t.Fatalf("expected buildHTTPHandler to fail when admin UI is enabled without SMTP")
 	}
 }

@@ -3108,7 +3108,7 @@ func newTestHandler(t *testing.T) (http.Handler, func() error) {
 	if err != nil {
 		t.Fatalf("build app container: %v", err)
 	}
-	return httpapi.NewRouter(container), closeFn
+	return httpapi.NewRouter(httpapi.RouterOptions{Services: container}), closeFn
 }
 
 func writeEdgeConfig(t *testing.T, dir string, cfg edgeConfigFile) string {

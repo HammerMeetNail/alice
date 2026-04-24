@@ -20,6 +20,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -53,13 +54,21 @@ type Services interface {
 }
 
 // Options bundles everything NewHandler needs. Required fields: Sessions,
-// Services, Audit. Optional: AllowedOrigins, DevMode, Logger.
+// Services, Audit. Optional: AllowedOrigins, DevMode, Logger,
+// SignInRatePerMin, TrustedProxies.
 type Options struct {
 	Sessions       *websession.Service
 	Services       Services
 	AllowedOrigins []string
 	DevMode        bool
 	Logger         *slog.Logger
+	// SignInRatePerMin is the maximum number of POST /admin/sign-in and
+	// POST /admin/sign-in/verify requests allowed per IP per minute.
+	// Zero disables the per-IP rate limit (useful in tests).
+	SignInRatePerMin float64
+	// TrustedProxies is the list of CIDRs from which X-Forwarded-For is
+	// trusted for IP-based rate limiting. Mirrors the JSON API setting.
+	TrustedProxies []*net.IPNet
 }
 
 // Handler serves the admin UI under /admin/*.
@@ -70,6 +79,7 @@ type Handler struct {
 	staticHandler  http.Handler
 	allowedOrigins map[string]struct{}
 	logger         *slog.Logger
+	signinLimiter  *signinRateLimiter // nil when rate limiting is disabled
 }
 
 // NewHandler builds the admin-UI HTTP handler. It returns an error only when
@@ -115,6 +125,9 @@ func NewHandler(opts Options) (*Handler, error) {
 		allowedOrigins: allowed,
 		logger:         logger,
 	}
+	if opts.SignInRatePerMin > 0 {
+		h.signinLimiter = newSigninRateLimiter(opts.SignInRatePerMin, opts.SignInRatePerMin)
+	}
 	h.registerRoutes()
 	return h, nil
 }
@@ -139,9 +152,9 @@ func (h *Handler) registerRoutes() {
 
 	h.mux.HandleFunc("GET /admin/", h.handleRoot)
 	h.mux.HandleFunc("GET /admin/sign-in", h.handleSignInPage)
-	h.mux.HandleFunc("POST /admin/sign-in", h.handleStartSignIn)
+	h.mux.Handle("POST /admin/sign-in", h.signInRateLimit(http.HandlerFunc(h.handleStartSignIn)))
 	h.mux.HandleFunc("GET /admin/sign-in/verify", h.handleVerifyPage)
-	h.mux.HandleFunc("POST /admin/sign-in/verify", h.handleCompleteSignIn)
+	h.mux.Handle("POST /admin/sign-in/verify", h.signInRateLimit(http.HandlerFunc(h.handleCompleteSignIn)))
 	h.mux.Handle("POST /admin/sign-out", h.requireSession(h.requireCSRF(http.HandlerFunc(h.handleSignOut))))
 	h.mux.Handle("GET /admin/dashboard", h.requireSession(http.HandlerFunc(h.handleDashboard)))
 	h.mux.Handle("GET /admin/pending-agents", h.requireSession(http.HandlerFunc(h.handlePendingAgents)))
@@ -149,6 +162,24 @@ func (h *Handler) registerRoutes() {
 	h.mux.Handle("GET /admin/invite-token", h.requireSession(http.HandlerFunc(h.handleInviteTokenPage)))
 	h.mux.Handle("POST /admin/invite-token/rotate", h.requireSession(h.requireCSRF(http.HandlerFunc(h.handleRotateInvite))))
 	h.mux.Handle("GET /admin/audit", h.requireSession(http.HandlerFunc(h.handleAudit)))
+}
+
+// signInRateLimit wraps a handler with a per-IP rate limiter on the admin
+// sign-in endpoints. When no limiter is configured (SignInRatePerMin == 0)
+// the handler is returned as-is.
+func (h *Handler) signInRateLimit(next http.Handler) http.Handler {
+	if h.signinLimiter == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := adminClientIP(r, h.opts.TrustedProxies)
+		if !h.signinLimiter.allow(ip) {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // applySecurityHeaders is called for every admin response. HTML pages get

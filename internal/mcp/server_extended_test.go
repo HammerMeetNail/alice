@@ -89,7 +89,7 @@ func TestToolCallWithExpiredToken(t *testing.T) {
 	if closeFn != nil {
 		t.Cleanup(func() { _ = closeFn() })
 	}
-	handler := &httpapiTestHandler{handler: httpapi.NewRouter(container)}
+	handler := &httpapiTestHandler{handler: httpapi.NewRouter(httpapi.RouterOptions{Services: container})}
 	server := NewServer(handler)
 
 	fixture := newFixture(t)

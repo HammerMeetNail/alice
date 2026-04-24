@@ -1,0 +1,36 @@
+# Ingress for nginx ingress controller with cert-manager TLS.
+# Adjust annotations for your controller (Traefik, Caddy, ALB, etc.).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: alice-server
+  namespace: alice
+  labels:
+    app.kubernetes.io/name: alice
+    app.kubernetes.io/component: server
+  annotations:
+    # cert-manager: issue a Let's Encrypt certificate automatically.
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    #
+    # nginx: strip forwarded-for headers from untrusted IPs, then add real IP.
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "Strict-Transport-Security: max-age=63072000; includeSubDomains; preload";
+spec:
+  # ingressClassName: nginx
+  # tls:
+  #   - hosts:
+  #       - alice.example.com
+  #     secretName: alice-tls
+  rules:
+    - host: alice.example.com   # replace with your hostname
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: alice-server
+                port:
+                  name: http

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1016,5 +1017,117 @@ func TestRootRedirectsBasedOnSession(t *testing.T) {
 	f.handler.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusSeeOther || rec2.Header().Get("Location") != "/admin/dashboard" {
 		t.Fatalf("authenticated root redirect = %d %q", rec2.Code, rec2.Header().Get("Location"))
+	}
+}
+
+// TestSignInRateLimit verifies that sign-in requests from the same IP are
+// throttled after the burst is exhausted, and that a 429 is returned.
+func TestSignInRateLimit(t *testing.T) {
+	lookup := &stubLookupAdmin{target: websession.AdminTarget{
+		UserID:  "u-rl",
+		OrgID:   "o-rl",
+		AgentID: "a-rl",
+		Email:   "rl@example.com",
+	}}
+	sessions := websession.NewService(websession.Options{
+		Lookup:        lookup,
+		Mailer:        &capturingMailer{},
+		SessionTTL:    time.Hour,
+		SignInTTL:     10 * time.Minute,
+		MaxAttempts:   5,
+		CookieSecure:  false,
+		SessionCookie: "alice_admin_session",
+		CSRFCookie:    "alice_admin_csrf",
+		CookiePath:    "/admin",
+	})
+	// Burst of 1: the first request consumes the single token, the next must wait.
+	h, err := NewHandler(Options{
+		Sessions:          sessions,
+		Services:          &stubServices{},
+		DevMode:           true,
+		SignInRatePerMin:  1,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	post := func(remoteAddr string) int {
+		form := url.Values{"org_slug": {"acme"}, "email": {"rl@example.com"}}
+		req := httptest.NewRequest(http.MethodPost, "/admin/sign-in", strings.NewReader(form.Encode()))
+		req.RemoteAddr = remoteAddr
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// First request from 10.0.0.1 consumes the burst token.
+	if got := post("10.0.0.1:9999"); got == http.StatusTooManyRequests {
+		t.Fatalf("first request should not be throttled, got 429")
+	}
+	// Second request immediately from same IP must be throttled.
+	if got := post("10.0.0.1:9999"); got != http.StatusTooManyRequests {
+		t.Fatalf("second request from same IP should be throttled, got %d", got)
+	}
+	// Request from a different IP still has a full bucket.
+	if got := post("10.0.0.2:9999"); got == http.StatusTooManyRequests {
+		t.Fatalf("request from different IP should not be throttled, got 429")
+	}
+}
+
+// TestSignInRateLimitTrustedProxy verifies that when the request arrives from a
+// trusted proxy the limiter keys on the XFF client IP, not the proxy IP.
+func TestSignInRateLimitTrustedProxy(t *testing.T) {
+	lookup := &stubLookupAdmin{target: websession.AdminTarget{
+		UserID:  "u-tp",
+		OrgID:   "o-tp",
+		AgentID: "a-tp",
+		Email:   "tp@example.com",
+	}}
+	sessions := websession.NewService(websession.Options{
+		Lookup:        lookup,
+		Mailer:        &capturingMailer{},
+		SessionTTL:    time.Hour,
+		SignInTTL:     10 * time.Minute,
+		MaxAttempts:   5,
+		CookieSecure:  false,
+		SessionCookie: "alice_admin_session",
+		CSRFCookie:    "alice_admin_csrf",
+		CookiePath:    "/admin",
+	})
+	_, proxyNet, _ := net.ParseCIDR("10.1.0.0/24") // the proxy lives here
+	h, err := NewHandler(Options{
+		Sessions:         sessions,
+		Services:         &stubServices{},
+		DevMode:          true,
+		SignInRatePerMin: 1,
+		TrustedProxies:   []*net.IPNet{proxyNet},
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	postViaProxy := func(clientIP string) int {
+		form := url.Values{"org_slug": {"acme"}, "email": {"tp@example.com"}}
+		req := httptest.NewRequest(http.MethodPost, "/admin/sign-in", strings.NewReader(form.Encode()))
+		req.RemoteAddr = "10.1.0.5:1234" // trusted proxy
+		req.Header.Set("X-Forwarded-For", clientIP)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Client 192.0.2.10: first request uses the burst token.
+	if got := postViaProxy("192.0.2.10"); got == http.StatusTooManyRequests {
+		t.Fatalf("first proxied request should not be throttled, got 429")
+	}
+	// Same client: second request is throttled.
+	if got := postViaProxy("192.0.2.10"); got != http.StatusTooManyRequests {
+		t.Fatalf("second proxied request from same XFF IP should be throttled, got %d", got)
+	}
+	// Different client IP via same proxy: different bucket, not throttled.
+	if got := postViaProxy("192.0.2.11"); got == http.StatusTooManyRequests {
+		t.Fatalf("request from different XFF client IP should not be throttled, got 429")
 	}
 }

@@ -25,6 +25,8 @@ type AgentService interface {
 	UpdateGatekeeperTuning(ctx context.Context, agent core.Agent, threshold *float64, window *time.Duration) (core.Organization, error)
 	ListPendingAgentApprovals(ctx context.Context, orgID, callerAgentID string, limit, offset int) ([]core.AgentApproval, error)
 	ReviewAgentApproval(ctx context.Context, orgID, targetAgentID, callerAgentID, decision, reason string) error
+	DeleteSelf(ctx context.Context, callerAgent core.Agent) error
+	DeleteOrg(ctx context.Context, callerAgent core.Agent, callerUser core.User, orgSlug string) error
 }
 
 type ArtifactService interface {

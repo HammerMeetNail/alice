@@ -30,6 +30,8 @@ Quick status view. Every unchecked item points at a plan in `docs/plans/` that a
 
 - [x] Test coverage threshold, e2e tracker test, audit NDJSON sink
 - [x] Admin UI + CORS/CSRF (feature-flagged, email-OTP sign-in, double-submit CSRF, strict CSP)
+- [x] Production readiness: metrics endpoint, access log, request-ID, livez/readyz, per-agent rate limits, HSTS, trusted-proxy IP extraction, DELETE /v1/users/me, DELETE /v1/orgs/:slug
+- [x] Production readiness (continued): Prometheus metrics tests, release + nightly workflow, govulncheck CI, Dependabot, docs/operations.md, docs/incident-response.md, deploy/kubernetes/ manifests, cmd/alice-gc GC job, email SMTP tests, test-cover-postgres with 75% threshold
 
 ---
 

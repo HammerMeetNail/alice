@@ -1,0 +1,42 @@
+---
+# PodDisruptionBudget: ensure at least one replica is always available
+# during voluntary disruptions (node drains, rolling updates).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: alice-server
+  namespace: alice
+  labels:
+    app.kubernetes.io/name: alice
+    app.kubernetes.io/component: server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alice
+      app.kubernetes.io/component: server
+---
+# HorizontalPodAutoscaler: scale alice-server based on CPU utilisation.
+# Tune min/max/target to match your traffic profile.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: alice-server
+  namespace: alice
+  labels:
+    app.kubernetes.io/name: alice
+    app.kubernetes.io/component: server
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: alice-server
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

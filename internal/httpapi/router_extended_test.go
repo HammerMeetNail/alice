@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -33,7 +34,7 @@ func newTestHandlerWithApprovals(t *testing.T) http.Handler {
 	policySvc := policy.NewService(store)
 	agentService := agents.NewService(store, store, store, store, store, cfg, store).
 		WithApprovalRepository(store)
-	return NewRouter(services.Container{
+	return NewRouter(RouterOptions{Services: services.Container{
 		Agents:    agentService,
 		Artifacts: artifactSvc,
 		Policy:    policySvc,
@@ -41,7 +42,7 @@ func newTestHandlerWithApprovals(t *testing.T) http.Handler {
 		Requests:  requests.NewService(store, store, store),
 		Approvals: approvals.NewService(store, store, store, store),
 		Audit:     audit.NewService(store),
-	})
+	}})
 }
 
 func TestHealthz(t *testing.T) {
@@ -439,5 +440,141 @@ func TestListAllowedPeers_AfterGrant(t *testing.T) {
 	peers := payload["peers"].([]any)
 	if len(peers) != 1 {
 		t.Fatalf("expected 1 peer after grant, got %d", len(peers))
+	}
+}
+func TestLivez(t *testing.T) {
+	handler := newTestHandler(t, "")
+	rec := performJSON(t, handler, http.MethodGet, "/livez", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+// TestReadyz checks that GET /readyz returns 200 when no pinger is configured.
+func TestReadyz(t *testing.T) {
+	handler := newTestHandler(t, "")
+	rec := performJSON(t, handler, http.MethodGet, "/readyz", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+// TestReadyz_PingerFails checks that GET /readyz returns 503 when the pinger
+// returns an error.
+func TestReadyz_PingerFails(t *testing.T) {
+	store := memory.New()
+	cfg := config.Config{
+		AuthChallengeTTL: 5 * time.Minute,
+		AuthTokenTTL:     time.Hour,
+		DefaultOrgName:   "Test Org",
+	}
+	artSvc := artifacts.NewService(store)
+	polSvc := policy.NewService(store)
+	agentSvc := agents.NewService(store, store, store, store, store, cfg, store).
+		WithApprovalRepository(store)
+
+	failingHandler := NewRouter(RouterOptions{
+		Services: services.Container{
+			Agents:    agentSvc,
+			Artifacts: artSvc,
+			Policy:    polSvc,
+			Queries:   queries.NewService(store, artSvc, polSvc, store, store),
+			Requests:  requests.NewService(store, store, store),
+			Approvals: approvals.NewService(store, store, store, store),
+			Audit:     audit.NewService(store),
+		},
+		Pinger: func(ctx context.Context) error {
+			return core.ValidationError{Message: "db down"}
+		},
+	})
+
+	rec := performJSON(t, failingHandler, http.MethodGet, "/readyz", "", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRequestIDHeader checks that every response carries an X-Request-ID.
+func TestRequestIDHeader(t *testing.T) {
+	handler := newTestHandler(t, "")
+	rec := performJSON(t, handler, http.MethodGet, "/healthz", "", nil)
+	if rec.Header().Get("X-Request-ID") == "" {
+		t.Fatal("expected X-Request-ID response header to be set")
+	}
+}
+
+// TestSecurityHeaders checks that key security headers are present on every response.
+func TestSecurityHeaders(t *testing.T) {
+	handler := newTestHandler(t, "")
+	rec := performJSON(t, handler, http.MethodGet, "/healthz", "", nil)
+	if rec.Header().Get("X-Content-Type-Options") == "" {
+		t.Error("expected X-Content-Type-Options header")
+	}
+	if rec.Header().Get("Content-Security-Policy") == "" {
+		t.Error("expected Content-Security-Policy header")
+	}
+	if rec.Header().Get("X-Frame-Options") == "" {
+		t.Error("expected X-Frame-Options header")
+	}
+}
+
+// TestDeleteSelf registers an agent and immediately deletes itself; subsequent
+// requests with the same token must return 401.
+func TestDeleteSelf(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	alice := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	// Delete self — expect 204.
+	rec := performJSON(t, handler, http.MethodDelete, "/v1/users/me", alice.AccessToken, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete self status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Subsequent request with the same token should be 401 (token revoked).
+	rec2 := performJSON(t, handler, http.MethodGet, "/v1/peers", alice.AccessToken, nil)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after deletion, got %d body=%s", rec2.Code, rec2.Body.String())
+	}
+}
+
+// TestDeleteSelf_Unauthenticated checks that DELETE /v1/users/me without a
+// token returns 401.
+func TestDeleteSelf_Unauthenticated(t *testing.T) {
+	handler := newTestHandler(t, "")
+	rec := performJSON(t, handler, http.MethodDelete, "/v1/users/me", "", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+// TestDeleteOrg_NonAdmin checks that a non-admin agent cannot delete the org.
+func TestDeleteOrg_NonAdmin(t *testing.T) {
+	handler := newTestHandler(t, "")
+	fixture := newFixture(t)
+
+	// Register two agents; first is admin, second is a regular member.
+	_ = registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+	bob := registerAgent(t, handler, fixture.OrgSlug, fixture.BobEmail)
+
+	// Bob is not an admin — deletion should be 403.
+	rec := performJSON(t, handler, http.MethodDelete, "/v1/orgs/"+fixture.OrgSlug, bob.AccessToken, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDeleteOrg_NoSlug checks that DELETE /v1/orgs/ (no slug) returns 400.
+func TestDeleteOrg_NoSlug(t *testing.T) {
+	handler := newTestHandlerWithApprovals(t)
+	fixture := newFixture(t)
+
+	// Register as admin (first registrant).
+	admin := registerAgent(t, handler, fixture.OrgSlug, fixture.AliceEmail)
+
+	rec := performJSON(t, handler, http.MethodDelete, "/v1/orgs/", admin.AccessToken, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

@@ -29,4 +29,7 @@ var (
 	ErrNotOrgAdmin             = errors.New("caller is not an org admin")
 	ErrAgentRejected           = errors.New("agent has been rejected")
 	ErrAgentApprovalNotFound   = errors.New("agent approval not found")
+
+	// Org lifecycle errors.
+	ErrOrgSlugTaken = errors.New("org slug already taken and cannot be reused")
 )

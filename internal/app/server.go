@@ -20,6 +20,7 @@ import (
 	"alice/internal/email"
 	"alice/internal/gatekeeper"
 	"alice/internal/httpapi"
+	"alice/internal/metrics"
 	"alice/internal/orggraph"
 	"alice/internal/policy"
 	"alice/internal/queries"
@@ -30,11 +31,14 @@ import (
 	"alice/internal/storage/postgres"
 	"alice/internal/webui"
 	"alice/internal/websession"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type Server struct {
-	httpServer *http.Server
-	closeFn    func() error
+	httpServer     *http.Server
+	metricsServer  *http.Server
+	closeFn        func() error
 }
 
 type repositories interface {
@@ -59,12 +63,12 @@ type repositories interface {
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
-	container, repos, closeFn, err := newContainerWithRepos(cfg)
+	container, repos, pgStore, closeFn, err := newContainerWithRepos(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	handler, err := buildHTTPHandler(cfg, container, repos)
+	handler, err := buildHTTPHandler(cfg, container, repos, pgStore)
 	if err != nil {
 		if closeFn != nil {
 			_ = closeFn()
@@ -72,7 +76,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 
-	return &Server{
+	srv := &Server{
 		httpServer: &http.Server{
 			Addr:              cfg.ListenAddr,
 			Handler:           handler,
@@ -83,14 +87,47 @@ func NewServer(cfg config.Config) (*Server, error) {
 			MaxHeaderBytes:    1 << 20,
 		},
 		closeFn: closeFn,
-	}, nil
+	}
+
+	// Start a separate Prometheus metrics listener when configured.
+	if cfg.MetricsAddr != "" {
+		var db metrics.DBStatsGetter
+		if pgStore != nil {
+			db = pgStore
+		}
+		if regErr := metrics.Register(prometheus.DefaultRegisterer, db); regErr != nil {
+			slog.Warn("metrics registration failed; some metrics will be unavailable", "err", regErr)
+		}
+		srv.metricsServer = &http.Server{
+			Addr:              cfg.MetricsAddr,
+			Handler:           metrics.Handler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      10 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+	}
+
+	return srv, nil
 }
 
 // buildHTTPHandler composes the JSON API with the optional admin UI. When
 // the admin UI is disabled the JSON API handler is returned as-is, so
 // /admin/* falls through to the default 404 behaviour of the API mux.
-func buildHTTPHandler(cfg config.Config, container services.Container, repos repositories) (http.Handler, error) {
-	apiHandler := httpapi.NewRouter(container)
+func buildHTTPHandler(cfg config.Config, container services.Container, repos repositories, pgStore *postgres.Store) (http.Handler, error) {
+	var pinger func(ctx context.Context) error
+	if pgStore != nil {
+		pinger = pgStore.Ping
+	}
+
+	apiHandler := httpapi.NewRouter(httpapi.RouterOptions{
+		Services:              container,
+		Pinger:                pinger,
+		TLSTerminated:         cfg.TLSTerminated,
+		TrustedProxies:        httpapi.ParseCIDRs(cfg.TrustedProxies),
+		AgentRatePerMin:       cfg.RateLimitAgentPerMin,
+		AdminSignInRatePerMin: cfg.RateLimitAdminSignInPerMin,
+	})
 	if !cfg.AdminUIEnabled {
 		return apiHandler, nil
 	}
@@ -112,10 +149,12 @@ func buildHTTPHandler(cfg config.Config, container services.Container, repos rep
 	})
 
 	adminHandler, err := webui.NewHandler(webui.Options{
-		Sessions:       sessionSvc,
-		Services:       adminServices{container: container},
-		AllowedOrigins: cfg.AdminUIAllowedOrigins,
-		DevMode:        cfg.AdminUIDevMode,
+		Sessions:         sessionSvc,
+		Services:         adminServices{container: container},
+		AllowedOrigins:   cfg.AdminUIAllowedOrigins,
+		DevMode:          cfg.AdminUIDevMode,
+		SignInRatePerMin: cfg.RateLimitAdminSignInPerMin,
+		TrustedProxies:   httpapi.ParseCIDRs(cfg.TrustedProxies),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build admin UI: %w", err)
@@ -174,40 +213,54 @@ func (a adminServices) RecordAudit(ctx context.Context, eventKind, subjectType, 
 }
 
 func (s *Server) Start() error {
+	if s.metricsServer != nil {
+		go func() {
+			slog.Info("metrics listener starting", "addr", s.metricsServer.Addr)
+			if err := s.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("metrics listener stopped", "err", err)
+			}
+		}()
+	}
 	return s.httpServer.ListenAndServe()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	shutdownErr := s.httpServer.Shutdown(ctx)
-	if s.closeFn == nil {
-		return shutdownErr
+	var errs []error
+	errs = append(errs, s.httpServer.Shutdown(ctx))
+	if s.metricsServer != nil {
+		errs = append(errs, s.metricsServer.Shutdown(ctx))
 	}
-	return errors.Join(shutdownErr, s.closeFn())
+	if s.closeFn != nil {
+		errs = append(errs, s.closeFn())
+	}
+	return errors.Join(errs...)
 }
 
 func NewContainer(cfg config.Config) (services.Container, func() error, error) {
-	container, _, closeFn, err := newContainerWithRepos(cfg)
+	container, _, _, closeFn, err := newContainerWithRepos(cfg)
 	return container, closeFn, err
 }
 
 // newContainerWithRepos is like NewContainer but also returns the
 // repositories handle so the admin UI can reach the storage layer for
 // the org-slug lookup the JSON surface doesn't expose today.
-func newContainerWithRepos(cfg config.Config) (services.Container, repositories, func() error, error) {
+// pgStore is non-nil only when PostgreSQL is in use; it is used for
+// health-check pinging and DB-pool metrics.
+func newContainerWithRepos(cfg config.Config) (services.Container, repositories, *postgres.Store, func() error, error) {
 	if cfg.DatabaseURL != "" {
 		store, err := postgres.Open(context.Background(), cfg.DatabaseURL)
 		if err != nil {
-			return services.Container{}, nil, nil, fmt.Errorf("open postgres store: %w", err)
+			return services.Container{}, nil, nil, nil, fmt.Errorf("open postgres store: %w", err)
 		}
 		if err := store.Migrate(context.Background()); err != nil {
 			_ = store.Close()
-			return services.Container{}, nil, nil, fmt.Errorf("migrate postgres store: %w", err)
+			return services.Container{}, nil, nil, nil, fmt.Errorf("migrate postgres store: %w", err)
 		}
-		return buildContainer(store, cfg), store, store.Close, nil
+		return buildContainer(store, cfg), store, store, store.Close, nil
 	}
 
 	store := memory.New()
-	return buildContainer(store, cfg), store, nil, nil
+	return buildContainer(store, cfg), store, nil, nil, nil
 }
 
 func buildContainer(repos repositories, cfg config.Config) services.Container {

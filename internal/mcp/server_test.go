@@ -214,7 +214,7 @@ func TestToolFlowRemoteServer(t *testing.T) {
 		t.Cleanup(func() { _ = closeFn() })
 	}
 
-	ts := httptest.NewServer(httpapi.NewRouter(container))
+	ts := httptest.NewServer(httpapi.NewRouter(httpapi.RouterOptions{Services: container}))
 	t.Cleanup(ts.Close)
 
 	fixture := newFixture(t)
@@ -339,7 +339,7 @@ func newTestHandler(t *testing.T) *httpapiTestHandler {
 		})
 	}
 
-	return &httpapiTestHandler{handler: httpapi.NewRouter(container)}
+	return &httpapiTestHandler{handler: httpapi.NewRouter(httpapi.RouterOptions{Services: container})}
 }
 
 type httpapiTestHandler struct {

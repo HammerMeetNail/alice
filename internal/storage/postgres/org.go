@@ -59,7 +59,7 @@ func (s *Store) FindOrganizationByID(ctx context.Context, orgID string) (core.Or
 func (s *Store) FindOrgBySlug(ctx context.Context, slug string) (core.Organization, error) {
 	org, err := scanOrganization(s.db.QueryRowContext(
 		ctx,
-		orgSelectColumns+` FROM organizations WHERE slug = $1`,
+		orgSelectColumns+` FROM organizations WHERE slug = $1 AND status != 'deleted'`,
 		normalizeSlug(slug),
 	))
 	if err != nil {
@@ -91,6 +91,22 @@ func (s *Store) SetOrgInviteTokenHash(ctx context.Context, orgID, hash string) e
 	)
 	if err != nil {
 		return fmt.Errorf("set org invite token hash: %w", err)
+	}
+	return nil
+}
+
+// SoftDeleteOrg marks the org as deleted.
+func (s *Store) SoftDeleteOrg(ctx context.Context, orgID string) error {
+	res, err := s.db.ExecContext(
+		ctx,
+		`UPDATE organizations SET status = 'deleted' WHERE org_id = $1`,
+		orgID,
+	)
+	if err != nil {
+		return fmt.Errorf("soft delete org: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return storage.ErrOrgNotFound
 	}
 	return nil
 }

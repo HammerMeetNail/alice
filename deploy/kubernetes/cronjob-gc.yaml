@@ -1,0 +1,70 @@
+# CronJob that runs alice-gc on a regular schedule to prune expired rows.
+#
+# alice-gc removes:
+#   - expired registration challenges
+#   - expired / revoked bearer tokens
+#   - expired email-verification records
+#   - old audit events (opt-in: set ALICE_AUDIT_RETENTION=90d in the env)
+#
+# Note: alice-gc does NOT remove policy grants or approvals.  Those records
+# are filtered at query time by the service layer and must be managed manually
+# or via a future dedicated pruning command.
+#
+# The job connects directly to the same PostgreSQL database as alice-server,
+# so it must share the ALICE_DATABASE_URL secret.
+#
+# Default schedule: every 6 hours.  Adjust `schedule` to taste.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: alice-gc
+  namespace: alice
+  labels:
+    app.kubernetes.io/name: alice
+    app.kubernetes.io/component: gc
+spec:
+  schedule: "0 */6 * * *"   # every 6 hours
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid   # skip if the previous run is still going
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300   # kill after 5 minutes if still running
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: alice
+            app.kubernetes.io/component: gc
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: alice-gc
+              image: ghcr.io/anomalyco/alice-gc:latest  # pin to a digest in production
+              imagePullPolicy: IfNotPresent
+              args: []
+              env:
+                - name: ALICE_DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: alice-server   # reuse the same secret as alice-server
+                      key: ALICE_DATABASE_URL
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "32Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]

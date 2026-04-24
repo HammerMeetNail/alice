@@ -117,6 +117,12 @@ func (s *Store) UpsertOrganization(_ context.Context, org core.Organization) (co
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Reject slug collisions unconditionally — even against deleted orgs.
+	// Org deletion is terminal; slugs must never be silently reused.
+	if existingID, taken := s.orgsBySlug[normalizeSlug(org.Slug)]; taken && existingID != org.OrgID {
+		return core.Organization{}, storage.ErrOrgSlugTaken
+	}
+
 	s.organizations[org.OrgID] = org
 	s.orgsBySlug[normalizeSlug(org.Slug)] = org.OrgID
 	return org, nil
@@ -131,7 +137,10 @@ func (s *Store) FindOrganizationBySlug(_ context.Context, slug string) (core.Org
 		return core.Organization{}, false, nil
 	}
 	org, ok := s.organizations[orgID]
-	return org, ok, nil
+	if !ok || org.Status == "deleted" {
+		return core.Organization{}, false, nil
+	}
+	return org, true, nil
 }
 
 func (s *Store) FindOrganizationByID(_ context.Context, orgID string) (core.Organization, bool, error) {
@@ -151,7 +160,7 @@ func (s *Store) FindOrgBySlug(_ context.Context, slug string) (core.Organization
 		return core.Organization{}, storage.ErrOrgNotFound
 	}
 	org, ok := s.organizations[orgID]
-	if !ok {
+	if !ok || org.Status == "deleted" {
 		return core.Organization{}, storage.ErrOrgNotFound
 	}
 	return org, nil
@@ -247,6 +256,53 @@ func (s *Store) UpdateUserRole(_ context.Context, userID, role string) error {
 	}
 	user.Role = role
 	s.users[userID] = user
+	return nil
+}
+
+// SoftDeleteUser marks the user as deleted and scrubs PII fields.
+func (s *Store) SoftDeleteUser(_ context.Context, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	user, ok := s.users[userID]
+	if !ok {
+		return fmt.Errorf("user not found: %s", userID)
+	}
+	// Remove from the email-keyed index so the email cannot be looked up.
+	delete(s.usersByOrgEmail, user.OrgID+":"+normalizeEmail(user.Email))
+	// Scrub PII.
+	user.Email = "[deleted]"
+	user.DisplayName = "[deleted]"
+	user.Status = "deleted"
+	s.users[userID] = user
+	return nil
+}
+
+// ListUserIDsByOrg returns the IDs of all non-deleted users in the org.
+func (s *Store) ListUserIDsByOrg(_ context.Context, orgID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var ids []string
+	for _, u := range s.users {
+		if u.OrgID == orgID && u.Status != "deleted" {
+			ids = append(ids, u.UserID)
+		}
+	}
+	return ids, nil
+}
+
+// SoftDeleteOrg marks the org as deleted.
+func (s *Store) SoftDeleteOrg(_ context.Context, orgID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	org, ok := s.organizations[orgID]
+	if !ok {
+		return storage.ErrOrgNotFound
+	}
+	org.Status = "deleted"
+	s.organizations[orgID] = org
 	return nil
 }
 

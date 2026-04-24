@@ -18,6 +18,11 @@ var ErrVerificationNotFound = errors.New("email verification not found")
 // ErrOrgNotFound is returned when no organization matches the given criteria.
 var ErrOrgNotFound = errors.New("organization not found")
 
+// ErrOrgSlugTaken is returned by UpsertOrganization when the requested slug
+// is already held by an existing (or soft-deleted) organization.  Org deletion
+// is terminal; slugs cannot be reused.
+var ErrOrgSlugTaken = errors.New("org slug already taken and cannot be reused")
+
 // ErrAgentApprovalNotFound is returned when no agent approval record exists.
 var ErrAgentApprovalNotFound = errors.New("agent approval not found")
 
@@ -33,6 +38,12 @@ type OrganizationRepository interface {
 	// server-wide default".
 	UpdateGatekeeperTuning(ctx context.Context, orgID string, threshold *float64, window *time.Duration) error
 	FindOrgBySlug(ctx context.Context, slug string) (core.Organization, error)
+	// SoftDeleteOrg marks the org as deleted. All users and agents within the
+	// org must be soft-deleted by the caller before (or within the same tx).
+	SoftDeleteOrg(ctx context.Context, orgID string) error
+	// ListUserIDsByOrg returns all userIDs that belong to an org. Used by the
+	// delete-org flow to cascade user/agent soft-deletion.
+	ListUserIDsByOrg(ctx context.Context, orgID string) ([]string, error)
 }
 
 type UserRepository interface {
@@ -40,6 +51,9 @@ type UserRepository interface {
 	FindUserByEmail(ctx context.Context, orgID, email string) (core.User, bool, error)
 	FindUserByID(ctx context.Context, userID string) (core.User, bool, error)
 	UpdateUserRole(ctx context.Context, userID, role string) error
+	// SoftDeleteUser marks the user as deleted and clears PII fields (email,
+	// display_name). Audit references to the userID remain intact.
+	SoftDeleteUser(ctx context.Context, userID string) error
 }
 
 type AgentApprovalRepository interface {

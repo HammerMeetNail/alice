@@ -1,0 +1,68 @@
+# NetworkPolicy: deny all egress except to the database (5432) and SMTP (587/465/25).
+# Adjust the DB CIDR and SMTP CIDR below to match your network topology.
+# Without a `to:` field a port-only rule matches ANY destination on that port,
+# which effectively allows unrestricted egress — not what we want.
+#
+# Ingress is unrestricted at the pod level; the Service + Ingress enforce access.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alice-server
+  namespace: alice
+  labels:
+    app.kubernetes.io/name: alice
+    app.kubernetes.io/component: server
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: alice
+      app.kubernetes.io/component: server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from the ingress controller namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Allow Prometheus scraping from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9090
+          protocol: TCP
+  egress:
+    # PostgreSQL — replace 10.0.0.0/24 with your actual database CIDR.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/24   # TODO: set to your PostgreSQL host CIDR
+      ports:
+        - port: 5432
+          protocol: TCP
+    # SMTP (STARTTLS, TLS, plain) — replace 10.0.1.0/24 with your SMTP server CIDR.
+    - to:
+        - ipBlock:
+            cidr: 10.0.1.0/24   # TODO: set to your SMTP relay CIDR
+      ports:
+        - port: 587
+          protocol: TCP
+        - port: 465
+          protocol: TCP
+        - port: 25
+          protocol: TCP
+    # DNS — restrict to the cluster DNS service (kube-dns default: 10.96.0.10/32).
+    # Adjust to match your cluster's DNS service IP (kubectl get svc -n kube-system kube-dns).
+    - to:
+        - ipBlock:
+            cidr: 10.96.0.10/32  # TODO: set to your cluster DNS service IP
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

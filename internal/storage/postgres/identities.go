@@ -3,11 +3,15 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
+
 	"alice/internal/core"
+	"alice/internal/storage"
 )
 
 func (s *Store) UpsertOrganization(ctx context.Context, org core.Organization) (core.Organization, error) {
@@ -44,6 +48,10 @@ func (s *Store) UpsertOrganization(ctx context.Context, org core.Organization) (
 		lookback,
 	)
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" && strings.Contains(pqErr.Constraint, "slug") {
+			return core.Organization{}, storage.ErrOrgSlugTaken
+		}
 		return core.Organization{}, fmt.Errorf("upsert organization: %w", err)
 	}
 	return org, nil
@@ -52,7 +60,7 @@ func (s *Store) UpsertOrganization(ctx context.Context, org core.Organization) (
 func (s *Store) FindOrganizationBySlug(ctx context.Context, slug string) (core.Organization, bool, error) {
 	org, err := scanOrganization(s.db.QueryRowContext(
 		ctx,
-		orgSelectColumns+` FROM organizations WHERE slug = $1`,
+		orgSelectColumns+` FROM organizations WHERE slug = $1 AND status != 'deleted'`,
 		normalizeSlug(slug),
 	))
 	if err != nil {
@@ -237,6 +245,45 @@ func (s *Store) FindAgentByUserID(ctx context.Context, userID string) (core.Agen
 		return core.Agent{}, false, fmt.Errorf("find agent by user id: %w", err)
 	}
 	return agent, true, nil
+}
+
+// SoftDeleteUser marks the user deleted and scrubs PII fields.
+func (s *Store) SoftDeleteUser(ctx context.Context, userID string) error {
+	res, err := s.db.ExecContext(
+		ctx,
+		`UPDATE users SET status = 'deleted', email = '[deleted]', display_name = '[deleted]' WHERE user_id = $1`,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("soft delete user: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("user not found: %s", userID)
+	}
+	return nil
+}
+
+// ListUserIDsByOrg returns the IDs of all non-deleted users in the org.
+func (s *Store) ListUserIDsByOrg(ctx context.Context, orgID string) ([]string, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT user_id FROM users WHERE org_id = $1 AND status != 'deleted'`,
+		orgID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list users by org: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan user id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func nullString(value string) sql.NullString {

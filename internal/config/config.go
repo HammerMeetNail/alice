@@ -15,6 +15,31 @@ type Config struct {
 	AuthChallengeTTL time.Duration
 	AuthTokenTTL     time.Duration
 
+	// Observability.
+	//
+	// MetricsAddr is the address for the Prometheus /metrics listener.
+	// Empty string disables the metrics endpoint (default).
+	MetricsAddr string
+
+	// Security hardening.
+	//
+	// TLSTerminated controls whether HSTS is added to responses.
+	// Set true when the server sits behind a TLS-terminating reverse proxy
+	// and the X-Forwarded-Proto: https header is present.
+	TLSTerminated bool
+	// TrustedProxies is a comma-separated list of CIDR ranges whose
+	// X-Forwarded-For header is trusted for client-IP extraction. When a
+	// request arrives from an IP in this list the rightmost untrusted hop in
+	// X-Forwarded-For is used as the client IP; otherwise RemoteAddr is used.
+	TrustedProxies []string
+	// RateLimitAgentPerMin is the per-agent token-bucket rate on the heavy
+	// authenticated endpoints (POST /v1/queries, /v1/requests, /v1/artifacts).
+	// 0 disables per-agent limiting (default: 60).
+	RateLimitAgentPerMin float64
+	// RateLimitAdminSignInPerMin is the per-IP rate limit on the admin UI
+	// sign-in flow. 0 uses the default of 10.
+	RateLimitAdminSignInPerMin float64
+
 	// SMTP configuration for email OTP verification.
 	SMTPHost     string
 	SMTPPort     int
@@ -74,6 +99,12 @@ func FromEnv() Config {
 		AuthChallengeTTL: durationFromEnv("ALICE_AUTH_CHALLENGE_TTL", 5*time.Minute),
 		AuthTokenTTL:     durationFromEnv("ALICE_AUTH_TOKEN_TTL", 15*time.Minute),
 
+		MetricsAddr:                strings.TrimSpace(os.Getenv("ALICE_METRICS_ADDR")),
+		TLSTerminated:              boolFromEnv("ALICE_TLS_TERMINATED", false),
+		TrustedProxies:             splitCSVFromEnv("ALICE_TRUSTED_PROXIES"),
+		RateLimitAgentPerMin:       floatFromEnvUnbounded("ALICE_RATE_LIMIT_AGENT_PER_MIN", 60),
+		RateLimitAdminSignInPerMin: floatFromEnvUnbounded("ALICE_RATE_LIMIT_ADMIN_SIGNIN_PER_MIN", 10),
+
 		SMTPHost:     smtpHost,
 		SMTPPort:     smtpPort,
 		SMTPUsername: strings.TrimSpace(os.Getenv("ALICE_SMTP_USERNAME")),
@@ -119,6 +150,19 @@ func floatFromEnv(key string, fallback float64) float64 {
 	}
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil || value < 0 || value > 1 {
+		return fallback
+	}
+	return value
+}
+
+// floatFromEnvUnbounded is like floatFromEnv but accepts any non-negative value.
+func floatFromEnvUnbounded(key string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value < 0 {
 		return fallback
 	}
 	return value

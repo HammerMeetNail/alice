@@ -49,7 +49,7 @@ func main() {
 	}
 
 	server := mcp.NewServer(
-		httpapi.NewRouter(container),
+		httpapi.NewRouter(httpapi.RouterOptions{Services: container}),
 		mcp.WithAccessToken(accessToken),
 	)
 	startTracker(ctx, server)

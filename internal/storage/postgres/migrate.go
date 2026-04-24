@@ -13,7 +13,19 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
+// migrationLockKey is the pg_advisory_lock key used to serialise migrations
+// across replicas. The value is arbitrary but must be stable across deployments.
+const migrationLockKey = 7349_2181_4413 // "alice migrations"
+
 func (s *Store) Migrate(ctx context.Context) error {
+	// Acquire a session-level advisory lock so that only one replica runs
+	// migrations at a time. The lock is released automatically when the
+	// connection is returned to the pool (or closed), which happens at the
+	// end of this function.
+	if _, err := s.rawDB.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() { _, _ = s.rawDB.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, migrationLockKey) }()
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version INTEGER PRIMARY KEY,

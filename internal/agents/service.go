@@ -586,6 +586,9 @@ func upsertRegisteredAgentTx(ctx context.Context, tx storage.StoreTx, orgSlug, o
 		}
 		org, err = tx.UpsertOrganization(ctx, org)
 		if err != nil {
+			if errors.Is(err, storage.ErrOrgSlugTaken) {
+				return upsertRegisteredAgentTxResult{}, ErrOrgSlugTaken
+			}
 			return upsertRegisteredAgentTxResult{}, fmt.Errorf("upsert organization: %w", err)
 		}
 	}
@@ -916,4 +919,86 @@ func decodeBase64Key(value string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("decode base64 value")
+}
+
+// DeleteSelf soft-deletes the calling agent and its associated user account.
+// All bearer tokens are revoked first so in-flight requests stop authenticating.
+func (s *Service) DeleteSelf(ctx context.Context, callerAgent core.Agent) error {
+	now := time.Now().UTC()
+
+	// Revoke all tokens for this agent so existing sessions are invalidated.
+	if err := s.tokens.RevokeAllTokensForAgent(ctx, callerAgent.AgentID, now); err != nil {
+		return fmt.Errorf("revoke agent tokens: %w", err)
+	}
+
+	// Mark agent deleted.
+	callerAgent.Status = "deleted"
+	if _, err := s.agents.UpsertAgent(ctx, callerAgent); err != nil {
+		return fmt.Errorf("mark agent deleted: %w", err)
+	}
+
+	// Soft-delete the user (scrubs PII).
+	if err := s.users.SoftDeleteUser(ctx, callerAgent.OwnerUserID); err != nil {
+		return fmt.Errorf("soft delete user: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteOrg soft-deletes the entire org. The caller must be an org admin.
+// Every user (and their agent tokens) in the org is soft-deleted first, then
+// the org record itself is marked deleted. All writes happen inside a single
+// transaction so a partial failure leaves the database consistent.
+func (s *Service) DeleteOrg(ctx context.Context, callerAgent core.Agent, callerUser core.User, orgSlug string) error {
+	// Only admins may delete the org.
+	if callerUser.Role != core.UserRoleAdmin {
+		return ErrNotOrgAdmin
+	}
+
+	// Resolve the target org and verify it matches the caller's org (outside
+	// the transaction — read-only, and we need the result before entering tx).
+	org, err := s.orgs.FindOrgBySlug(ctx, orgSlug)
+	if err != nil {
+		return fmt.Errorf("find org: %w", err)
+	}
+	if org.OrgID != callerAgent.OrgID {
+		return core.ForbiddenError{Message: "org slug does not belong to your org"}
+	}
+
+	now := time.Now().UTC()
+
+	return s.tx.WithTx(ctx, func(tx storage.StoreTx) error {
+		// Collect all users in the org and revoke their tokens + soft-delete them.
+		userIDs, listErr := tx.ListUserIDsByOrg(ctx, org.OrgID)
+		if listErr != nil {
+			return fmt.Errorf("list org users: %w", listErr)
+		}
+
+		for _, userID := range userIDs {
+			agent, ok, agentErr := tx.FindAgentByUserID(ctx, userID)
+			if agentErr != nil {
+				return fmt.Errorf("find agent for user %s: %w", userID, agentErr)
+			}
+			if ok {
+				if revokeErr := tx.RevokeAllTokensForAgent(ctx, agent.AgentID, now); revokeErr != nil {
+					return fmt.Errorf("revoke tokens for agent %s: %w", agent.AgentID, revokeErr)
+				}
+				agent.Status = "deleted"
+				if _, upsertErr := tx.UpsertAgent(ctx, agent); upsertErr != nil {
+					return fmt.Errorf("mark agent %s deleted: %w", agent.AgentID, upsertErr)
+				}
+			}
+
+			if deleteErr := tx.SoftDeleteUser(ctx, userID); deleteErr != nil {
+				return fmt.Errorf("soft delete user %s: %w", userID, deleteErr)
+			}
+		}
+
+		// Finally mark the org itself as deleted.
+		if softErr := tx.SoftDeleteOrg(ctx, org.OrgID); softErr != nil {
+			return fmt.Errorf("soft delete org: %w", softErr)
+		}
+
+		return nil
+	})
 }

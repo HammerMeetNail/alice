@@ -800,3 +800,55 @@ func TestAdminApproval_RejectedTokenRejectedByAuth(t *testing.T) {
 		t.Fatalf("expected ErrRevokedAgentToken for rejected agent token, got %v", err)
 	}
 }
+
+// TestDeletedOrgSlugCannotBeReused verifies that once an org is soft-deleted
+// its slug is permanently blocked: a subsequent CompleteRegistration attempt
+// using the same slug must fail with ErrOrgSlugTaken.
+func TestDeletedOrgSlugCannotBeReused(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	cfg := config.Config{
+		AuthChallengeTTL: 5 * time.Minute,
+		AuthTokenTTL:     time.Hour,
+		DefaultOrgName:   "Test Org",
+	}
+	svc := agents.NewService(store, store, store, store, store, cfg, store)
+
+	const orgSlug = "terminal-org"
+
+	// --- Step 1: register an admin agent in the org. ---
+	pub1, priv1, _ := ed25519.GenerateKey(rand.Reader)
+	res1, err := svc.BeginRegistration(ctx, orgSlug, "admin@example.com", "Admin", "edge", base64.StdEncoding.EncodeToString(pub1), "")
+	if err != nil {
+		t.Fatalf("BeginRegistration(1): %v", err)
+	}
+	sig1 := base64.StdEncoding.EncodeToString(ed25519.Sign(priv1, []byte(res1.Payload)))
+	cr1, err := svc.CompleteRegistration(ctx, res1.Challenge.ChallengeID, sig1)
+	if err != nil {
+		t.Fatalf("CompleteRegistration(1): %v", err)
+	}
+
+	// Promote the user to admin so DeleteOrg is permitted.
+	if err := store.UpdateUserRole(ctx, cr1.User.UserID, "admin"); err != nil {
+		t.Fatalf("UpdateUserRole: %v", err)
+	}
+	// Reload user with updated role.
+	adminUser, _, _ := store.FindUserByID(ctx, cr1.User.UserID)
+
+	// --- Step 2: delete the org. ---
+	if err := svc.DeleteOrg(ctx, cr1.Agent, adminUser, orgSlug); err != nil {
+		t.Fatalf("DeleteOrg: %v", err)
+	}
+
+	// --- Step 3: attempt to re-register using the same org slug. ---
+	pub2, priv2, _ := ed25519.GenerateKey(rand.Reader)
+	res2, err := svc.BeginRegistration(ctx, orgSlug, "new@example.com", "New Agent", "edge", base64.StdEncoding.EncodeToString(pub2), "")
+	if err != nil {
+		t.Fatalf("BeginRegistration(2): %v", err)
+	}
+	sig2 := base64.StdEncoding.EncodeToString(ed25519.Sign(priv2, []byte(res2.Payload)))
+	_, err = svc.CompleteRegistration(ctx, res2.Challenge.ChallengeID, sig2)
+	if !errors.Is(err, agents.ErrOrgSlugTaken) {
+		t.Fatalf("expected ErrOrgSlugTaken after org deletion, got %v", err)
+	}
+}

@@ -34,7 +34,7 @@ func TestCLIEndToEnd(t *testing.T) {
 	if closeFn != nil {
 		t.Cleanup(func() { _ = closeFn() })
 	}
-	srv := httptest.NewServer(httpapi.NewRouter(container))
+	srv := httptest.NewServer(httpapi.NewRouter(httpapi.RouterOptions{Services: container}))
 	t.Cleanup(srv.Close)
 
 	tmp := t.TempDir()
@@ -211,7 +211,7 @@ func TestCLITuning(t *testing.T) {
 	if closeFn != nil {
 		t.Cleanup(func() { _ = closeFn() })
 	}
-	srv := httptest.NewServer(httpapi.NewRouter(container))
+	srv := httptest.NewServer(httpapi.NewRouter(httpapi.RouterOptions{Services: container}))
 	t.Cleanup(srv.Close)
 
 	tmp := t.TempDir()
@@ -309,7 +309,7 @@ func TestCLIOrgGraph(t *testing.T) {
 	if closeFn != nil {
 		t.Cleanup(func() { _ = closeFn() })
 	}
-	srv := httptest.NewServer(httpapi.NewRouter(container))
+	srv := httptest.NewServer(httpapi.NewRouter(httpapi.RouterOptions{Services: container}))
 	t.Cleanup(srv.Close)
 
 	tmp := t.TempDir()

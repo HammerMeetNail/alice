@@ -44,7 +44,7 @@ func newE2EServer(t *testing.T) string {
 		t.Fatalf("build app container: %v", err)
 	}
 
-	ts := httptest.NewServer(httpapi.NewRouter(container))
+	ts := httptest.NewServer(httpapi.NewRouter(httpapi.RouterOptions{Services: container}))
 	t.Cleanup(func() {
 		ts.Close()
 		if closeFn != nil {

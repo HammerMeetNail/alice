@@ -66,6 +66,22 @@ func (s *Store) Close() error {
 	return s.rawDB.Close()
 }
 
+// Ping verifies the database connection is alive. Used by the /readyz handler.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.rawDB.PingContext(ctx)
+}
+
+// DBStats returns connection-pool statistics. Used by the Prometheus collector.
+func (s *Store) DBStats() sql.DBStats {
+	return s.rawDB.Stats()
+}
+
+// Stats implements metrics.DBStatsGetter so *Store can be passed directly
+// to metrics.Register.
+func (s *Store) Stats() sql.DBStats {
+	return s.rawDB.Stats()
+}
+
 // WithTx runs fn inside a single database transaction. If fn returns an error
 // the transaction is rolled back; otherwise it is committed.
 func (s *Store) WithTx(ctx context.Context, fn func(tx storage.StoreTx) error) error {

@@ -368,7 +368,7 @@ func buildTestHandlerWithSender(cfg config.Config, repos testRepositories, sende
 		WithRiskPolicyEvaluator(riskPolicyService).
 		WithExecutor(actions.NewAcknowledgeBlockerExecutor(repos))
 
-	return NewRouter(services.Container{
+	return NewRouter(RouterOptions{Services: services.Container{
 		Agents:     agentService,
 		Artifacts:  artifactService,
 		Policy:     policyService,
@@ -379,7 +379,7 @@ func buildTestHandlerWithSender(cfg config.Config, repos testRepositories, sende
 		RiskPolicy: riskPolicyService,
 		Actions:    actionService,
 		OrgGraph:   orgGraphService,
-	})
+	}})
 }
 
 // testCapturingSender implements email.Sender, capturing sent messages.
