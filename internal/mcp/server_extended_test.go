@@ -796,3 +796,129 @@ func TestRotateInviteTokenMCP_NonAdminDenied(t *testing.T) {
 		t.Fatal("expected error when non-admin rotates invite token")
 	}
 }
+
+func TestListActionsAndCancelMCP(t *testing.T) {
+	handler := newTestHandler(t)
+	fixture := newFixture(t)
+	aliceKeys := generateKeys(t)
+	bobKeys := generateKeys(t)
+
+	alice := NewServer(handler)
+	bob := NewServer(handler)
+
+	callTool(t, alice, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.AliceEmail,
+		"agent_name": "alice", "client_type": "mcp",
+		"public_key": aliceKeys.PublicKey, "private_key": aliceKeys.PrivateKey,
+	})
+	callTool(t, bob, "register_agent", map[string]any{
+		"org_slug": fixture.OrgSlug, "owner_email": fixture.BobEmail,
+		"agent_name": "bob", "client_type": "mcp",
+		"public_key": bobKeys.PublicKey, "private_key": bobKeys.PrivateKey,
+	})
+
+	// Bob opts in to operator phase.
+	mustStructuredContent(t, callTool(t, bob, "enable_operator", map[string]any{
+		"enabled": true, "confirm": true,
+	}))
+
+	// Alice sends Bob a blocker request.
+	reqResp := mustStructuredContent(t, callTool(t, alice, "send_request_to_peer", map[string]any{
+		"to_user_email": fixture.BobEmail,
+		"request_type":  "blocker",
+		"title":         "Queue backlog",
+		"content":       "retry 500s",
+	}))
+	requestID := reqResp["request_id"].(string)
+
+	// Bob creates an action that requires approval via risk policy.
+	// Alice is the org admin (first registrant) and must apply the policy.
+	applied := mustStructuredContent(t, callTool(t, alice, "apply_risk_policy", map[string]any{
+		"name": "require-all",
+		"source": map[string]any{
+			"rules": []map[string]any{
+				{"when": map[string]any{}, "then": "require_approval", "reason": "always review"},
+			},
+		},
+		"confirm": true,
+	}))
+	policyID := applied["policy_id"].(string)
+	mustStructuredContent(t, callTool(t, alice, "activate_risk_policy", map[string]any{
+		"policy_id": policyID, "confirm": true,
+	}))
+
+	created := mustStructuredContent(t, callTool(t, bob, "create_action", map[string]any{
+		"kind":       "acknowledge_blocker",
+		"request_id": requestID,
+		"inputs":     map[string]any{"message": "pending approval"},
+		"risk_level": "L1",
+		"confirm":    true,
+	}))
+	if created["state"] != "pending" {
+		t.Fatalf("expected pending under require_approval policy, got %v", created["state"])
+	}
+	actionID := created["action_id"].(string)
+
+	// list_actions returns the pending action.
+	listed := mustStructuredContent(t, callTool(t, bob, "list_actions", map[string]any{}))
+	actions, _ := listed["actions"].([]any)
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+
+	// list_actions with state filter.
+	filteredPending := mustStructuredContent(t, callTool(t, bob, "list_actions", map[string]any{"state": "pending"}))
+	if len(filteredPending["actions"].([]any)) != 1 {
+		t.Fatalf("expected 1 pending action from state filter")
+	}
+
+	// approve_action: Bob approves their own action.
+	approved := mustStructuredContent(t, callTool(t, bob, "approve_action", map[string]any{
+		"action_id": actionID, "confirm": true,
+	}))
+	if approved["state"] != "approved" {
+		t.Fatalf("expected approved state after approve_action, got %v", approved["state"])
+	}
+
+	// cancel_action: Bob cancels the approved action.
+	cancelled := mustStructuredContent(t, callTool(t, bob, "cancel_action", map[string]any{
+		"action_id": actionID, "confirm": true,
+	}))
+	if cancelled["state"] != "cancelled" {
+		t.Fatalf("expected cancelled state, got %v", cancelled["state"])
+	}
+
+	// approve_action without confirm must fail.
+	noConfirm, _ := callToolRaw(t, bob, "approve_action", map[string]any{"action_id": actionID})
+	if isErr, _ := noConfirm["isError"].(bool); !isErr {
+		t.Fatal("expected isError=true when confirm absent for approve_action")
+	}
+
+	// cancel_action without confirm must fail.
+	noConfirm2, _ := callToolRaw(t, bob, "cancel_action", map[string]any{"action_id": actionID})
+	if isErr, _ := noConfirm2["isError"].(bool); !isErr {
+		t.Fatal("expected isError=true when confirm absent for cancel_action")
+	}
+
+	// approve_action without action_id must fail.
+	noID, _ := callToolRaw(t, bob, "approve_action", map[string]any{"confirm": true})
+	if isErr, _ := noID["isError"].(bool); !isErr {
+		t.Fatal("expected isError=true when action_id absent for approve_action")
+	}
+}
+
+func TestWithAccessToken_SetSession(t *testing.T) {
+	handler := newTestHandler(t)
+
+	// A server constructed with WithAccessToken should have a session.
+	server := NewServer(handler, WithAccessToken("tok-test-123"))
+	if !server.HasSession() {
+		t.Fatal("expected HasSession=true after WithAccessToken")
+	}
+
+	// An empty token is treated as no session.
+	empty := NewServer(handler, WithAccessToken("   "))
+	if empty.HasSession() {
+		t.Fatal("expected HasSession=false for blank token")
+	}
+}

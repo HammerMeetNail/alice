@@ -804,3 +804,297 @@ func TestFindAgentRegistrationChallenge(t *testing.T) {
 		t.Fatal("expected not found")
 	}
 }
+
+// --- Risk policy ---
+
+func TestRiskPolicy_Memory(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	orgID := id.New("org")
+	now := time.Now().UTC()
+
+	// NextPolicyVersionForOrg starts at 1 when no policies exist.
+	v, err := store.NextPolicyVersionForOrg(ctx, orgID)
+	if err != nil || v != 1 {
+		t.Fatalf("NextPolicyVersionForOrg: v=%d err=%v", v, err)
+	}
+
+	policy := core.RiskPolicy{
+		PolicyID:  id.New("policy"),
+		OrgID:     orgID,
+		Name:      "baseline",
+		Version:   1,
+		Source:    `{"rules":[]}`,
+		CreatedAt: now,
+	}
+	saved, err := store.SavePolicy(ctx, policy)
+	if err != nil || saved.PolicyID != policy.PolicyID {
+		t.Fatalf("SavePolicy: %v", err)
+	}
+
+	// NextPolicyVersionForOrg increments after save.
+	v, err = store.NextPolicyVersionForOrg(ctx, orgID)
+	if err != nil || v != 2 {
+		t.Fatalf("NextPolicyVersionForOrg after save: v=%d err=%v", v, err)
+	}
+
+	// FindPolicyByID round-trip.
+	got, ok, err := store.FindPolicyByID(ctx, policy.PolicyID)
+	if err != nil || !ok || got.PolicyID != policy.PolicyID {
+		t.Fatalf("FindPolicyByID: ok=%v err=%v", ok, err)
+	}
+
+	// FindPolicyByID not found.
+	_, ok, _ = store.FindPolicyByID(ctx, "nonexistent")
+	if ok {
+		t.Fatal("expected not found")
+	}
+
+	// No active policy yet.
+	_, active, err := store.FindActivePolicyForOrg(ctx, orgID)
+	if err != nil || active {
+		t.Fatalf("expected no active policy: active=%v err=%v", active, err)
+	}
+
+	// ActivatePolicy not found returns error.
+	if err := store.ActivatePolicy(ctx, "nonexistent", now); !errors.Is(err, storage.ErrRiskPolicyNotFound) {
+		t.Fatalf("expected ErrRiskPolicyNotFound, got %v", err)
+	}
+
+	// Activate the policy.
+	if err := store.ActivatePolicy(ctx, policy.PolicyID, now); err != nil {
+		t.Fatalf("ActivatePolicy: %v", err)
+	}
+
+	gotActive, active, err := store.FindActivePolicyForOrg(ctx, orgID)
+	if err != nil || !active || gotActive.PolicyID != policy.PolicyID {
+		t.Fatalf("FindActivePolicyForOrg: active=%v err=%v", active, err)
+	}
+
+	// Add a second policy; activating it deactivates the first.
+	policy2 := core.RiskPolicy{
+		PolicyID:  id.New("policy"),
+		OrgID:     orgID,
+		Name:      "strict",
+		Version:   2,
+		Source:    `{"rules":[]}`,
+		CreatedAt: now,
+	}
+	store.SavePolicy(ctx, policy2)
+	if err := store.ActivatePolicy(ctx, policy2.PolicyID, now.Add(time.Second)); err != nil {
+		t.Fatalf("ActivatePolicy policy2: %v", err)
+	}
+
+	gotActive2, active2, err := store.FindActivePolicyForOrg(ctx, orgID)
+	if err != nil || !active2 || gotActive2.PolicyID != policy2.PolicyID {
+		t.Fatalf("FindActivePolicyForOrg after second activate: active=%v id=%s err=%v", active2, gotActive2.PolicyID, err)
+	}
+
+	// ListPoliciesForOrg returns both.
+	list, err := store.ListPoliciesForOrg(ctx, orgID, 10, 0)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListPoliciesForOrg: len=%d err=%v", len(list), err)
+	}
+	// Newest version should be first.
+	if list[0].Version <= list[1].Version {
+		t.Fatalf("expected descending version order, got %d then %d", list[0].Version, list[1].Version)
+	}
+
+	// ListPoliciesForOrg with limit.
+	limited, err := store.ListPoliciesForOrg(ctx, orgID, 1, 0)
+	if err != nil || len(limited) != 1 {
+		t.Fatalf("ListPoliciesForOrg limit=1: len=%d err=%v", len(limited), err)
+	}
+
+	// ListPoliciesForOrg for another org returns empty.
+	other, err := store.ListPoliciesForOrg(ctx, id.New("org"), 10, 0)
+	if err != nil || len(other) != 0 {
+		t.Fatalf("expected empty for other org: len=%d err=%v", len(other), err)
+	}
+}
+
+// --- Actions ---
+
+func TestActions_Memory(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	orgID := id.New("org")
+	userID := id.New("user")
+	now := time.Now().UTC()
+
+	org := core.Organization{OrgID: orgID, Slug: "actions-org", Status: "active"}
+	store.UpsertOrganization(ctx, org)
+	user := core.User{UserID: userID, OrgID: orgID, Email: "op@example.com", Status: "active"}
+	store.UpsertUser(ctx, user)
+
+	action := core.Action{
+		ActionID:    id.New("action"),
+		OrgID:       orgID,
+		OwnerUserID: userID,
+		Kind:        core.ActionKindAcknowledgeBlocker,
+		State:       core.ActionStatePending,
+		RiskLevel:   core.RiskLevelL0,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(time.Hour),
+	}
+
+	// FindActionByID not found.
+	_, ok, err := store.FindActionByID(ctx, action.ActionID)
+	if err != nil || ok {
+		t.Fatalf("expected not found: ok=%v err=%v", ok, err)
+	}
+
+	// UpdateActionState on nonexistent action returns ErrActionNotFound.
+	if _, err := store.UpdateActionState(ctx, action); !errors.Is(err, storage.ErrActionNotFound) {
+		t.Fatalf("expected ErrActionNotFound, got %v", err)
+	}
+
+	// SaveAction.
+	saved, err := store.SaveAction(ctx, action)
+	if err != nil || saved.ActionID != action.ActionID {
+		t.Fatalf("SaveAction: %v", err)
+	}
+
+	// FindActionByID.
+	got, ok, err := store.FindActionByID(ctx, action.ActionID)
+	if err != nil || !ok || got.ActionID != action.ActionID {
+		t.Fatalf("FindActionByID: ok=%v err=%v", ok, err)
+	}
+
+	// ListActions by owner.
+	list, err := store.ListActions(ctx, storage.ActionFilter{OwnerUserID: userID})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListActions by owner: len=%d err=%v", len(list), err)
+	}
+
+	// ListActions with state filter (no match).
+	filtered, err := store.ListActions(ctx, storage.ActionFilter{OwnerUserID: userID, State: core.ActionStateApproved})
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("ListActions state filter no match: len=%d err=%v", len(filtered), err)
+	}
+
+	// ListActions with state filter (match).
+	matched, err := store.ListActions(ctx, storage.ActionFilter{OwnerUserID: userID, State: core.ActionStatePending})
+	if err != nil || len(matched) != 1 {
+		t.Fatalf("ListActions state filter match: len=%d err=%v", len(matched), err)
+	}
+
+	// ListActions without owner filter (all actions).
+	all, err := store.ListActions(ctx, storage.ActionFilter{})
+	if err != nil || len(all) != 1 {
+		t.Fatalf("ListActions no owner filter: len=%d err=%v", len(all), err)
+	}
+
+	// UpdateActionState: pending → approved.
+	action.State = core.ActionStateApproved
+	updated, err := store.UpdateActionState(ctx, action)
+	if err != nil || updated.State != core.ActionStateApproved {
+		t.Fatalf("UpdateActionState: %v", err)
+	}
+
+	// UpdateActionState: terminal state rejection.
+	terminal := action
+	terminal.State = core.ActionStateExecuted
+	store.UpdateActionState(ctx, terminal)
+	// Another update on executed action returns ErrActionInTerminalState.
+	terminal.State = core.ActionStateCancelled
+	if _, err := store.UpdateActionState(ctx, terminal); !errors.Is(err, storage.ErrActionInTerminalState) {
+		t.Fatalf("expected ErrActionInTerminalState, got %v", err)
+	}
+
+	// SaveAction is idempotent for existing IDs (update).
+	action.State = core.ActionStateApproved
+	saved2, err := store.SaveAction(ctx, action)
+	if err != nil || saved2.State != core.ActionStateApproved {
+		t.Fatalf("SaveAction update: %v", err)
+	}
+
+	// SetOperatorEnabled for nonexistent user returns error.
+	if err := store.SetOperatorEnabled(ctx, id.New("user"), true); err == nil {
+		t.Fatal("expected error for nonexistent user")
+	}
+
+	// SetOperatorEnabled enable/disable.
+	if err := store.SetOperatorEnabled(ctx, userID, true); err != nil {
+		t.Fatalf("SetOperatorEnabled true: %v", err)
+	}
+	got2, _, _ := store.FindUserByID(ctx, userID)
+	if !got2.OperatorEnabled {
+		t.Fatal("expected OperatorEnabled=true")
+	}
+	if err := store.SetOperatorEnabled(ctx, userID, false); err != nil {
+		t.Fatalf("SetOperatorEnabled false: %v", err)
+	}
+	got3, _, _ := store.FindUserByID(ctx, userID)
+	if got3.OperatorEnabled {
+		t.Fatal("expected OperatorEnabled=false")
+	}
+}
+
+// --- Soft delete ---
+
+func TestSoftDelete_Memory(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	orgID := id.New("org")
+	org := core.Organization{OrgID: orgID, Slug: "del-org", Status: "active"}
+	store.UpsertOrganization(ctx, org)
+
+	user := core.User{
+		UserID: id.New("user"),
+		OrgID:  orgID,
+		Email:  "del@example.com",
+		Status: "active",
+	}
+	store.UpsertUser(ctx, user)
+
+	// ListUserIDsByOrg returns the user before deletion.
+	ids, err := store.ListUserIDsByOrg(ctx, orgID)
+	if err != nil || len(ids) != 1 || ids[0] != user.UserID {
+		t.Fatalf("ListUserIDsByOrg before delete: len=%d err=%v", len(ids), err)
+	}
+
+	// SoftDeleteUser for nonexistent user returns error.
+	if err := store.SoftDeleteUser(ctx, id.New("user")); err == nil {
+		t.Fatal("expected error for nonexistent user")
+	}
+
+	// SoftDeleteUser scrubs PII.
+	if err := store.SoftDeleteUser(ctx, user.UserID); err != nil {
+		t.Fatalf("SoftDeleteUser: %v", err)
+	}
+	got, _, _ := store.FindUserByID(ctx, user.UserID)
+	if got.Email != "[deleted]" || got.DisplayName != "[deleted]" || got.Status != "deleted" {
+		t.Fatalf("SoftDeleteUser did not scrub PII: %+v", got)
+	}
+
+	// Deleted user not returned by ListUserIDsByOrg.
+	ids2, err := store.ListUserIDsByOrg(ctx, orgID)
+	if err != nil || len(ids2) != 0 {
+		t.Fatalf("ListUserIDsByOrg after delete: len=%d err=%v", len(ids2), err)
+	}
+
+	// ListUserIDsByOrg for another org returns empty.
+	ids3, err := store.ListUserIDsByOrg(ctx, id.New("org"))
+	if err != nil || len(ids3) != 0 {
+		t.Fatalf("ListUserIDsByOrg other org: len=%d err=%v", len(ids3), err)
+	}
+
+	// SoftDeleteOrg for nonexistent org returns ErrOrgNotFound.
+	if err := store.SoftDeleteOrg(ctx, id.New("org")); !errors.Is(err, storage.ErrOrgNotFound) {
+		t.Fatalf("expected ErrOrgNotFound, got %v", err)
+	}
+
+	// SoftDeleteOrg marks org as deleted.
+	if err := store.SoftDeleteOrg(ctx, orgID); err != nil {
+		t.Fatalf("SoftDeleteOrg: %v", err)
+	}
+	// After deletion, FindOrganizationBySlug should not find it.
+	_, found, _ := store.FindOrganizationBySlug(ctx, "del-org")
+	if found {
+		t.Fatal("expected org not found after soft delete")
+	}
+}

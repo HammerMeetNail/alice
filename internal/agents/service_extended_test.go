@@ -249,6 +249,50 @@ func TestUpdateGatekeeperTuning_Validation(t *testing.T) {
 	}
 }
 
+func TestDeleteSelf_Success(t *testing.T) {
+	svc := newAgentService()
+	ctx := context.Background()
+
+	pubKeyB64, _, privKey := generateKeyPair(t)
+	res, _ := svc.BeginRegistration(ctx, "delselforg", "delself@example.com", "Del Agent", "edge", pubKeyB64, "")
+	sig := signChallenge(t, res.Payload, privKey)
+	complete, err := svc.CompleteRegistration(ctx, res.Challenge.ChallengeID, sig)
+	if err != nil {
+		t.Fatalf("CompleteRegistration: %v", err)
+	}
+
+	if err := svc.DeleteSelf(ctx, complete.Agent); err != nil {
+		t.Fatalf("DeleteSelf: %v", err)
+	}
+
+	// After deletion the agent's token should be revoked; AuthenticateAgent must fail.
+	_, _, authErr := svc.AuthenticateAgent(ctx, complete.AccessToken)
+	if authErr == nil {
+		t.Fatal("expected authentication error after DeleteSelf")
+	}
+}
+
+func TestRequireAgent_UnknownAgent(t *testing.T) {
+	svc := newAgentService()
+	ctx := context.Background()
+
+	_, _, err := svc.RequireAgent(ctx, "nonexistent-agent-id")
+	if err != agents.ErrUnknownAgent {
+		t.Fatalf("expected ErrUnknownAgent, got %v", err)
+	}
+}
+
+func TestResendVerificationEmail_NotFound(t *testing.T) {
+	svc, _, _ := newAgentServiceWithOTP(10*time.Minute, 5)
+	ctx := context.Background()
+
+	// No pending verification exists for this agent ID.
+	err := svc.ResendVerificationEmail(ctx, "nonexistent-agent-id")
+	if err != agents.ErrVerificationNotFound {
+		t.Fatalf("expected ErrVerificationNotFound, got %v", err)
+	}
+}
+
 func TestListPendingAgentApprovals_NotAdmin(t *testing.T) {
 	svc, _ := newAgentServiceWithApprovals()
 	ctx := context.Background()

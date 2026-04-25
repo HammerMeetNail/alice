@@ -346,6 +346,93 @@ func TestRespond_RequireApproval(t *testing.T) {
 	}
 }
 
+func newServiceWithStore() (*requests.Service, *memory.Store) {
+	store := memory.New()
+	return requests.NewService(store, store, store), store
+}
+
+func TestRespond_Defer(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	toAgentID := id.New("agent")
+	agent := core.Agent{AgentID: toAgentID, OrgID: orgID}
+
+	sent, err := svc.Send(ctx, makeRequest(id.New("agent"), toAgentID, orgID))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	updated, approval, err := svc.Respond(ctx, agent, sent.RequestID, core.RequestResponseDefer, "deferring for now")
+	if err != nil {
+		t.Fatalf("Respond Defer: %v", err)
+	}
+	if approval != nil {
+		t.Fatal("expected no approval for defer")
+	}
+	if updated.State != core.RequestStateDeferred {
+		t.Fatalf("expected deferred state, got %s", updated.State)
+	}
+}
+
+func TestRespond_Complete(t *testing.T) {
+	svc := newService()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	toAgentID := id.New("agent")
+	agent := core.Agent{AgentID: toAgentID, OrgID: orgID}
+
+	sent, err := svc.Send(ctx, makeRequest(id.New("agent"), toAgentID, orgID))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	updated, approval, err := svc.Respond(ctx, agent, sent.RequestID, core.RequestResponseComplete, "all done")
+	if err != nil {
+		t.Fatalf("Respond Complete: %v", err)
+	}
+	if approval != nil {
+		t.Fatal("expected no approval for complete")
+	}
+	if updated.State != core.RequestStateCompleted {
+		t.Fatalf("expected completed state, got %s", updated.State)
+	}
+}
+
+func TestRespond_ExpiredRequest(t *testing.T) {
+	svc, store := newServiceWithStore()
+	ctx := context.Background()
+
+	orgID := id.New("org")
+	toAgentID := id.New("agent")
+	now := time.Now().UTC()
+
+	// Inject an already-expired request directly into the store.
+	expired := core.Request{
+		RequestID:   id.New("request"),
+		OrgID:       orgID,
+		FromAgentID: id.New("agent"),
+		ToAgentID:   toAgentID,
+		State:       core.RequestStatePending,
+		RequestType: "information",
+		Title:       "expired question",
+		Content:     "x",
+		CreatedAt:   now.Add(-2 * time.Hour),
+		ExpiresAt:   now.Add(-time.Hour),
+	}
+	if _, err := store.SaveRequest(ctx, expired); err != nil {
+		t.Fatalf("SaveRequest: %v", err)
+	}
+
+	agent := core.Agent{AgentID: toAgentID, OrgID: orgID}
+	_, _, err := svc.Respond(ctx, agent, expired.RequestID, core.RequestResponseAccept, "")
+	if !errors.Is(err, requests.ErrExpiredRequest) {
+		t.Fatalf("expected ErrExpiredRequest, got %v", err)
+	}
+}
+
 func TestListIncoming_ExpiredFiltered(t *testing.T) {
 	store := memory.New()
 	svc := requests.NewService(store, store, store)
