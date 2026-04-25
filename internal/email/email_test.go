@@ -257,3 +257,69 @@ func TestSMTPSender_Send_TLS_ClientError(t *testing.T) {
 		t.Fatal("expected error when server closes connection immediately, got nil")
 	}
 }
+
+// startSTARTTLSRejectServer starts a fake SMTP server that advertises no STARTTLS
+// capability and responds with a 502 error to any STARTTLS command, exercising
+// the sendWithSTARTTLS error-return path.
+func startSTARTTLSRejectServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() }) //nolint:errcheck
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close() //nolint:errcheck
+
+		r := bufio.NewReader(conn)
+		writeLine := func(s string) { _, _ = conn.Write([]byte(s + "\r\n")) }
+
+		writeLine("220 reject-starttls ESMTP")
+
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			cmd := strings.ToUpper(strings.TrimRight(line, "\r\n"))
+			switch {
+			case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
+				// Deliberately omit STARTTLS from capabilities.
+				writeLine("250-reject-starttls")
+				writeLine("250 OK")
+			case strings.HasPrefix(cmd, "STARTTLS"):
+				writeLine("502 5.5.1 Command not implemented")
+				return
+			default:
+				writeLine("500 Unknown command")
+			}
+		}
+	}()
+
+	return ln.Addr().String()
+}
+
+func TestSMTPSender_Send_TLS_STARTTLSRejected(t *testing.T) {
+	addr := startSTARTTLSRejectServer(t)
+	host, port := splitHostPort(t, addr)
+
+	sender := email.NewSenderFromConfig(config.Config{
+		SMTPHost: host,
+		SMTPPort: port,
+		SMTPFrom: "from@example.com",
+		SMTPTLS:  true,
+	})
+
+	err := sender.Send(context.Background(), "to@example.com", "Subject", "body")
+	if err == nil {
+		t.Fatal("expected error when STARTTLS is rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "smtp starttls") {
+		t.Errorf("expected 'smtp starttls' in error, got: %v", err)
+	}
+}
