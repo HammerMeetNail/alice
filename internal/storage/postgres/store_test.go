@@ -850,8 +850,11 @@ func TestRiskPolicy_Postgres(t *testing.T) {
 	if err != nil || !ok || found.PolicyID != saved.PolicyID {
 		t.Fatalf("FindPolicyByID: ok=%v err=%v", ok, err)
 	}
-	if found.Source != `{"rules":[]}` {
-		t.Errorf("Source: got %q", found.Source)
+	// Postgres JSONB normalizes whitespace (e.g. adds spaces after ':'), so
+	// compare after stripping all whitespace from both sides.
+	normalize := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	if normalize(found.Source) != normalize(`{"rules":[]}`) {
+		t.Errorf("Source: got %q want compact {\"rules\":[]}", found.Source)
 	}
 
 	// FindPolicyByID not-found.
