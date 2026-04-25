@@ -1,4 +1,4 @@
-FROM docker.io/library/golang:1.23-alpine AS build
+FROM docker.io/library/golang:1.25-alpine AS build
 
 # CMD_PATH selects which binary to build (default: coordination server).
 # Override with --build-arg CMD_PATH=cmd/mcp-server or cmd/edge-agent.

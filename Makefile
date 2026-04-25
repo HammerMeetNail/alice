@@ -77,8 +77,11 @@ test-cover:
 
 # test-cover-postgres runs coverage including internal/storage/postgres (requires
 # a running Postgres instance). Used by CI to measure full package coverage.
-test-cover-postgres: postgres-up
-	@ALICE_TEST_DATABASE_URL=$(TEST_POSTGRES_URL) go test -coverprofile=coverage.out -covermode=atomic ./...
+# When ALICE_TEST_DATABASE_URL is already set (e.g. a CI service container),
+# skip the local Podman postgres-up step.
+test-cover-postgres:
+	@[ -n "$(ALICE_TEST_DATABASE_URL)" ] || $(MAKE) postgres-up
+	@ALICE_TEST_DATABASE_URL=$${ALICE_TEST_DATABASE_URL:-$(TEST_POSTGRES_URL)} go test -coverprofile=coverage.out -covermode=atomic ./...
 	@echo "--- Per-package coverage (all packages including postgres) ---"
 	@go tool cover -func=coverage.out | grep "^total:" | head -1
 	@echo "--- Testable-package coverage (excluding cmd/, app/) ---"
@@ -94,14 +97,16 @@ test-cover-postgres: postgres-up
 		echo "OK: testable coverage $$total% meets threshold $$threshold%"; \
 	fi
 
-test-postgres: postgres-up
-	@ALICE_TEST_DATABASE_URL=$(TEST_POSTGRES_URL) go test -race -count=1 ./...
+test-postgres:
+	@[ -n "$(ALICE_TEST_DATABASE_URL)" ] || $(MAKE) postgres-up
+	@ALICE_TEST_DATABASE_URL=$${ALICE_TEST_DATABASE_URL:-$(TEST_POSTGRES_URL)} go test -race -count=1 ./...
 
 e2e:
 	@go test -tags e2e -race -count=1 -timeout 5m ./tests/e2e/...
 
-e2e-postgres: postgres-up
-	@ALICE_TEST_DATABASE_URL=$(TEST_POSTGRES_URL) go test -tags e2e -race -count=1 -timeout 5m ./tests/e2e/...
+e2e-postgres:
+	@[ -n "$(ALICE_TEST_DATABASE_URL)" ] || $(MAKE) postgres-up
+	@ALICE_TEST_DATABASE_URL=$${ALICE_TEST_DATABASE_URL:-$(TEST_POSTGRES_URL)} go test -tags e2e -race -count=1 -timeout 5m ./tests/e2e/...
 
 test-all: test e2e
 

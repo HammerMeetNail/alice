@@ -495,7 +495,7 @@ func refreshConnectorCredential(ctx context.Context, provider connectorOAuthProv
 				Reason:        reason,
 			}
 		}
-		return ConnectorCredential{}, fmt.Errorf(reason)
+		return ConnectorCredential{}, errors.New(reason)
 	}
 
 	var payload oauthTokenResponse
