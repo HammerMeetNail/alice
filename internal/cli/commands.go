@@ -373,7 +373,17 @@ func cmdInit(ctx context.Context, opts GlobalOptions, args []string, stdin io.Re
 		return errors.New("org, email, and agent name are all required")
 	}
 
-	return doRegister(ctx, opts, r, *serverURL, *orgSlug, *email, *agentName, *clientType, *inviteToken)
+	if err := doRegister(ctx, opts, r, *serverURL, *orgSlug, *email, *agentName, *clientType, *inviteToken); err != nil {
+		return err
+	}
+
+	// In text mode, print a short guided next-steps summary after
+	// registration. JSON mode callers (automation, scripts) get only the
+	// structured payload from doRegister.
+	if r.Format() != FormatJSON {
+		fmt.Fprintln(r.stdout, nextStepsGuide(opts.StateFile))
+	}
+	return nil
 }
 
 func cmdRegister(ctx context.Context, opts GlobalOptions, args []string, _ io.Reader, r *Renderer) error {
@@ -1678,4 +1688,32 @@ func resolveTimeWindow(since, until string) (map[string]any, error) {
 		"start": start.Format(time.RFC3339),
 		"end":   end.Format(time.RFC3339),
 	}, nil
+}
+
+// nextStepsGuide returns a short human-readable block printed by cmdInit after
+// a successful registration. It is never shown in JSON mode.
+func nextStepsGuide(stateFile string) string {
+	return fmt.Sprintf(`
+Session saved to %s
+
+Next steps:
+  1. Verify your session:
+       alice whoami
+
+  2. Publish your first status artifact so teammates can query your availability:
+       alice publish --type status_delta --title "Available" --content "Working on project X"
+
+  3. Grant a teammate permission to query your status:
+       alice grant --to teammate@example.com --type status_check
+
+  4. (Optional) Run an edge agent to sync data from GitHub, Jira, or Google Calendar:
+       edge-agent -generate-config > edge-config.json   # review and fill in credentials
+       edge-agent -validate-config -config edge-config.json
+       edge-agent -config edge-config.json
+
+  5. (Optional) Encrypt your local session file with a 32-byte key:
+       export ALICE_ENCRYPT_STATE_KEY="$(openssl rand -base64 32)"
+       alice init   # re-run to apply encryption
+
+Run "alice help" at any time to see all available commands.`, stateFile)
 }

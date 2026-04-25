@@ -33,6 +33,13 @@ Quick status view. Every unchecked item points at a plan in `docs/plans/` that a
 - [x] Production readiness: metrics endpoint, access log, request-ID, livez/readyz, per-agent rate limits, HSTS, trusted-proxy IP extraction, DELETE /v1/users/me, DELETE /v1/orgs/:slug
 - [x] Production readiness (continued): Prometheus metrics tests, release + nightly workflow, govulncheck CI, Dependabot, docs/operations.md, docs/incident-response.md, deploy/kubernetes/ manifests, cmd/alice-gc GC job, email SMTP tests, test-cover-postgres with 75% threshold
 
+## usability / onboarding
+
+- [x] CLI state file opt-in AES-256-GCM encryption via `ALICE_ENCRYPT_STATE_KEY`
+- [x] Edge agent `-validate-config` and `-generate-config` flags for safe, debuggable config authoring
+- [x] `alice init` guided next-steps output after registration
+- [x] Connector setup guides: `docs/connectors/github.md`, `docs/connectors/jira.md`, `docs/connectors/gcal.md`
+
 ---
 
 Start any new work from the matching plan. Plans are starting sketches; open questions in each plan are items to settle with the user before coding.

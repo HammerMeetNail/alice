@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"alice/internal/app"
+	"alice/internal/cli"
 	"alice/internal/config"
 	"alice/internal/httpapi"
 )
@@ -570,4 +571,133 @@ func TestCLIInitFullFlow(t *testing.T) {
 		"--agent", "alice-cli",
 		"--force",
 	)
+}
+
+// TestCLIStateEncryption verifies the opt-in AES-256-GCM encryption of the
+// CLI state file via ALICE_ENCRYPT_STATE_KEY.
+func TestCLIStateEncryption(t *testing.T) {
+	tmp := t.TempDir()
+	stateFile := filepath.Join(tmp, "state.json")
+
+	original := cli.State{
+		ServerURL:      "https://example.com",
+		OrgSlug:        "testorg",
+		OrgID:          "org-1",
+		OwnerEmail:     "alice@example.com",
+		AgentName:      "alice-cli",
+		AgentID:        "agent-1",
+		PublicKey:      "pubkey-base64",
+		PrivateKey:     "super-secret-private-key",
+		AccessToken:    "bearer-token-value",
+		TokenExpiresAt: time.Now().UTC().Add(time.Hour).Round(time.Second),
+	}
+
+	t.Run("plaintext_default", func(t *testing.T) {
+		t.Setenv(cli.EnvEncryptStateKey, "")
+		if err := cli.SaveState(stateFile, original); err != nil {
+			t.Fatalf("SaveState plaintext: %v", err)
+		}
+		raw, _ := os.ReadFile(stateFile)
+		if !strings.Contains(string(raw), "super-secret-private-key") {
+			t.Fatalf("expected plaintext private key in unencrypted file")
+		}
+		loaded, err := cli.LoadState(stateFile)
+		if err != nil {
+			t.Fatalf("LoadState plaintext: %v", err)
+		}
+		if loaded.PrivateKey != original.PrivateKey {
+			t.Fatalf("private key mismatch: got %q want %q", loaded.PrivateKey, original.PrivateKey)
+		}
+		if loaded.AccessToken != original.AccessToken {
+			t.Fatalf("access token mismatch: got %q want %q", loaded.AccessToken, original.AccessToken)
+		}
+	})
+
+	t.Run("encrypted_hides_secrets", func(t *testing.T) {
+		t.Setenv(cli.EnvEncryptStateKey, "my-secret-passphrase-for-testing")
+		if err := cli.SaveState(stateFile, original); err != nil {
+			t.Fatalf("SaveState encrypted: %v", err)
+		}
+		raw, _ := os.ReadFile(stateFile)
+		rawStr := string(raw)
+		if strings.Contains(rawStr, "super-secret-private-key") {
+			t.Fatalf("private key must not appear in plaintext in encrypted file")
+		}
+		if strings.Contains(rawStr, "bearer-token-value") {
+			t.Fatalf("access token must not appear in plaintext in encrypted file")
+		}
+		if !strings.Contains(rawStr, "encrypted_secrets") {
+			t.Fatalf("encrypted file must contain encrypted_secrets block")
+		}
+		// JSON must have empty private_key / access_token fields.
+		var raw2 map[string]any
+		if err := json.Unmarshal([]byte(rawStr), &raw2); err != nil {
+			t.Fatalf("json decode: %v", err)
+		}
+		if v, _ := raw2["private_key"].(string); v != "" {
+			t.Fatalf("private_key field must be empty in encrypted file, got %q", v)
+		}
+		if v, _ := raw2["access_token"].(string); v != "" {
+			t.Fatalf("access_token field must be empty in encrypted file, got %q", v)
+		}
+	})
+
+	t.Run("decrypt_with_correct_key", func(t *testing.T) {
+		t.Setenv(cli.EnvEncryptStateKey, "my-secret-passphrase-for-testing")
+		if err := cli.SaveState(stateFile, original); err != nil {
+			t.Fatalf("SaveState: %v", err)
+		}
+		loaded, err := cli.LoadState(stateFile)
+		if err != nil {
+			t.Fatalf("LoadState: %v", err)
+		}
+		if loaded.PrivateKey != original.PrivateKey {
+			t.Fatalf("private key: got %q want %q", loaded.PrivateKey, original.PrivateKey)
+		}
+		if loaded.AccessToken != original.AccessToken {
+			t.Fatalf("access token: got %q want %q", loaded.AccessToken, original.AccessToken)
+		}
+		if loaded.OwnerEmail != original.OwnerEmail {
+			t.Fatalf("owner email: got %q want %q", loaded.OwnerEmail, original.OwnerEmail)
+		}
+	})
+
+	t.Run("load_encrypted_without_key_fails", func(t *testing.T) {
+		t.Setenv(cli.EnvEncryptStateKey, "my-secret-passphrase-for-testing")
+		if err := cli.SaveState(stateFile, original); err != nil {
+			t.Fatalf("SaveState: %v", err)
+		}
+		t.Setenv(cli.EnvEncryptStateKey, "")
+		_, err := cli.LoadState(stateFile)
+		if err == nil {
+			t.Fatalf("expected error loading encrypted file without key")
+		}
+		if !strings.Contains(err.Error(), cli.EnvEncryptStateKey) {
+			t.Fatalf("error should mention env var name: %v", err)
+		}
+	})
+
+	t.Run("load_encrypted_with_wrong_key_fails", func(t *testing.T) {
+		t.Setenv(cli.EnvEncryptStateKey, "correct-key")
+		if err := cli.SaveState(stateFile, original); err != nil {
+			t.Fatalf("SaveState: %v", err)
+		}
+		t.Setenv(cli.EnvEncryptStateKey, "wrong-key")
+		_, err := cli.LoadState(stateFile)
+		if err == nil {
+			t.Fatalf("expected error loading encrypted file with wrong key")
+		}
+	})
+
+	t.Run("missing_file_returns_empty_state", func(t *testing.T) {
+		t.Setenv(cli.EnvEncryptStateKey, "")
+		missing := filepath.Join(tmp, "does-not-exist.json")
+		state, err := cli.LoadState(missing)
+		if err != nil {
+			t.Fatalf("expected no error for missing file: %v", err)
+		}
+		if state.HasSession() {
+			t.Fatalf("missing file should return empty state")
+		}
+	})
 }
