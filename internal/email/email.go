@@ -11,6 +11,8 @@ import (
 	"alice/internal/config"
 )
 
+var smtpDial = net.Dial
+
 // Sender sends an email message.
 type Sender interface {
 	Send(ctx context.Context, to, subject, body string) error
@@ -73,11 +75,52 @@ func (s *SMTPSender) Send(_ context.Context, to, subject, body string) error {
 	if s.useTLS {
 		return s.sendWithSTARTTLS(addr, auth, to, msg)
 	}
-	return smtp.SendMail(addr, auth, s.from, []string{to}, msg)
+	return s.sendWithoutTLS(addr, auth, to, msg)
+}
+
+func (s *SMTPSender) sendWithoutTLS(addr string, auth smtp.Auth, to string, msg []byte) error {
+	conn, err := smtpDial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("dial smtp: %w", err)
+	}
+
+	client, err := smtp.NewClient(conn, s.host)
+	if err != nil {
+		return fmt.Errorf("smtp new client: %w", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	if auth != nil {
+		if ok, _ := client.Extension("AUTH"); ok {
+			if err := client.Auth(auth); err != nil {
+				return fmt.Errorf("smtp auth: %w", err)
+			}
+		}
+	}
+
+	if err := client.Mail(s.from); err != nil {
+		return fmt.Errorf("smtp MAIL FROM: %w", err)
+	}
+	if err := client.Rcpt(to); err != nil {
+		return fmt.Errorf("smtp RCPT TO: %w", err)
+	}
+
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("smtp DATA: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("smtp write message: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("smtp close data writer: %w", err)
+	}
+
+	return client.Quit()
 }
 
 func (s *SMTPSender) sendWithSTARTTLS(addr string, auth smtp.Auth, to string, msg []byte) error {
-	conn, err := net.Dial("tcp", addr)
+	conn, err := smtpDial("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("dial smtp: %w", err)
 	}

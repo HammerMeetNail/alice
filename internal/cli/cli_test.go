@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"alice/internal/cli"
 	"alice/internal/config"
 	"alice/internal/httpapi"
+	httptest "alice/internal/testhttptest"
 )
 
 // TestCLIEndToEnd drives the CLI against an in-process coordination server to

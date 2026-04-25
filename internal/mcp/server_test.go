@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +15,7 @@ import (
 	"alice/internal/app"
 	"alice/internal/config"
 	"alice/internal/httpapi"
+	httptest "alice/internal/testhttptest"
 )
 
 func TestToolDiscoveryAndQueryFlow(t *testing.T) {
@@ -223,6 +223,8 @@ func TestToolFlowRemoteServer(t *testing.T) {
 
 	aliceServer := NewServer(nil, WithServerURL(ts.URL, ""))
 	bobServer := NewServer(nil, WithServerURL(ts.URL, ""))
+	aliceServer.httpClient.Transport = httptest.WrapTransport(aliceServer.httpClient.Transport)
+	bobServer.httpClient.Transport = httptest.WrapTransport(bobServer.httpClient.Transport)
 
 	aliceReg := mustStructuredContent(t, callTool(t, aliceServer, "register_agent", map[string]any{
 		"org_slug":    fixture.OrgSlug,

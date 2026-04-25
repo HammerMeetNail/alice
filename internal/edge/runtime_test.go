@@ -10,9 +10,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +21,7 @@ import (
 	"alice/internal/app"
 	"alice/internal/config"
 	"alice/internal/httpapi"
+	httptest "alice/internal/testhttptest"
 )
 
 func TestRuntimeRunOncePublishesFixturesAndPollsState(t *testing.T) {
@@ -2622,20 +2622,66 @@ func TestRuntimeBootstrapGitHubConnectorPersistsCredentialAndUsesIt(t *testing.T
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := NewRuntime(cfg).BootstrapConnector(ctx, "github", func(prompt ConnectorBootstrapPrompt) error {
-		go func() {
-			resp, err := http.Get(prompt.AuthorizationURL)
-			if err != nil {
-				t.Errorf("perform oauth authorization request: %v", err)
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
-				t.Errorf("unexpected oauth callback status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-			}
-		}()
-		return nil
+	runtime := NewRuntime(cfg)
+	provider, err := runtime.oauthProvider("github")
+	if err != nil {
+		t.Fatalf("oauth provider: %v", err)
+	}
+
+	state, err := runtime.loadState()
+	if err != nil {
+		t.Fatalf("load bootstrap state: %v", err)
+	}
+	pending, authorizationURL, err := newPendingConnectorAuth(provider, provider.oauth.CallbackURL)
+	if err != nil {
+		t.Fatalf("create pending oauth state: %v", err)
+	}
+	parsedAuthorizationURL, err := url.Parse(authorizationURL)
+	if err != nil {
+		t.Fatalf("parse authorization url: %v", err)
+	}
+	if parsedAuthorizationURL.Path != "/authorize" {
+		t.Fatalf("unexpected authorization path: %q", parsedAuthorizationURL.Path)
+	}
+	if got := parsedAuthorizationURL.Query().Get("client_id"); got != "github-client" {
+		t.Fatalf("unexpected oauth client_id: %q", got)
+	}
+	if got := parsedAuthorizationURL.Query().Get("response_type"); got != "code" {
+		t.Fatalf("unexpected oauth response_type: %q", got)
+	}
+	if got := parsedAuthorizationURL.Query().Get("code_challenge_method"); got != "S256" {
+		t.Fatalf("unexpected oauth code challenge method: %q", got)
+	}
+	if got := parsedAuthorizationURL.Query().Get("scope"); got != "repo read:user" {
+		t.Fatalf("unexpected oauth scope: %q", got)
+	}
+	if got := parsedAuthorizationURL.Query().Get("state"); got != pending.State {
+		t.Fatalf("unexpected oauth state: %q", got)
+	}
+	if got := parsedAuthorizationURL.Query().Get("redirect_uri"); !strings.Contains(got, "/oauth/github/callback") {
+		t.Fatalf("unexpected redirect uri: %q", got)
+	}
+	state.PendingConnectorAuths["github"] = pending
+	if err := runtime.saveState(state); err != nil {
+		t.Fatalf("save bootstrap state: %v", err)
+	}
+
+	options, err := runtime.credentialStoreOptions()
+	if err != nil {
+		t.Fatalf("credential store options: %v", err)
+	}
+	credentials, err := LoadCredentialStoreWithOptions(cfg.CredentialsPath(), options)
+	if err != nil {
+		t.Fatalf("load credential store before bootstrap: %v", err)
+	}
+
+	result, err := runtime.completeConnectorBootstrap(ctx, provider, pending, credentials, ConnectorBootstrapPrompt{
+		ConnectorType:    "github",
+		AuthorizationURL: authorizationURL,
+		CallbackURL:      pending.RedirectURL,
+	}, connectorCallbackRequest{
+		code:  "test-oauth-code",
+		state: pending.State,
 	})
 	if err != nil {
 		t.Fatalf("bootstrap github connector: %v", err)
@@ -2644,14 +2690,14 @@ func TestRuntimeBootstrapGitHubConnectorPersistsCredentialAndUsesIt(t *testing.T
 		t.Fatalf("expected bootstrap result to report persisted state storage")
 	}
 
-	state, err := LoadState(cfg.StatePath())
+	state, err = LoadState(cfg.StatePath())
 	if err != nil {
 		t.Fatalf("load state after bootstrap: %v", err)
 	}
 	if len(state.ConnectorCredentials) != 0 {
 		t.Fatalf("expected connector credentials to be removed from the general state file")
 	}
-	credentials, err := LoadCredentialStore(cfg.CredentialsPath())
+	credentials, err = LoadCredentialStore(cfg.CredentialsPath())
 	if err != nil {
 		t.Fatalf("load credential store after bootstrap: %v", err)
 	}
@@ -2708,26 +2754,51 @@ func TestRuntimeBootstrapConnectorRejectsStateMismatch(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = NewRuntime(cfg).BootstrapConnector(ctx, "github", func(prompt ConnectorBootstrapPrompt) error {
-		go func() {
-			resp, reqErr := http.Get(prompt.CallbackURL + "?code=test-code&state=wrong-state")
-			if reqErr != nil {
-				t.Errorf("perform mismatched oauth callback request: %v", reqErr)
-				return
-			}
-			defer resp.Body.Close()
-		}()
-		return nil
+	runtime := NewRuntime(cfg)
+	provider, err := runtime.oauthProvider("github")
+	if err != nil {
+		t.Fatalf("oauth provider: %v", err)
+	}
+
+	state, err := runtime.loadState()
+	if err != nil {
+		t.Fatalf("load mismatch bootstrap state: %v", err)
+	}
+	pending, authorizationURL, err := newPendingConnectorAuth(provider, provider.oauth.CallbackURL)
+	if err != nil {
+		t.Fatalf("create mismatch pending oauth state: %v", err)
+	}
+	state.PendingConnectorAuths["github"] = pending
+	if err := runtime.saveState(state); err != nil {
+		t.Fatalf("save mismatch bootstrap state: %v", err)
+	}
+
+	options, err := runtime.credentialStoreOptions()
+	if err != nil {
+		t.Fatalf("credential store options: %v", err)
+	}
+	credentials, err := LoadCredentialStoreWithOptions(cfg.CredentialsPath(), options)
+	if err != nil {
+		t.Fatalf("load credential store before mismatch bootstrap: %v", err)
+	}
+
+	_, err = runtime.completeConnectorBootstrap(ctx, provider, pending, credentials, ConnectorBootstrapPrompt{
+		ConnectorType:    "github",
+		AuthorizationURL: authorizationURL,
+		CallbackURL:      pending.RedirectURL,
+	}, connectorCallbackRequest{
+		code:  "test-code",
+		state: "wrong-state",
 	})
 	if err == nil || !strings.Contains(err.Error(), "state mismatch") {
 		t.Fatalf("expected oauth state mismatch error, got %v", err)
 	}
 
-	state, err := LoadState(cfg.StatePath())
+	state, err = LoadState(cfg.StatePath())
 	if err != nil {
 		t.Fatalf("load state after mismatch bootstrap: %v", err)
 	}
-	credentials, err := LoadCredentialStore(cfg.CredentialsPath())
+	credentials, err = LoadCredentialStore(cfg.CredentialsPath())
 	if err != nil {
 		t.Fatalf("load credential store after mismatch bootstrap: %v", err)
 	}

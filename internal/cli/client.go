@@ -59,11 +59,16 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		timeout = 30 * time.Second
 	}
 
+	var transport http.RoundTripper
+	if opts.TLSCAFile != "" {
+		transport = &http.Transport{TLSClientConfig: tlsConfig}
+	}
+
 	return &Client{
 		baseURL:     baseURL,
 		accessToken: strings.TrimSpace(opts.AccessToken),
 		httpClient: &http.Client{
-			Transport: &http.Transport{TLSClientConfig: tlsConfig},
+			Transport: transport,
 			Timeout:   timeout,
 		},
 	}, nil

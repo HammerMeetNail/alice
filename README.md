@@ -973,7 +973,7 @@ Set these when running the `cmd/edge-agent` process.
 | `ALICE_GCAL_TOKEN` | _(none)_ | Google Calendar OAuth access token used by the edge agent's calendar connector. |
 | `ALICE_EDGE_CREDENTIAL_KEY` | _(none)_ | AES-GCM encryption key for the connector credentials file at rest. |
 
-The edge agent binary also supports a `-dry-run` flag: `./alice-edge-agent -config config.json -dry-run` prints a JSON preview of all artifacts that would be published on the next run, without contacting the server or changing any state.
+The edge agent binary also supports config utility flags: `./alice-edge-agent -config config.json -dry-run` prints a JSON preview of what would be published next; `-validate-config` prints the normalized config and exits; `-generate-openshell-policy` prints an OpenShell policy derived from the current config. See [`docs/openshell.md`](docs/openshell.md) for sandbox setup and policy application.
 
 ---
 

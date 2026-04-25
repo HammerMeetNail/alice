@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -22,6 +21,7 @@ import (
 	"alice/internal/app"
 	"alice/internal/config"
 	"alice/internal/httpapi"
+	httptest "alice/internal/testhttptest"
 )
 
 // newE2EServer creates a fresh in-process HTTP server for one test. It

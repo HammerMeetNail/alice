@@ -37,18 +37,18 @@ type ServerConfig struct {
 }
 
 type RuntimeConfig struct {
-	StateFile             string   `json:"state_file"`
-	CredentialsFile       string   `json:"credentials_file"`
-	CredentialsKeyEnvVar  string   `json:"credentials_key_env_var"`
-	CredentialsKeyFile    string   `json:"credentials_key_file"`
-	ArtifactFixtureFile   string   `json:"artifact_fixture_file"`
-	QueryWatchIDs         []string `json:"query_watch_ids"`
-	PollIncomingRequests  bool     `json:"poll_incoming_requests"`
+	StateFile            string   `json:"state_file"`
+	CredentialsFile      string   `json:"credentials_file"`
+	CredentialsKeyEnvVar string   `json:"credentials_key_env_var"`
+	CredentialsKeyFile   string   `json:"credentials_key_file"`
+	ArtifactFixtureFile  string   `json:"artifact_fixture_file"`
+	QueryWatchIDs        []string `json:"query_watch_ids"`
+	PollIncomingRequests bool     `json:"poll_incoming_requests"`
 	// AllowPlaintextState opts the state file in to unencrypted storage of the
 	// private key and bearer token.  Only set this in local-dev or test
 	// environments.  When false (the default), SaveStateWithOptions returns an
 	// error if no encryption key is configured.
-	AllowPlaintextState   bool     `json:"allow_plaintext_state"`
+	AllowPlaintextState bool `json:"allow_plaintext_state"`
 }
 
 type ConnectorsConfig struct {
@@ -652,8 +652,12 @@ func validateURLField(label, value string, requireLoopback bool) error {
 }
 
 func isLoopbackHost(host string) bool {
-	host = strings.TrimSpace(host)
-	if host == "localhost" {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if host == "" {
+		return false
+	}
+	lowerHost := strings.ToLower(host)
+	if lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)

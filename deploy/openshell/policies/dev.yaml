@@ -1,0 +1,147 @@
+# OpenShell sandbox policy for the Alice edge agent (development / audit mode).
+#
+# Identical in structure to edge-agent.yaml but uses enforcement: audit on all
+# network entries.  In audit mode OpenShell logs every connection attempt
+# (allowed and denied) but never blocks traffic.  Use this profile to discover
+# the full egress footprint of a new connector or configuration before
+# hardening to enforce mode.
+#
+# Apply with:
+#   openshell policy set edge-agent-dev --policy deploy/openshell/policies/dev.yaml --wait
+#
+# Then watch the decision log:
+#   openshell logs edge-agent-dev --tail | grep "policy_decision"
+#
+# Promote to production by switching to edge-agent.yaml once the egress
+# footprint is confirmed.
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Filesystem (static)
+# ---------------------------------------------------------------------------
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /app
+    - /etc
+    - /var/log
+  read_write:
+    - /data
+    - /tmp
+    - /dev/null
+
+landlock:
+  compatibility: best_effort
+
+# ---------------------------------------------------------------------------
+# Process (static)
+# ---------------------------------------------------------------------------
+process:
+  run_as_user: alice
+  run_as_group: alice
+
+# ---------------------------------------------------------------------------
+# Network (dynamic) — all entries use enforcement: audit
+# ---------------------------------------------------------------------------
+network_policies:
+
+  alice_server:
+    name: alice-coordination-server
+    endpoints:
+      - host: your-alice-server.example.com   # <-- replace
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+    binaries:
+      - path: /app/alice-bin
+
+  github_api:
+    name: github-api
+    endpoints:
+      - host: api.github.com
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+    binaries:
+      - path: /app/alice-bin
+
+  github_oauth:
+    name: github-oauth
+    endpoints:
+      - host: github.com
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+    binaries:
+      - path: /app/alice-bin
+
+  jira_api:
+    name: jira-api
+    endpoints:
+      - host: "*.atlassian.net"
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+      - host: auth.atlassian.com
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+    binaries:
+      - path: /app/alice-bin
+
+  google_calendar:
+    name: google-calendar-api
+    endpoints:
+      - host: www.googleapis.com
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+      - host: oauth2.googleapis.com
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+      - host: accounts.google.com
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+    binaries:
+      - path: /app/alice-bin
+
+  # Model inference endpoints — include when testing ALICE_TRACK_SUMMARISER=claude
+  # or any future LLM-backed feature.  Remove from production policy once
+  # you confirm the summariser is not in use (the default heuristic summariser
+  # makes no outbound inference calls).
+  anthropic_api:
+    name: anthropic-api
+    endpoints:
+      - host: api.anthropic.com
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+    binaries:
+      - path: /app/alice-bin
+
+  openai_api:
+    name: openai-api
+    endpoints:
+      - host: api.openai.com
+        port: 443
+        protocol: rest
+        enforcement: audit
+        access: full
+    binaries:
+      - path: /app/alice-bin

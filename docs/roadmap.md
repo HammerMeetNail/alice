@@ -26,6 +26,10 @@ Quick status view. Every unchecked item points at a plan in `docs/plans/` that a
 - [x] Operator phase (per-user opt-in, risk-policy-gated `acknowledge_blocker` executor, idempotent lifecycle, audit emission on every transition)
 - [x] Advanced risk policy engine (per-org versioned JSON policies, admin-gated apply/history/activate, evaluator overrides the grant ladder in queries service)
 
+## security / sandbox
+
+- [x] OpenShell sandbox integration: `deploy/openshell/policies/` with enforce and audit-mode policies for the edge agent; setup guide at `docs/openshell.md`
+
 ## quality / operational
 
 - [x] Test coverage threshold, e2e tracker test, audit NDJSON sink

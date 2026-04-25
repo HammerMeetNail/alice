@@ -1,19 +1,19 @@
-package email_test
+package email
 
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
 	"testing"
 
 	"alice/internal/config"
-	"alice/internal/email"
 )
 
 func TestNoopSender_Send(t *testing.T) {
-	sender := &email.NoopSender{}
+	sender := &NoopSender{}
 	err := sender.Send(context.Background(), "to@example.com", "subject", "body")
 	if err != nil {
 		t.Fatalf("NoopSender.Send returned unexpected error: %v", err)
@@ -22,7 +22,7 @@ func TestNoopSender_Send(t *testing.T) {
 
 func TestNewSenderFromConfig_NoHost_ReturnsNil(t *testing.T) {
 	cfg := config.Config{SMTPHost: ""}
-	s := email.NewSenderFromConfig(cfg)
+	s := NewSenderFromConfig(cfg)
 	if s != nil {
 		t.Fatalf("expected nil sender for empty SMTP host, got %T", s)
 	}
@@ -30,12 +30,12 @@ func TestNewSenderFromConfig_NoHost_ReturnsNil(t *testing.T) {
 
 func TestNewSenderFromConfig_NoopHost_ReturnsNoopSender(t *testing.T) {
 	cfg := config.Config{SMTPHost: "noop"}
-	s := email.NewSenderFromConfig(cfg)
+	s := NewSenderFromConfig(cfg)
 	if s == nil {
 		t.Fatal("expected non-nil sender for noop host")
 	}
-	if _, ok := s.(*email.NoopSender); !ok {
-		t.Fatalf("expected *email.NoopSender, got %T", s)
+	if _, ok := s.(*NoopSender); !ok {
+		t.Fatalf("expected *NoopSender, got %T", s)
 	}
 }
 
@@ -45,41 +45,31 @@ func TestNewSenderFromConfig_RealHost_ReturnsSMTPSender(t *testing.T) {
 		SMTPPort: 587,
 		SMTPFrom: "noreply@example.com",
 	}
-	s := email.NewSenderFromConfig(cfg)
+	s := NewSenderFromConfig(cfg)
 	if s == nil {
 		t.Fatal("expected non-nil sender for real SMTP host")
 	}
 	// SMTPSender is unexported fields only; verify it's not NoopSender.
-	if _, ok := s.(*email.NoopSender); ok {
+	if _, ok := s.(*NoopSender); ok {
 		t.Fatal("expected SMTPSender, got NoopSender")
 	}
 }
 
-// startFakeSMTP spins up a minimal in-process SMTP server on a random localhost
-// port that accepts exactly one connection. It records the DATA section and
-// returns the server address plus a function that blocks until the client sends
-// QUIT and then returns the received message body.
-func startFakeSMTP(t *testing.T) (addr string, received func() string) {
+// startFakeSMTP serves one SMTP conversation over net.Pipe. It records the
+// DATA section and returns a dial hook plus a function that waits for the
+// client to finish and returns the received message body.
+func startFakeSMTP(t *testing.T) (dial func(string, string) (net.Conn, error), received func() string) {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() }) //nolint:errcheck
+	serverConn, clientConn := net.Pipe()
 
 	msgCh := make(chan string, 1)
 
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			msgCh <- ""
-			return
-		}
-		defer conn.Close() //nolint:errcheck
+		defer serverConn.Close() //nolint:errcheck
 
-		r := bufio.NewReader(conn)
-		writeLine := func(s string) { _, _ = conn.Write([]byte(s + "\r\n")) }
+		r := bufio.NewReader(serverConn)
+		writeLine := func(s string) { _, _ = serverConn.Write([]byte(s + "\r\n")) }
 
 		writeLine("220 test ESMTP")
 
@@ -134,7 +124,9 @@ func startFakeSMTP(t *testing.T) (addr string, received func() string) {
 		msgCh <- body.String()
 	}()
 
-	return ln.Addr().String(), func() string { return <-msgCh }
+	return func(string, string) (net.Conn, error) {
+		return clientConn, nil
+	}, func() string { return <-msgCh }
 }
 
 // splitHostPort parses host and port from addr without importing strconv at
@@ -153,12 +145,14 @@ func splitHostPort(t *testing.T, addr string) (host string, port int) {
 }
 
 func TestSMTPSender_Send_NonTLS(t *testing.T) {
-	addr, received := startFakeSMTP(t)
-	host, port := splitHostPort(t, addr)
+	dial, received := startFakeSMTP(t)
+	oldDial := smtpDial
+	smtpDial = dial
+	t.Cleanup(func() { smtpDial = oldDial })
 
-	sender := email.NewSenderFromConfig(config.Config{
-		SMTPHost: host,
-		SMTPPort: port,
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost: "smtp.test",
+		SMTPPort: 25,
 		SMTPFrom: "from@example.com",
 		SMTPTLS:  false,
 	})
@@ -185,14 +179,16 @@ func TestSMTPSender_Send_NonTLS(t *testing.T) {
 }
 
 func TestSMTPSender_Send_NonTLS_WithAuth(t *testing.T) {
-	addr, received := startFakeSMTP(t)
-	host, port := splitHostPort(t, addr)
+	dial, received := startFakeSMTP(t)
+	oldDial := smtpDial
+	smtpDial = dial
+	t.Cleanup(func() { smtpDial = oldDial })
 
-	// The fake SMTP server does not advertise AUTH, so PlainAuth will be skipped
-	// by smtp.SendMail. Verify the message still arrives correctly.
-	sender := email.NewSenderFromConfig(config.Config{
-		SMTPHost:     host,
-		SMTPPort:     port,
+	// PlainAuth requires TLS or localhost. Use a localhost host string so the
+	// standard-library auth path still runs under the pipe-backed test server.
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost:     "127.0.0.1",
+		SMTPPort:     25,
 		SMTPFrom:     "sender@example.com",
 		SMTPUsername: "user",
 		SMTPPassword: "pass",
@@ -210,10 +206,15 @@ func TestSMTPSender_Send_NonTLS_WithAuth(t *testing.T) {
 }
 
 func TestSMTPSender_Send_TLS_DialError(t *testing.T) {
-	// Port 1 is almost certainly not listening; net.Dial should fail quickly.
-	sender := email.NewSenderFromConfig(config.Config{
-		SMTPHost: "127.0.0.1",
-		SMTPPort: 1,
+	oldDial := smtpDial
+	smtpDial = func(string, string) (net.Conn, error) {
+		return nil, errors.New("forced dial failure")
+	}
+	t.Cleanup(func() { smtpDial = oldDial })
+
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost: "smtp.test",
+		SMTPPort: 25,
 		SMTPFrom: "from@example.com",
 		SMTPTLS:  true,
 	})
@@ -228,31 +229,25 @@ func TestSMTPSender_Send_TLS_DialError(t *testing.T) {
 }
 
 func TestSMTPSender_Send_TLS_ClientError(t *testing.T) {
-	// Spin up a listener that immediately closes the connection after accepting.
-	// smtp.NewClient should fail because it never receives the SMTP greeting.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+	serverConn, clientConn := net.Pipe()
+	oldDial := smtpDial
+	smtpDial = func(string, string) (net.Conn, error) {
+		return clientConn, nil
 	}
-	t.Cleanup(func() { ln.Close() }) //nolint:errcheck
+	t.Cleanup(func() { smtpDial = oldDial })
 
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		conn.Close() // drop the connection immediately
+		serverConn.Close() // drop the connection immediately
 	}()
 
-	host, port := splitHostPort(t, ln.Addr().String())
-	sender := email.NewSenderFromConfig(config.Config{
-		SMTPHost: host,
-		SMTPPort: port,
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost: "smtp.test",
+		SMTPPort: 25,
 		SMTPFrom: "from@example.com",
 		SMTPTLS:  true,
 	})
 
-	err = sender.Send(context.Background(), "to@example.com", "Subject", "body")
+	err := sender.Send(context.Background(), "to@example.com", "Subject", "body")
 	if err == nil {
 		t.Fatal("expected error when server closes connection immediately, got nil")
 	}
@@ -261,23 +256,16 @@ func TestSMTPSender_Send_TLS_ClientError(t *testing.T) {
 // startSTARTTLSRejectServer starts a fake SMTP server that advertises no STARTTLS
 // capability and responds with a 502 error to any STARTTLS command, exercising
 // the sendWithSTARTTLS error-return path.
-func startSTARTTLSRejectServer(t *testing.T) string {
+func startSTARTTLSRejectServer(t *testing.T) func(string, string) (net.Conn, error) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() }) //nolint:errcheck
+
+	serverConn, clientConn := net.Pipe()
 
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close() //nolint:errcheck
+		defer serverConn.Close() //nolint:errcheck
 
-		r := bufio.NewReader(conn)
-		writeLine := func(s string) { _, _ = conn.Write([]byte(s + "\r\n")) }
+		r := bufio.NewReader(serverConn)
+		writeLine := func(s string) { _, _ = serverConn.Write([]byte(s + "\r\n")) }
 
 		writeLine("220 reject-starttls ESMTP")
 
@@ -301,16 +289,19 @@ func startSTARTTLSRejectServer(t *testing.T) string {
 		}
 	}()
 
-	return ln.Addr().String()
+	return func(string, string) (net.Conn, error) {
+		return clientConn, nil
+	}
 }
 
 func TestSMTPSender_Send_TLS_STARTTLSRejected(t *testing.T) {
-	addr := startSTARTTLSRejectServer(t)
-	host, port := splitHostPort(t, addr)
+	oldDial := smtpDial
+	smtpDial = startSTARTTLSRejectServer(t)
+	t.Cleanup(func() { smtpDial = oldDial })
 
-	sender := email.NewSenderFromConfig(config.Config{
-		SMTPHost: host,
-		SMTPPort: port,
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost: "smtp.test",
+		SMTPPort: 25,
 		SMTPFrom: "from@example.com",
 		SMTPTLS:  true,
 	})

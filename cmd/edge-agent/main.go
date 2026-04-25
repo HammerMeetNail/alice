@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "preview what would be published without contacting the coordination server")
 	validateConfig := flag.Bool("validate-config", false, "validate the config file, print normalized values, and exit")
 	generateConfig := flag.Bool("generate-config", false, "print a starter config template to stdout and exit (no -config required)")
+	generateOpenShellPolicy := flag.Bool("generate-openshell-policy", false, "print an OpenShell policy derived from the config to stdout and exit")
 	bootstrapTimeout := flag.Duration("bootstrap-timeout", 5*time.Minute, "how long to wait for the local oauth callback")
 	flag.Parse()
 
@@ -55,8 +57,18 @@ func main() {
 		return
 	}
 
+	if *generateOpenShellPolicy {
+		fmt.Print(edge.GenerateOpenShellPolicy(cfg))
+		fmt.Fprintf(os.Stderr, "OpenShell policy OK: %s\n", *configPath)
+		return
+	}
+
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
+
+	if sandboxID := strings.TrimSpace(os.Getenv("OPENSHELL_SANDBOX_ID")); sandboxID != "" {
+		slog.Info("detected OpenShell sandbox", "sandbox_id", sandboxID)
+	}
 
 	runtime := edge.NewRuntime(cfg)
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

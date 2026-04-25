@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
 	"alice/internal/core"
+	httptest "alice/internal/testhttptest"
 )
 
 // TestBuildConnectorsFromEnv covers the env-var driven connector registry:
@@ -101,12 +101,12 @@ func TestGitHubConnector_Poll(t *testing.T) {
 		}
 
 		payload := []map[string]any{{
-			"number":     128,
-			"state":      "open",
-			"draft":      false,
-			"title":      "Retry payments handler",
-			"updated_at": pullUpdatedAt.Format(time.RFC3339),
-			"user":       map[string]any{"login": "alice"},
+			"number":              128,
+			"state":               "open",
+			"draft":               false,
+			"title":               "Retry payments handler",
+			"updated_at":          pullUpdatedAt.Format(time.RFC3339),
+			"user":                map[string]any{"login": "alice"},
 			"requested_reviewers": []map[string]any{},
 			"assignees":           []map[string]any{},
 		}}

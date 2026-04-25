@@ -1,0 +1,130 @@
+# OpenShell sandbox policy for the Alice edge agent (production).
+#
+# Apply with:
+#   openshell policy set edge-agent --policy deploy/openshell/policies/edge-agent.yaml --wait
+#
+# Before applying, replace every "your-*" placeholder hostname with the
+# real values for your deployment.  The coordination server entry is the
+# most likely to need editing; all other hostnames are standard SaaS URLs.
+#
+# Network policy sections are dynamic (hot-reloadable on a running sandbox).
+# Filesystem and process sections are static (locked at sandbox creation).
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Filesystem (static — locked at sandbox creation)
+# ---------------------------------------------------------------------------
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /app        # edge agent binary lives here
+    - /etc
+    - /var/log
+  read_write:
+    - /data       # mount a named volume here for the state file and config
+    - /tmp
+    - /dev/null
+
+landlock:
+  compatibility: best_effort
+
+# ---------------------------------------------------------------------------
+# Process (static — locked at sandbox creation)
+# ---------------------------------------------------------------------------
+process:
+  run_as_user: alice    # matches the non-root user in the edge-agent Dockerfile
+  run_as_group: alice
+
+# ---------------------------------------------------------------------------
+# Network (dynamic — hot-reloadable with `openshell policy set`)
+# ---------------------------------------------------------------------------
+network_policies:
+
+  # Alice coordination server.  Replace the placeholder host with the actual
+  # hostname of your alice coordination server.  If the server is on plain
+  # HTTP (e.g. local dev on :8080), change port to 8080 and remove the
+  # protocol/enforcement lines — TCP passthrough requires no protocol field.
+  alice_server:
+    name: alice-coordination-server
+    endpoints:
+      - host: your-alice-server.example.com   # <-- replace
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: /app/alice-bin
+
+  # GitHub REST API — used by the GitHub connector for polling and webhook
+  # registration.  read-write allows GET + POST/PUT/PATCH; DELETE is blocked.
+  github_api:
+    name: github-api
+    endpoints:
+      - host: api.github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: /app/alice-bin
+
+  # github.com — required for the OAuth PKCE bootstrap flow
+  # (-bootstrap-connector mode).  Only needed when the edge agent manages its
+  # own GitHub OAuth credentials; omit this block if you supply a pre-minted
+  # token directly.
+  github_oauth:
+    name: github-oauth
+    endpoints:
+      - host: github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: /app/alice-bin
+
+  # Jira Cloud — used by the Jira connector.  The wildcard matches every
+  # <org>.atlassian.net tenant URL.  For self-hosted Jira Data Center,
+  # replace the wildcard entry with your server hostname.
+  jira_api:
+    name: jira-api
+    endpoints:
+      - host: "*.atlassian.net"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+      - host: auth.atlassian.com    # OAuth token endpoint for Jira Cloud
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: /app/alice-bin
+
+  # Google Calendar — REST API and OAuth endpoints used by the GCal connector.
+  google_calendar:
+    name: google-calendar-api
+    endpoints:
+      - host: www.googleapis.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+      - host: oauth2.googleapis.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+      - host: accounts.google.com   # OAuth PKCE redirect + token exchange
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: /app/alice-bin

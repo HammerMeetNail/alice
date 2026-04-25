@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"alice/internal/cli"
 	"alice/internal/config"
 	"alice/internal/httpapi"
+	httptest "alice/internal/testhttptest"
 )
 
 // TestCLICoverageFlow exercises the CLI subcommands that the main
