@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FizzBuzz</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+  padding: 1rem;
+}
+
+.card {
+  width: 100%;
+  max-width: 680px;
+  padding: 2rem;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+h1 {
+  text-align: center;
+  font-weight: 500;
+  font-size: 1.8rem;
+  letter-spacing: -0.02em;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: 1.5rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 8px;
+}
+
+.cell {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  cursor: default;
+  animation: fadeUp 0.4s ease both;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.cell:hover {
+  transform: translateY(-4px) scale(1.04);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.cell.num { background: rgba(255, 255, 255, 0.06); }
+.cell.num:hover { background: rgba(255, 255, 255, 0.14); }
+
+.cell.fizz {
+  color: #67e8f9;
+  background: rgba(103, 232, 249, 0.10);
+  border-color: rgba(103, 232, 249, 0.20);
+}
+.cell.fizz:hover {
+  background: rgba(103, 232, 249, 0.20);
+  box-shadow: 0 8px 24px rgba(103, 232, 249, 0.15);
+}
+
+.cell.buzz {
+  color: #86efac;
+  background: rgba(134, 239, 172, 0.10);
+  border-color: rgba(134, 239, 172, 0.20);
+}
+.cell.buzz:hover {
+  background: rgba(134, 239, 172, 0.20);
+  box-shadow: 0 8px 24px rgba(134, 239, 172, 0.15);
+}
+
+.cell.fizzbuzz {
+  color: #fde68a;
+  background: rgba(253, 230, 138, 0.10);
+  border-color: rgba(253, 230, 138, 0.18);
+  font-weight: 700;
+}
+.cell.fizzbuzz:hover {
+  background: rgba(253, 230, 138, 0.20);
+  box-shadow: 0 8px 24px rgba(253, 230, 138, 0.20);
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>FizzBuzz</h1>
+  <div class="grid" id="grid"></div>
+</div>
+<script>
+const grid = document.getElementById('grid');
+const frag = document.createDocumentFragment();
+
+for (let i = 1; i <= 100; i++) {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+
+  let cls, label;
+  if (i % 15 === 0) { cls = 'fizzbuzz'; label = 'FizzBuzz'; }
+  else if (i % 3 === 0) { cls = 'fizz'; label = 'Fizz'; }
+  else if (i % 5 === 0) { cls = 'buzz'; label = 'Buzz'; }
+  else { cls = 'num'; label = i; }
+
+  cell.classList.add(cls);
+  cell.textContent = label;
+  cell.style.animationDelay = (i * 6) + 'ms';
+  frag.appendChild(cell);
+}
+
+grid.appendChild(frag);
+</script>
+</body>
+</html>

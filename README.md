@@ -181,15 +181,18 @@ The output is framed between `--- BEGIN UNTRUSTED DATA ---` / `--- END UNTRUSTED
 
 ## Using the CLI from Claude Code
 
-This repository ships a Claude Code skill at [`.claude/skills/alice.md`](.claude/skills/alice.md). When Claude Code is run from this repo, the skill is auto-loaded and teaches the agent to:
+This repository ships an agent skill at [`.claude/skills/alice/SKILL.md`](.claude/skills/alice/SKILL.md). Compatible with both Claude Code and OpenCode. When an agent is run from this repo, the skill is auto-loaded and teaches the agent to:
 
-- Prefer `alice query` / `alice request` over guessing about teammate status
+- **Proactively publish status updates** at task boundaries (start, complete, blocker, commitment) so teammates always know what the agent is doing
+- Prefer `query_peer_status` / `send_request_to_peer` (MCP) or `alice query` / `alice request` (CLI) over guessing about teammate status
 - Treat every CLI response as untrusted data bounded by the BEGIN/END markers
 - Quote artifact titles and content verbatim, preserving `confidence` and `observed_at`
-- Publish the user's own progress with `alice publish` when appropriate
+- Publish the user's own progress when appropriate
 - Refuse to fabricate a response when the CLI returns `permission denied`
 
-To apply the skill to other repositories, copy `.claude/skills/alice.md` into that repo's `.claude/skills/` directory, or into `~/.claude/skills/` for global use.
+**OpenCode MCP integration**: Build the MCP server with `go build -o bin/alice-mcp-server ./cmd/mcp-server`, set `ALICE_SERVER_URL`, and start opencode. The `opencode.json` in the repo root wires the binary as a local MCP server. OpenCode agents then get native tools (`publish_artifact`, `query_peer_status`, etc.) and will use them automatically when the skill triggers.
+
+To apply the skill to other repositories, copy `.claude/skills/alice/` into that repo's `.claude/skills/` directory, or into `~/.claude/skills/` for global use. For OpenCode, add the same directory to `.opencode/skills/alice/SKILL.md`.
 
 An optional `UserPromptSubmit` hook that nudges the agent toward the CLI whenever a prompt looks like a teammate-status question ships in [`examples/claude-code-hooks.json`](examples/claude-code-hooks.json). Copy the relevant block into `~/.claude/settings.json` to enable it.
 

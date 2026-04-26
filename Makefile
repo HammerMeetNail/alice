@@ -12,7 +12,7 @@ COVERAGE_THRESHOLD ?= 70
 # Threshold used when all packages (including postgres) are measured.
 COVERAGE_THRESHOLD_FULL ?= 75
 
-.PHONY: local down status logs postgres-up postgres-down test test-race test-cover test-cover-postgres test-postgres e2e e2e-postgres test-all ci mailpit-ui check-coverage install-hooks
+.PHONY: local down status logs postgres-up postgres-down test test-race test-cover test-cover-postgres test-postgres e2e e2e-postgres test-all ci mailpit-ui check-coverage install-hooks build-mcp-server demo
 
 local:
 	@$(PODMAN_COMPOSE) up --build -d
@@ -130,6 +130,15 @@ mailpit-ui:
 check-coverage:
 	@go clean -testcache
 	@$(MAKE) test-cover
+
+# demo builds the MCP server and prints setup instructions for the fizzbuzz example.
+demo:
+	@./examples/fizzbuzz/demo.sh
+
+# build-mcp-server compiles the MCP server binary for OpenCode integration.
+build-mcp-server:
+	@go build -o bin/alice-mcp-server ./cmd/mcp-server
+	@echo "bin/alice-mcp-server (MCP server for OpenCode)"
 
 # install-hooks copies the pre-commit hook into .git/hooks.
 install-hooks:
