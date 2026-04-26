@@ -135,12 +135,12 @@ check-coverage:
 demo:
 	@./examples/fizzbuzz/demo.sh
 
-# demo-clean removes binaries, demo output, and alice session state.
+# demo-clean removes binaries, demo output, and the Postgres container.
 demo-clean:
 	rm -f bin/alice bin/alice-mcp-server
 	rm -f examples/fizzbuzz/index.html
-	@echo "Removed binaries and demo output."
-	@echo "To also remove your alice session: rm -f ~/.alice/state.json"
+	podman rm -f alice-db 2>/dev/null || true
+	@echo "Removed binaries, demo output, and Postgres container."
 
 # build-mcp-server compiles the MCP server binary for OpenCode integration.
 build-mcp-server:
