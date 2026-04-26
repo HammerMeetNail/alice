@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pre-commit hook: reject commits that drop testable coverage below the
+# configured threshold.  Run 'make check-coverage' manually to preview,
+# or bypass with: git commit --no-verify
+
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "=== pre-commit: coverage check ==="
+
+make test-cover

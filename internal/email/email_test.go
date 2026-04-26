@@ -314,3 +314,185 @@ func TestSMTPSender_Send_TLS_STARTTLSRejected(t *testing.T) {
 		t.Errorf("expected 'smtp starttls' in error, got: %v", err)
 	}
 }
+
+// startErrorServer starts a fake SMTP server that greets normally but closes the
+// connection as soon as it receives the specified failCmd (uppercase SMTP command).
+func startErrorServer(t *testing.T, failCmd string) (dial func(string, string) (net.Conn, error)) {
+	t.Helper()
+	serverConn, clientConn := net.Pipe()
+
+	go func() {
+		defer serverConn.Close()
+
+		r := bufio.NewReader(serverConn)
+		writeLine := func(s string) { _, _ = serverConn.Write([]byte(s + "\r\n")) }
+
+		writeLine("220 test ESMTP")
+
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			cmd := strings.TrimRight(line, "\r\n")
+			upper := strings.ToUpper(cmd)
+
+			if strings.HasPrefix(upper, failCmd) {
+				return // close connection, causing client read error
+			}
+
+			switch {
+			case strings.HasPrefix(upper, "EHLO"), strings.HasPrefix(upper, "HELO"):
+				writeLine("250-test")
+				writeLine("250-AUTH PLAIN LOGIN")
+				writeLine("250 OK")
+			case strings.HasPrefix(upper, "AUTH"):
+				writeLine("334 VXNlcm5hbWU6")
+			case strings.Contains(upper, "PLAIN") || strings.HasPrefix(cmd, "dXNlcg=="):
+				// Accept auth credentials
+				writeLine("235 Authentication successful")
+			case strings.HasPrefix(upper, "MAIL FROM"):
+				writeLine("250 OK")
+			case strings.HasPrefix(upper, "RCPT TO"):
+				writeLine("250 OK")
+			case upper == "DATA":
+				writeLine("354 Start input; end with <CRLF>.<CRLF>")
+			case upper == "QUIT":
+				writeLine("221 Bye")
+				return
+			default:
+				writeLine("500 Unknown command")
+			}
+		}
+	}()
+
+	return func(string, string) (net.Conn, error) {
+		return clientConn, nil
+	}
+}
+
+func TestSMTPSender_Send_NonTLS_AuthError(t *testing.T) {
+	dial := startErrorServer(t, "AUTH")
+	oldDial := smtpDial
+	smtpDial = dial
+	t.Cleanup(func() { smtpDial = oldDial })
+
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost:     "127.0.0.1",
+		SMTPPort:     25,
+		SMTPFrom:     "from@example.com",
+		SMTPUsername: "user",
+		SMTPPassword: "pass",
+		SMTPTLS:      false,
+	})
+
+	err := sender.Send(context.Background(), "to@example.com", "Subject", "body")
+	if err == nil {
+		t.Fatal("expected error on AUTH failure")
+	}
+}
+
+func TestSMTPSender_Send_NonTLS_MailError(t *testing.T) {
+	dial := startErrorServer(t, "MAIL")
+	oldDial := smtpDial
+	smtpDial = dial
+	t.Cleanup(func() { smtpDial = oldDial })
+
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost: "smtp.test",
+		SMTPPort: 25,
+		SMTPFrom: "from@example.com",
+		SMTPTLS:  false,
+	})
+
+	err := sender.Send(context.Background(), "to@example.com", "Subject", "body")
+	if err == nil {
+		t.Fatal("expected error on MAIL FROM failure")
+	}
+}
+
+func TestSMTPSender_Send_NonTLS_RcptError(t *testing.T) {
+	dial := startErrorServer(t, "RCPT")
+	oldDial := smtpDial
+	smtpDial = dial
+	t.Cleanup(func() { smtpDial = oldDial })
+
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost: "smtp.test",
+		SMTPPort: 25,
+		SMTPFrom: "from@example.com",
+		SMTPTLS:  false,
+	})
+
+	err := sender.Send(context.Background(), "to@example.com", "Subject", "body")
+	if err == nil {
+		t.Fatal("expected error on RCPT TO failure")
+	}
+}
+
+func TestSMTPSender_Send_NonTLS_DataError(t *testing.T) {
+	dial := startErrorServer(t, "DATA")
+	oldDial := smtpDial
+	smtpDial = dial
+	t.Cleanup(func() { smtpDial = oldDial })
+
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost: "smtp.test",
+		SMTPPort: 25,
+		SMTPFrom: "from@example.com",
+		SMTPTLS:  false,
+	})
+
+	err := sender.Send(context.Background(), "to@example.com", "Subject", "body")
+	if err == nil {
+		t.Fatal("expected error on DATA failure")
+	}
+}
+
+func TestSMTPSender_Send_NonTLS_DialError(t *testing.T) {
+	oldDial := smtpDial
+	smtpDial = func(string, string) (net.Conn, error) {
+		return nil, errors.New("forced dial failure")
+	}
+	t.Cleanup(func() { smtpDial = oldDial })
+
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost: "smtp.test",
+		SMTPPort: 25,
+		SMTPFrom: "from@example.com",
+		SMTPTLS:  false,
+	})
+
+	err := sender.Send(context.Background(), "to@example.com", "Subject", "body")
+	if err == nil {
+		t.Fatal("expected dial error")
+	}
+	if !strings.Contains(err.Error(), "dial smtp") {
+		t.Errorf("expected 'dial smtp' in error, got: %v", err)
+	}
+}
+
+func TestSMTPSender_Send_NonTLS_ClientError(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	oldDial := smtpDial
+	smtpDial = func(string, string) (net.Conn, error) {
+		return clientConn, nil
+	}
+	t.Cleanup(func() { smtpDial = oldDial })
+
+	go func() {
+		serverConn.Close() // drop the connection immediately
+	}()
+
+	sender := NewSenderFromConfig(config.Config{
+		SMTPHost: "smtp.test",
+		SMTPPort: 25,
+		SMTPFrom: "from@example.com",
+		SMTPTLS:  false,
+	})
+
+	err := sender.Send(context.Background(), "to@example.com", "Subject", "body")
+	if err == nil {
+		t.Fatal("expected error when server closes connection immediately")
+	}
+}
