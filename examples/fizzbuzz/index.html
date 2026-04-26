@@ -5,42 +5,72 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FizzBuzz</title>
 <style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
   min-height: 100vh;
   display: flex;
-  align-items: center;
   justify-content: center;
+  align-items: center;
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
-  padding: 1rem;
+  padding: 2rem;
 }
 
 .card {
-  width: 100%;
-  max-width: 680px;
-  padding: 2rem;
   background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  padding: 2.5rem;
+  width: 100%;
+  max-width: 820px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
 }
 
 h1 {
   text-align: center;
-  font-weight: 500;
-  font-size: 1.8rem;
+  font-weight: 600;
+  font-size: 2rem;
   letter-spacing: -0.02em;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.9);
+  margin-bottom: 0.5rem;
+}
+
+.subtitle {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.9rem;
   margin-bottom: 1.5rem;
+}
+
+.legend {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+  margin-bottom: 1.75rem;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.legend-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  grid-template-columns: repeat(10, 1fr);
   gap: 8px;
 }
 
@@ -49,89 +79,101 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 12px;
-  font-size: 0.75rem;
+  border-radius: 10px;
+  font-size: 0.78rem;
   font-weight: 600;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
   cursor: default;
-  animation: fadeUp 0.4s ease both;
-  color: rgba(255, 255, 255, 0.75);
-  background: rgba(255, 255, 255, 0.04);
+  animation: fadeIn 0.5s ease backwards;
+  user-select: none;
 }
 
 .cell:hover {
-  transform: translateY(-4px) scale(1.04);
+  transform: scale(1.12);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  border-color: rgba(255, 255, 255, 0.25);
+  z-index: 2;
 }
 
-.cell.num { background: rgba(255, 255, 255, 0.06); }
-.cell.num:hover { background: rgba(255, 255, 255, 0.14); }
+.cell.number {
+  color: rgba(255, 255, 255, 0.45);
+}
 
 .cell.fizz {
-  color: #67e8f9;
-  background: rgba(103, 232, 249, 0.10);
-  border-color: rgba(103, 232, 249, 0.20);
+  background: linear-gradient(135deg, #1e3a8a, #2563eb);
+  border-color: rgba(37, 99, 235, 0.4);
+  color: #bfdbfe;
 }
+
 .cell.fizz:hover {
-  background: rgba(103, 232, 249, 0.20);
-  box-shadow: 0 8px 24px rgba(103, 232, 249, 0.15);
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.35);
 }
 
 .cell.buzz {
-  color: #86efac;
-  background: rgba(134, 239, 172, 0.10);
-  border-color: rgba(134, 239, 172, 0.20);
+  background: linear-gradient(135deg, #065f46, #059669);
+  border-color: rgba(5, 150, 105, 0.4);
+  color: #a7f3d0;
 }
+
 .cell.buzz:hover {
-  background: rgba(134, 239, 172, 0.20);
-  box-shadow: 0 8px 24px rgba(134, 239, 172, 0.15);
+  box-shadow: 0 8px 24px rgba(5, 150, 105, 0.35);
 }
 
 .cell.fizzbuzz {
-  color: #fde68a;
-  background: rgba(253, 230, 138, 0.10);
-  border-color: rgba(253, 230, 138, 0.18);
-  font-weight: 700;
-}
-.cell.fizzbuzz:hover {
-  background: rgba(253, 230, 138, 0.20);
-  box-shadow: 0 8px 24px rgba(253, 230, 138, 0.20);
+  background: linear-gradient(135deg, #6b21a8, #db2777);
+  border-color: rgba(219, 39, 119, 0.4);
+  color: #fbcfe8;
+  font-size: 0.65rem;
 }
 
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to   { opacity: 1; transform: translateY(0); }
+.cell.fizzbuzz:hover {
+  box-shadow: 0 8px 24px rgba(219, 39, 119, 0.35);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.92); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 </style>
 </head>
 <body>
 <div class="card">
   <h1>FizzBuzz</h1>
+  <p class="subtitle">1 &rarr; 100</p>
+  <div class="legend">
+    <span class="legend-item"><span class="legend-swatch" style="background:linear-gradient(135deg,#1e3a8a,#2563eb)"></span> Fizz (×3)</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:linear-gradient(135deg,#065f46,#059669)"></span> Buzz (×5)</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:linear-gradient(135deg,#6b21a8,#db2777)"></span> FizzBuzz (×15)</span>
+  </div>
   <div class="grid" id="grid"></div>
 </div>
+
 <script>
 const grid = document.getElementById('grid');
-const frag = document.createDocumentFragment();
 
 for (let i = 1; i <= 100; i++) {
   const cell = document.createElement('div');
   cell.className = 'cell';
 
-  let cls, label;
-  if (i % 15 === 0) { cls = 'fizzbuzz'; label = 'FizzBuzz'; }
-  else if (i % 3 === 0) { cls = 'fizz'; label = 'Fizz'; }
-  else if (i % 5 === 0) { cls = 'buzz'; label = 'Buzz'; }
-  else { cls = 'num'; label = i; }
+  if (i % 15 === 0) {
+    cell.textContent = 'FizzBuzz';
+    cell.classList.add('fizzbuzz');
+  } else if (i % 5 === 0) {
+    cell.textContent = 'Buzz';
+    cell.classList.add('buzz');
+  } else if (i % 3 === 0) {
+    cell.textContent = 'Fizz';
+    cell.classList.add('fizz');
+  } else {
+    cell.textContent = i;
+    cell.classList.add('number');
+  }
 
-  cell.classList.add(cls);
-  cell.textContent = label;
-  cell.style.animationDelay = (i * 6) + 'ms';
-  frag.appendChild(cell);
+  cell.style.animationDelay = `${i * 12}ms`;
+  grid.appendChild(cell);
 }
-
-grid.appendChild(frag);
 </script>
 </body>
 </html>

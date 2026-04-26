@@ -4,41 +4,38 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "=== alice fizzbuzz demo setup ==="
+echo "=== alice fizzbuzz demo ==="
 echo ""
 
-# 1. Build the MCP server
-if [ ! -x bin/alice-mcp-server ]; then
-  echo "--- Building MCP server ---"
-  make build-mcp-server
+# 1. Build binaries
+if [ ! -x bin/alice-mcp-server ] || [ ! -x bin/alice ]; then
+  echo "--- Building binaries ---"
+  make build-mcp-server build-cli
   echo ""
 fi
 
-# 2. Ensure examples/fizzbuzz exists
-mkdir -p examples/fizzbuzz
-
-echo "Setup complete. Now run:"
+echo "Setup complete. Two ways to run:"
 echo ""
+
+echo "=== Option A: without a coordination server ==="
 echo "  opencode"
 echo ""
-echo "Then type this prompt in the TUI:"
+echo "  Then type: 'Create a fizzbuzz web app at examples/fizzbuzz/index.html.'"
 echo ""
-echo "  Create a fizzbuzz web app at examples/fizzbuzz/index.html."
-echo "  Count 1-100: Fizz for 3, Buzz for 5, FizzBuzz for 15."
-echo "  Nice CSS: dark background, glassmorphism card, color-coded cells."
-echo "  Before you start, call register_agent to set up an alice session."
-echo "  Then publish a status_delta at start and finish via publish_artifact."
+echo "  The agent uses alice MCP tools (in-memory store). No server needed."
 echo ""
-echo "Registration params (or ask the user):"
-echo "  org_slug: demo"
-echo "  owner_email: demo@example.com"
-echo "  agent_name: opencode-demo"
-echo "  client_type: opencode"
+
+echo "=== Option B: with a coordination server (multi-user) ==="
+echo "  1. Start the server:  make local"
+echo "  2. export ALICE_SERVER_URL=http://localhost:8080"
+echo "  3. opencode"
 echo ""
-echo "Expected flow:"
-echo "  1. Agent calls register_agent"
-echo "  2. Agent calls publish_artifact (status_delta: started)"
-echo "  3. Agent creates examples/fizzbuzz/index.html"
-echo "  4. Agent calls publish_artifact (status_delta: completed)"
+echo "  Then type: 'Create a fizzbuzz web app at examples/fizzbuzz/index.html.'"
 echo ""
-echo "Serve the result: python3 -m http.server 8080 -d examples/fizzbuzz"
+echo "  The alice-auto plugin handles registration automatically."
+echo "  The agent publishes status_delta at task boundaries per AGENTS.md."
+echo "  Teammates can query status via alice query or query_peer_status."
+echo ""
+
+echo "Serve the result:"
+echo "  python3 -m http.server 8080 -d examples/fizzbuzz"

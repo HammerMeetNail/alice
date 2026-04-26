@@ -57,9 +57,9 @@ opencode
 Create a fizzbuzz web app at examples/fizzbuzz/index.html.
 Count 1-100 with "Fizz" for multiples of 3, "Buzz" for 5, "FizzBuzz" for 15.
 Use nice CSS: dark background, glassmorphism card, color-coded cells.
-Before you start, call register_agent to set up an alice session.
-Publish a status_delta at start and finish via publish_artifact.
 ```
+
+That's it. The agent's alice skill triggers automatically — no need to mention alice, `register_agent`, or `publish_artifact` in your prompt.
 
 ### 5. What happens
 

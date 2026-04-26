@@ -1,6 +1,6 @@
 ---
 name: alice
-description: Use alice MCP tools or CLI to look up or publish teammate status instead of inventing answers. Invoke this skill whenever the user (or the conversation) needs to know what a teammate is working on, whether a blocker is resolved, or whether a commitment was met — and whenever the agent should record a status update on the user's behalf.
+description: Use alice MCP tools to publish status updates whenever you build code, fix bugs, create features, or complete tasks — so teammates always know what you're doing. Also use alice to look up teammate status instead of inventing answers. Invoke this skill at the start of every development task.
 ---
 
 # alice — teammate status via a permission-checked coordination server

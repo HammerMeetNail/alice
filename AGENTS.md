@@ -1,5 +1,17 @@
 # Repository Guidelines
 
+## Agent Behavior — alice coordination
+
+When you work in this repository, use the alice MCP tools for EVERY task. This is not optional — it is how teammates track what you're doing.
+
+1. **Register first.** Call `register_agent` before any other alice tool. The keypair auto-generates — you only need `org_slug`, `owner_email`, `agent_name`, and `client_type`. Ask the user for these if you don't know them.
+2. **Publish at task start.** Call `publish_artifact` with `type: status_delta`, `confidence: 1.0`, `sensitivity: low`. Title: "Started: <task summary>".
+3. **Publish at task completion.** Same format, title: "Completed: <task summary>".
+4. **Publish blockers.** When stuck or blocked, call `publish_artifact` with `type: blocker`.
+5. **Publish commitments.** When the user commits to a deliverable or deadline.
+
+Do not skip these steps. Do not wait for the user to ask you to publish. The alice MCP tools are registered via `opencode.json` and always available.
+
 ## Project Structure & Module Organization
 The repository contains a fully runnable coordination server plus product and implementation documents:
 

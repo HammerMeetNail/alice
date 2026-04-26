@@ -2,6 +2,7 @@
 /alice
 alice-gc
 alice-mcp-server
+/bin/
 coverage.out
 coverage-testable.out
 *.out

@@ -12,7 +12,7 @@ COVERAGE_THRESHOLD ?= 70
 # Threshold used when all packages (including postgres) are measured.
 COVERAGE_THRESHOLD_FULL ?= 75
 
-.PHONY: local down status logs postgres-up postgres-down test test-race test-cover test-cover-postgres test-postgres e2e e2e-postgres test-all ci mailpit-ui check-coverage install-hooks build-mcp-server demo
+.PHONY: local down status logs postgres-up postgres-down test test-race test-cover test-cover-postgres test-postgres e2e e2e-postgres test-all ci mailpit-ui check-coverage install-hooks build-mcp-server build-cli demo demo-clean
 
 local:
 	@$(PODMAN_COMPOSE) up --build -d
@@ -135,10 +135,22 @@ check-coverage:
 demo:
 	@./examples/fizzbuzz/demo.sh
 
+# demo-clean removes binaries, demo output, and alice session state.
+demo-clean:
+	rm -f bin/alice bin/alice-mcp-server
+	rm -f examples/fizzbuzz/index.html
+	@echo "Removed binaries and demo output."
+	@echo "To also remove your alice session: rm -f ~/.alice/state.json"
+
 # build-mcp-server compiles the MCP server binary for OpenCode integration.
 build-mcp-server:
-	@go build -o bin/alice-mcp-server ./cmd/mcp-server
+	go build -o bin/alice-mcp-server ./cmd/mcp-server
 	@echo "bin/alice-mcp-server (MCP server for OpenCode)"
+
+# build-cli compiles the alice CLI binary used by the auto-publish plugin.
+build-cli:
+	go build -o bin/alice ./cmd/alice
+	@echo "bin/alice (CLI for plugin auto-publish)"
 
 # install-hooks copies the pre-commit hook into .git/hooks.
 install-hooks:
