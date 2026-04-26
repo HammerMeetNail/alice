@@ -58,8 +58,10 @@ test:
 test-race:
 	@go test -race -count=1 ./...
 
+COVER_PKGS := $(shell go list ./... | grep -v '/cmd/\|/testhttptest')
+
 test-cover:
-	@go test -coverprofile=coverage.out -covermode=atomic ./... || true
+	@go test -coverprofile=coverage.out -covermode=atomic $(COVER_PKGS)
 	@echo "--- Per-package coverage ---"
 	@go tool cover -func=coverage.out | grep "^total:" | head -1 || true
 	@echo "--- Testable-package coverage (excluding cmd/, postgres/, app/) ---"
@@ -85,7 +87,7 @@ test-cover:
 # skip the local Podman postgres-up step.
 test-cover-postgres:
 	@[ -n "$(ALICE_TEST_DATABASE_URL)" ] || $(MAKE) postgres-up
-	@ALICE_TEST_DATABASE_URL=$${ALICE_TEST_DATABASE_URL:-$(TEST_POSTGRES_URL)} go test -coverprofile=coverage.out -covermode=atomic ./... || true
+	@ALICE_TEST_DATABASE_URL=$${ALICE_TEST_DATABASE_URL:-$(TEST_POSTGRES_URL)} go test -coverprofile=coverage.out -covermode=atomic $(COVER_PKGS)
 	@echo "--- Per-package coverage (all packages including postgres) ---"
 	@go tool cover -func=coverage.out | grep "^total:" | head -1 || true
 	@echo "--- Testable-package coverage (excluding cmd/, app/) ---"
