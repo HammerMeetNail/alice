@@ -1,9 +1,12 @@
 /**
- * alice-auto — OpenCode plugin for invisible alice session setup.
+ * alice-auto — OpenCode plugin for alice coordination.
  *
- * Auto-registers with the alice coordination server on session start so
- * the agent always has a live session for publish_artifact / query_peer_status.
- * Does NOT generate status updates — the agent writes those.
+ * Hooks into session lifecycle events to:
+ *   - Register with alice on session start (if not already registered)
+ *   - Publish status_delta on session idle as a baseline guarantee
+ *
+ * The agent adds quality standup summaries per AGENTS.md.
+ * This plugin ensures alice is never skipped — something always gets published.
  *
  * Requires the alice CLI binary at bin/alice (built from cmd/alice/).
  * Set ALICE_SERVER_URL to enable. No env vars needed for graceful skip.
@@ -18,6 +21,8 @@
 const ALICE_BIN = "./bin/alice";
 
 let aliceReady = false;
+let taskPrompt = "";
+let taskStarted = false;
 
 async function hasAliceSession($: Shell): Promise<boolean> {
   const result =
@@ -74,6 +79,13 @@ export const aliceAuto = async ({
   if (binCheck.exitCode !== 0) return {};
 
   return {
+    "message.updated": async (input: any) => {
+      if (!taskStarted && input?.message?.role === "user") {
+        taskPrompt = (input.message.parts?.[0]?.text || "").slice(0, 80);
+        taskStarted = true;
+      }
+    },
+
     "session.created": async () => {
       if (aliceReady) return;
       if (await hasAliceSession($)) {
@@ -81,6 +93,18 @@ export const aliceAuto = async ({
         return;
       }
       aliceReady = await registerAlice($, serverUrl);
+    },
+
+    "session.idle": async () => {
+      if (!aliceReady || !taskStarted) return;
+      const summary = taskPrompt || "task";
+      await $`${ALICE_BIN} --json publish \
+        --type status_delta \
+        --title ${summary} \
+        --content ${summary} \
+        --confidence 1.0`.quiet().nothrow();
+      taskPrompt = "";
+      taskStarted = false;
     },
   };
 };

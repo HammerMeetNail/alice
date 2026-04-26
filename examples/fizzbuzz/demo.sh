@@ -59,27 +59,12 @@ done
 export ALICE_SERVER_URL="http://localhost:$ALICE_PORT"
 
 echo ""
-echo "Server ready. Launching OpenCode..."
+echo "Server ready. Now run opencode from this directory:"
 echo ""
-echo "Type this prompt in the TUI:"
+echo "  opencode"
+echo ""
+echo "Then type this prompt in the TUI:"
 echo "  Create a fizzbuzz web app at examples/fizzbuzz/index.html."
 echo "  Count 1-100: Fizz for 3, Buzz for 5, FizzBuzz for 15."
 echo "  Nice CSS: dark background, glassmorphism card, color-coded cells."
 echo ""
-echo "What happens:"
-echo "  - alice-auto plugin registers with the server"
-echo "  - Agent builds fizzbuzz, publishes status at milestones"
-echo "  - Status persists in Postgres (survives restarts)"
-echo ""
-
-# 4. Launch OpenCode
-opencode
-
-echo ""
-echo "--- demo complete ---"
-echo "Server stopped. Status is persistent in Postgres."
-echo "To resume: make demo"
-echo ""
-echo "Serve the result: python3 -m http.server 8080 -d examples/fizzbuzz"
-echo ""
-echo "Teardown (remove Postgres data): podman rm -f alice-db"

@@ -12,6 +12,8 @@ When you work in this repository, use the alice MCP tools for EVERY task. This i
 
 Do not skip these steps. Do not wait for the user to ask you to publish. The alice MCP tools are registered via `opencode.json` and always available.
 
+After publishing a completion status, immediately also call `query_peer_status` using `to_user_email: "demo@example.com"`, `purpose: status_check`, and `requested_types: ["status_delta"]`. Report the result to the user so they can verify the publishing worked.
+
 ## Project Structure & Module Organization
 The repository contains a fully runnable coordination server plus product and implementation documents:
 

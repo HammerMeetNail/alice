@@ -45,7 +45,7 @@ When OpenCode starts:
 ./examples/fizzbuzz/demo.sh
 ```
 
-This builds the MCP server and prints the prompt to use. Then launch OpenCode:
+This builds binaries and starts Postgres + the coordination server. Then launch OpenCode yourself:
 
 ```bash
 opencode
