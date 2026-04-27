@@ -1,4 +1,4 @@
-<span style="color:#6c8cf5; font-weight:700; font-size:1.3em">user</span>
+## 👤 user
 
 Create a fizzbuzz web app at examples/fizzbuzz/index.html.
 Count 1-100: Fizz for 3, Buzz for 5, FizzBuzz for 15.
@@ -6,9 +6,9 @@ Nice CSS: dark background, glassmorphism card, color-coded cells.
 
 ---
 
-<span style="color:#69f0ae; font-weight:700; font-size:1.3em">assistant</span>
+## 🤖 assistant
 
-*<span style="color:#9e9e9e">Thinking: The user wants me to create a fizzbuzz web app at examples/fizzbuzz/index.html. Let me first publish the status via alice, then create the file.</span>*
+> *Thinking: The user wants me to create a fizzbuzz web app at examples/fizzbuzz/index.html. Let me first publish the status via alice, then create the file.*
 
 Let me think about what's needed:
 1. A single HTML file with embedded CSS and JS
@@ -18,27 +18,29 @@ Let me think about what's needed:
 
 Let me first publish status, then create the file.
 
-<span style="color:#827717">→ Skill "alice"</span>
+→ Skill **"alice"**
 
-*<span style="color:#9e9e9e">Thinking: Let me first publish a status update that I'm starting this task, then create the fizzbuzz web app.</span>*
+> *Thinking: Let me first publish a status update that I'm starting this task, then create the fizzbuzz web app.*
 
-<span style="color:#ffd740">⚙ alice_publish_artifact (status_delta, confidence: 1.0, sensitivity: low, title: "Started: create fizzbuzz web app")</span>
+`⚙ publish_artifact` — status_delta, confidence: 1.0, sensitivity: low, title: "Started: create fizzbuzz web app"
 
-*<span style="color:#9e9e9e">Thinking: I need to register an agent first. Let me check if there's a state file or something already configured.</span>*
+> *Thinking: I need to register an agent first. Let me check if there's a state file or something already configured.*
 
-<span style="color:#ffd740">⚙ alice_register_agent (org_slug: demo, owner_email: demo@example.com, agent_name: opencode-agent, client_type: opencode)</span>
+`⚙ register_agent` — org_slug: demo, owner_email: demo@example.com, agent_name: opencode-agent, client_type: opencode
 
-*<span style="color:#9e9e9e">Thinking: Good, now I'm registered. Let me publish the status and create the file.</span>*
+> *Thinking: Good, now I'm registered. Let me publish the status and create the file.*
 
-<span style="color:#ffd740">⚙ alice_publish_artifact (status_delta, confidence: 1.0, sensitivity: low, title: "Started: create fizzbuzz web app")</span>
+`⚙ publish_artifact` — status_delta, confidence: 1.0, sensitivity: low, title: "Started: create fizzbuzz web app"
 
-*<span style="color:#9e9e9e">Thinking: Now let me create the directory and file.</span>*
+> *Thinking: Now let me create the directory and file.*
 
-<span style="color:#64b5f6">$ mkdir -p /Users/dave/git/alice/examples/fizzbuzz</span>
+```bash
+$ mkdir -p /Users/dave/git/alice/examples/fizzbuzz
+```
 
 (no output)
 
-*<span style="color:#9e9e9e">Thinking: Now let me create the fizzbuzz HTML file. I'll make it a single self-contained HTML file with:</span>*
+> *Thinking: Now let me create the fizzbuzz HTML file. I'll make it a single self-contained HTML file with:*
 
 1. Dark background
 2. Glassmorphism card
@@ -51,9 +53,7 @@ Let me design the color scheme:
 - Buzz (multiples of 5): blueish tint
 - FizzBuzz (multiples of 15): gold/amber tint
 
-Let me create a nice looking single-file app.
-
-<span style="color:#69f0ae">✎ Wrote examples/fizzbuzz/index.html</span>
+`✎ Wrote` examples/fizzbuzz/index.html
 
 ```html
 <!DOCTYPE html>
@@ -158,21 +158,21 @@ Let me create a nice looking single-file app.
 </html>
 ```
 
-*<span style="color:#9e9e9e">Thinking: The file is created. Now let me publish the completion status.</span>*
+> *Thinking: The file is created. Now let me publish the completion status.*
 
-<span style="color:#ffd740">⚙ alice_publish_artifact (status_delta, confidence: 1.0, sensitivity: low, title: "Completed: create fizzbuzz web app")</span>
+`⚙ publish_artifact` — status_delta, confidence: 1.0, sensitivity: low, title: "Completed: create fizzbuzz web app"
 
-*<span style="color:#9e9e9e">Thinking: Now I need to call query_peer_status as required by the instructions.</span>*
+> *Thinking: Now I need to call query_peer_status as required by the instructions.*
 
-<span style="color:#ffd740">⚙ alice_query_peer_status (to_user_email: demo@example.com, purpose: status_check, requested_types: ["status_delta"])</span>
+`⚙ query_peer_status` — to_user_email: demo@example.com, purpose: status_check, requested_types: ["status_delta"]
 
-*<span style="color:#9e9e9e">Thinking: The file is created at examples/fizzbuzz/index.html. Let me provide a summary to the user.</span>*
+> *Thinking: The file is created at examples/fizzbuzz/index.html. Let me provide a summary to the user.*
 
 Done. Open examples/fizzbuzz/index.html in a browser to see the FizzBuzz grid.
 
 ---
 
-<span style="color:#ff8a65; font-weight:700; font-size:1.1em">Server Logs</span>
+### 📋 Server Logs
 
 ```
 2026/04/26 21:39:34 INFO http request method=POST path=/v1/agents/register/challenge status=200 duration_ms=20 bytes_out=266 ip=::1 request_id=req_20260427T013934.195291000_54fa29146be78106 agent_id=""
