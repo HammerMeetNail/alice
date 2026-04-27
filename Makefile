@@ -147,6 +147,11 @@ build-mcp-server:
 	go build -o bin/alice-mcp-server ./cmd/mcp-server
 	@echo "bin/alice-mcp-server (MCP server for OpenCode)"
 
+# build-server compiles the coordination server binary.
+build-server:
+	go build -o bin/alice-server ./cmd/server
+	@echo "bin/alice-server (coordination server)"
+
 # build-cli compiles the alice CLI binary used by the auto-publish plugin.
 build-cli:
 	go build -o bin/alice ./cmd/alice

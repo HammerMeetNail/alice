@@ -12,9 +12,9 @@ echo "=== alice fizzbuzz demo ==="
 echo ""
 
 # 1. Build binaries
-if [ ! -x bin/alice-mcp-server ] || [ ! -x bin/alice ]; then
+if [ ! -x bin/alice-mcp-server ] || [ ! -x bin/alice ] || [ ! -x bin/alice-server ]; then
   echo "--- Building binaries ---"
-  make build-mcp-server build-cli
+  make build-mcp-server build-cli build-server
   echo ""
 fi
 
@@ -43,7 +43,7 @@ done
 echo "--- Starting coordination server on :$ALICE_PORT ---"
 SERVER_STARTED=false
 for attempt in 1 2; do
-  ALICE_LISTEN_ADDR=":$ALICE_PORT" ALICE_DATABASE_URL="$DB_URL" go run ./cmd/server &
+  ALICE_LISTEN_ADDR=":$ALICE_PORT" ALICE_DATABASE_URL="$DB_URL" ./bin/alice-server &
   SERVER_PID=$!
 
   for i in $(seq 1 30); do
@@ -55,13 +55,14 @@ for attempt in 1 2; do
   done
 
   # Server didn't start — kill it, try another port
+  OLD_PORT=$ALICE_PORT
   kill $SERVER_PID 2>/dev/null || true
   if [ $attempt -eq 2 ]; then
     echo "error: server did not become ready after 2 attempts" >&2
     exit 1
   fi
   ALICE_PORT=8081
-  echo "--- Port $ALICE_PORT in use, trying :$ALICE_PORT ---"
+  echo "--- Port $OLD_PORT in use, retrying on :$ALICE_PORT ---"
 done
 
 if ! $SERVER_STARTED; then
