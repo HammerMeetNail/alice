@@ -8,6 +8,9 @@ DB_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable"
 ALICE_PORT="${ALICE_LISTEN_ADDR:-:8080}"
 ALICE_PORT="${ALICE_PORT#:}"
 
+# Ensure port is free (kill any stale server from a prior run)
+fuser -k "$ALICE_PORT/tcp" 2>/dev/null || true
+
 echo "=== alice fizzbuzz demo ==="
 echo ""
 
@@ -75,4 +78,4 @@ echo "The alice-auto plugin will auto-register on session start"
 echo "and publish a status_delta when the session goes idle."
 echo "Press Ctrl+C to stop the server."
 echo ""
-wait "$SERVER_PID"
+wait "$SERVER_PID" || true
