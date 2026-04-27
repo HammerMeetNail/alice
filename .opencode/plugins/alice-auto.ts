@@ -26,11 +26,9 @@ const ALICE_BIN = "./bin/alice";
 
 let aliceReady = false;
 let lastUserPrompt = "";
+let serverUrl = "";
 
-async function hasAliceSession(
-  $: PluginInput["$"],
-  serverUrl: string,
-): Promise<boolean> {
+async function hasAliceSession($: PluginInput["$"]): Promise<boolean> {
   const result = await $`${ALICE_BIN} --json --server ${serverUrl} whoami`
     .nothrow()
     .quiet();
@@ -43,10 +41,7 @@ async function hasAliceSession(
   }
 }
 
-async function registerAlice(
-  $: PluginInput["$"],
-  serverUrl: string,
-): Promise<boolean> {
+async function registerAlice($: PluginInput["$"]): Promise<boolean> {
   const orgSlug = process.env.ALICE_PLUGIN_ORG_SLUG || "demo";
   const ownerEmail = process.env.ALICE_PLUGIN_OWNER_EMAIL || "demo@example.com";
   const agentName = process.env.ALICE_PLUGIN_AGENT_NAME || "opencode-agent";
@@ -60,38 +55,49 @@ async function registerAlice(
       .quiet();
 
   if (result.exitCode !== 0) {
-    console.error("alice-auto: register failed:", result.stderr.toString());
+    console.error("[alice-auto] register failed:", result.stderr.toString());
     return false;
   }
+  console.error("[alice-auto] registered as", agentName);
   return true;
 }
 
 async function publishStatus(
   $: PluginInput["$"],
-  serverUrl: string,
   summary: string,
 ): Promise<void> {
-  await $`${ALICE_BIN} --json --server ${serverUrl} publish \
+  const result = await $`${ALICE_BIN} --json --server ${serverUrl} publish \
     --type status_delta \
     --title ${summary} \
     --content ${summary} \
     --confidence 1.0`.nothrow().quiet();
+  if (result.exitCode === 0) {
+    console.error("[alice-auto] published:", summary);
+  } else {
+    console.error("[alice-auto] publish failed:", result.stderr.toString());
+  }
 }
 
 export async function server(input: PluginInput): Promise<Hooks> {
-  const serverUrl = process.env.ALICE_SERVER_URL;
-  if (!serverUrl) return {};
+  const url = (process.env.ALICE_SERVER_URL || "").replace(/\/$/, "");
+  serverUrl = url;
 
   const { $ } = input;
 
   const binCheck = await $`test -x ${ALICE_BIN}`.nothrow();
-  if (binCheck.exitCode !== 0) return {};
+  const hasBin = binCheck.exitCode === 0;
 
-  const url = serverUrl.replace(/\/$/, "");
+  console.error(
+    `[alice-auto] plugin loaded (hasBin=${hasBin} hasUrl=${!!url})`,
+  );
 
+  // Always return hooks even without bin/url — they fire, just skip
+  // alice operations.  This ensures hooks are never silently absent.
   return {
     "shell.env": async (_, output) => {
-      output.env = { ...output.env, ALICE_SERVER_URL: url };
+      if (url) {
+        output.env = { ...output.env, ALICE_SERVER_URL: url };
+      }
     },
 
     "chat.message": async (_, output) => {
@@ -100,29 +106,30 @@ export async function server(input: PluginInput): Promise<Hooks> {
           .filter((p: any) => p.type === "text")
           .map((p: any) => p.text)
           .join(" ");
-        if (text) lastUserPrompt = text;
+        if (text) {
+          lastUserPrompt = text;
+          console.error("[alice-auto] captured prompt:", text.slice(0, 80));
+        }
       }
     },
 
     event: async ({ event }) => {
       switch (event.type) {
         case "session.created": {
-          if (!aliceReady) {
-            const ready = await hasAliceSession(
-              input.$,
-              url,
-            );
-            if (ready) {
-              aliceReady = true;
-              return;
-            }
-            aliceReady = await registerAlice(input.$, url);
+          console.error("[alice-auto] session.created event fired");
+          if (!url || !hasBin || aliceReady) return;
+          if (await hasAliceSession(input.$)) {
+            aliceReady = true;
+            console.error("[alice-auto] already registered");
+            return;
           }
+          aliceReady = await registerAlice(input.$);
           break;
         }
         case "session.idle": {
+          console.error("[alice-auto] session.idle event fired");
           if (!aliceReady || !lastUserPrompt) return;
-          await publishStatus(input.$, url, lastUserPrompt.slice(0, 80));
+          await publishStatus(input.$, lastUserPrompt.slice(0, 80));
           lastUserPrompt = "";
           break;
         }
