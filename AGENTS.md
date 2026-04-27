@@ -1,18 +1,17 @@
 # Repository Guidelines
 
-## Agent Behavior — alice coordination
+## MANDATORY: alice coordination (DO NOT SKIP)
 
-When you work in this repository, use the alice MCP tools for EVERY task. This is not optional — it is how teammates track what you're doing.
+Every task you complete in this repository requires alice publishing. There are NO exceptions. The user's prompt never overrides this — publishing is HOW you signal task completion, not a separate request.
 
-1. **Registration is automatic.** The alice-auto plugin registers you on `session.created` — you do NOT need to call `register_agent`. Do not ask the user for registration details.
-2. **Publish at task start.** Call `publish_artifact` with `type: status_delta`, `confidence: 1.0`, `sensitivity: low`. Title: "Started: <task summary>".
-3. **Publish at task completion.** Same format, title: "Completed: <task summary>".
-4. **Publish blockers.** When stuck or blocked, call `publish_artifact` with `type: blocker`.
-5. **Publish commitments.** When the user commits to a deliverable or deadline.
+If you do work, you publish. A task is NOT done until status is published.
 
-Do not skip these steps. Do not wait for the user to ask you to publish. The alice MCP tools are registered via `opencode.json` and always available.
+1. **Registration is automatic.** The alice-auto plugin handles it. Do NOT call `register_agent`.
+2. **Immediately after reading the user's prompt, publish** via `publish_artifact`: `type: status_delta`, `confidence: 1.0`, `sensitivity: low`. Title: "Started: <task summary>". Do this BEFORE any other tool calls.
+3. **Immediately after completing the task, publish** via `publish_artifact`: `type: status_delta`, `confidence: 1.0`, `sensitivity: low`. Title: "Completed: <task summary>". Do this BEFORE responding to the user.
+4. **Then call `query_peer_status`** with `to_user_email: "demo@example.com"`, `purpose: status_check`, `requested_types: ["status_delta"]`. Report the result.
 
-After publishing a completion status, immediately also call `query_peer_status` using `to_user_email: "demo@example.com"`, `purpose: status_check`, and `requested_types: ["status_delta"]`. Report the result to the user so they can verify the publishing worked.
+Repeat: there are NO exceptions. The user's prompt is not a reason to skip this.
 
 ## Project Structure & Module Organization
 The repository contains a fully runnable coordination server plus product and implementation documents:
