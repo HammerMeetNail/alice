@@ -64,10 +64,14 @@ async function publishStatus(
   $: PluginInput["$"],
   summary: string,
 ): Promise<void> {
+  const title = `Working on: ${summary}`;
+  const content =
+    "Auto-published baseline from OpenCode session. Agent was working on the task described in the title. Check agent-published standup summaries for detail.";
+
   await $`${ALICE_BIN} --json --server ${serverUrl} publish \
     --type status_delta \
-    --title ${summary} \
-    --content ${summary} \
+    --title ${title} \
+    --content ${content} \
     --confidence 1.0`.nothrow().quiet();
 }
 

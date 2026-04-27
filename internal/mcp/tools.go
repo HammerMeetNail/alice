@@ -35,10 +35,7 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			Name:        "publish_artifact",
 			Description: "Publish a shareable artifact for the authenticated agent.",
 			InputSchema: objectSchema(map[string]any{
-				"artifact": map[string]any{
-					"type":        "object",
-					"description": "Artifact payload matching the current HTTP publish contract.",
-				},
+				"artifact": artifactSchema("Artifact payload."),
 			}),
 			Handler: s.handlePublishArtifact,
 		},
@@ -47,27 +44,41 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			Description: "Publish a corrected version of a previously published artifact. The caller must own the original artifact.",
 			InputSchema: objectSchema(map[string]any{
 				"artifact_id": stringSchema("ID of the artifact being corrected."),
-				"artifact": map[string]any{
-					"type":        "object",
-					"description": "Corrected artifact payload.",
-				},
+				"artifact":    artifactSchema("Corrected artifact payload."),
 			}),
 			Handler: s.handleSubmitCorrection,
 		},
-		"query_peer_status": {
+"query_peer_status": {
 			Name:        "query_peer_status",
 			Description: "Submit a permission-checked status query to another agent.",
 			InputSchema: objectSchema(map[string]any{
-				"to_user_email":   stringSchema("Recipient user email."),
-				"purpose":         stringSchema("Query purpose."),
-				"question":        stringSchema("Natural-language question."),
-				"requested_types": arraySchema(map[string]any{"type": "string"}, "Requested artifact types."),
-				"project_scope":   arraySchema(map[string]any{"type": "string"}, "Optional project scope."),
+				"to_user_email": stringSchema("Recipient user email."),
+				"purpose": map[string]any{
+					"type":        "string",
+					"description": "Query purpose.",
+					"enum":        []string{"status_check", "dependency_check", "handoff", "manager_update", "request_context"},
+				},
+				"question": stringSchema("Natural-language question."),
+				"requested_types": map[string]any{
+					"type":        "array",
+					"description": "Requested artifact types.",
+					"items": map[string]any{
+						"type": "string",
+						"enum": []string{"summary", "commitment", "blocker", "status_delta", "request"},
+					},
+				},
+				"project_scope": arraySchema(map[string]any{"type": "string"}, "Optional project scope."),
 				"time_window": map[string]any{
 					"type":        "object",
 					"description": "RFC3339 time window with start and end.",
+					"properties": map[string]any{
+						"start": stringSchema("Start timestamp (RFC3339 format)."),
+						"end":   stringSchema("End timestamp (RFC3339 format)."),
+					},
+					"required":             []string{"start", "end"},
+					"additionalProperties": false,
 				},
-			}),
+			}, "to_user_email", "purpose", "requested_types", "time_window"),
 			Handler: s.handleQueryPeerStatus,
 		},
 		"get_query_result": {
@@ -82,14 +93,32 @@ func (s *Server) registerTools() map[string]toolDefinition {
 			Name:        "grant_permission",
 			Description: "Create a permission grant from the authenticated agent to another user.",
 			InputSchema: objectSchema(map[string]any{
-				"grantee_user_email":     stringSchema("Recipient user email."),
-				"scope_type":             stringSchema("Grant scope type."),
-				"scope_ref":              stringSchema("Grant scope reference."),
-				"allowed_artifact_types": arraySchema(map[string]any{"type": "string"}, "Allowed artifact types."),
-				"max_sensitivity":        stringSchema("Maximum allowed sensitivity."),
-				"allowed_purposes":       arraySchema(map[string]any{"type": "string"}, "Allowed query purposes."),
-				"confirm":                map[string]any{"type": "boolean", "description": "Set true to confirm you want to create this grant."},
-			}),
+				"grantee_user_email": stringSchema("Recipient user email."),
+				"scope_type":         stringSchema("Grant scope type."),
+				"scope_ref":          stringSchema("Grant scope reference."),
+				"allowed_artifact_types": map[string]any{
+					"type":        "array",
+					"description": "Allowed artifact types.",
+					"items": map[string]any{
+						"type": "string",
+						"enum": []string{"summary", "commitment", "blocker", "status_delta", "request"},
+					},
+				},
+				"max_sensitivity": map[string]any{
+					"type":        "string",
+					"description": "Maximum allowed sensitivity.",
+					"enum":        []string{"low", "medium", "high", "restricted"},
+				},
+				"allowed_purposes": map[string]any{
+					"type":        "array",
+					"description": "Allowed query purposes.",
+					"items": map[string]any{
+						"type": "string",
+						"enum": []string{"status_check", "dependency_check", "handoff", "manager_update", "request_context"},
+					},
+				},
+				"confirm": map[string]any{"type": "boolean", "description": "Set true to confirm you want to create this grant."},
+			}, "grantee_user_email", "scope_type", "scope_ref", "allowed_artifact_types", "max_sensitivity", "allowed_purposes"),
 			Handler: s.handleGrantPermission,
 		},
 		"revoke_permission": {
@@ -923,10 +952,63 @@ func stringArg(values map[string]any, key string) string {
 	}
 }
 
-func objectSchema(properties map[string]any) map[string]any {
-	return map[string]any{
+func objectSchema(properties map[string]any, required ...string) map[string]any {
+	schema := map[string]any{
 		"type":                 "object",
 		"properties":           properties,
+		"additionalProperties": false,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
+}
+
+func artifactSchema(description string) map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": description,
+		"properties": map[string]any{
+			"type": map[string]any{
+				"type":        "string",
+				"description": "Artifact type.",
+				"enum":        []string{"summary", "commitment", "blocker", "status_delta", "request"},
+			},
+			"title": stringSchema("Short title for this artifact."),
+			"content": map[string]any{
+				"type":        "string",
+				"description": "Full content / body of the artifact.",
+			},
+			"confidence": map[string]any{
+				"type":        "number",
+				"description": "Confidence value between 0.0 and 1.0 inclusive.",
+			},
+			"sensitivity": map[string]any{
+				"type":        "string",
+				"description": "Sensitivity level.",
+				"enum":        []string{"low", "medium", "high", "restricted"},
+			},
+			"visibility_mode": map[string]any{
+				"type":        "string",
+				"description": "Visibility mode (defaults to explicit_grants_only if omitted).",
+				"enum":        []string{"private", "explicit_grants_only", "team_scope", "manager_scope"},
+			},
+			"source_refs": map[string]any{
+				"type":        "array",
+				"description": "Source references. At least one required.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"source_system": stringSchema("Source system identifier (e.g. 'opencode', 'github')."),
+						"source_type":   stringSchema("Source type (e.g. 'agent_session', 'commit')."),
+						"source_id":     stringSchema("Source identifier (e.g. session id, commit sha)."),
+					},
+					"required":             []string{"source_system", "source_type", "source_id"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"type", "title", "content", "confidence", "sensitivity", "source_refs"},
 		"additionalProperties": false,
 	}
 }
