@@ -389,6 +389,8 @@ Add alice to OpenCode's MCP configuration. OpenCode stores its config at `~/.con
 
 After restarting OpenCode, the alice tools appear in the tool list. The registration and usage flow is identical to Claude Code — ask the assistant to call `register_agent` with your details to begin.
 
+A full end-to-end example is available at [`examples/fizzbuzz/`](examples/fizzbuzz/). Run `make demo` for a guided walkthrough; see [`examples/fizzbuzz/example_chat.md`](examples/fizzbuzz/example_chat.md) for a complete annotated session log showing the agent publishing status updates, creating code, and querying peer status.
+
 ---
 
 ## Local git tracking
