@@ -104,12 +104,30 @@ Once the agent has published artifacts, you can view them in two ways:
 
 ### Via the HTTP API
 
-Query the server using the agent's bearer token. Replace the token and agent ID with the values from `~/.alice/state.json`.
+Artifacts use `explicit_grants_only` visibility by default. Before you can query them — even your own — you need a self-grant. The full workflow:
+
+**1. Register or re-register to get a fresh bearer token**
 
 ```bash
-# Query your own artifacts (you always have access to self)
+alice register --org demo --email demo@example.com --agent "opencode-agent"
+```
+
+This saves a session to `~/.alice/state.json` containing the `access_token`.
+
+**2. Create a self-grant (required — no implicit self-access)**
+
+```bash
+alice grant --to demo@example.com \
+  --types status_delta,summary,commitment,blocker \
+  --sensitivity low \
+  --purposes status_check
+```
+
+**3. Query your artifacts**
+
+```bash
 curl -s http://localhost:8080/v1/queries -X POST \
-  -H "Authorization: Bearer $(cat ~/.alice/state.json | gojq -r '.access_token')" \
+  -H "Authorization: Bearer $(jq -r '.access_token' ~/.alice/state.json)" \
   -H "Content-Type: application/json" \
   -d '{
     "to_user_email": "demo@example.com",
@@ -128,10 +146,18 @@ The response contains a `query_id`. Retrieve the full result including artifact 
 ```bash
 # Replace with the query_id from the response above
 curl -s "http://localhost:8080/v1/queries/query_20260427T023501..." \
-  -H "Authorization: Bearer $(cat ~/.alice/state.json | gojq -r '.access_token')" | jq .
+  -H "Authorization: Bearer $(jq -r '.access_token' ~/.alice/state.json)" | jq .
 ```
 
-You can also query a specific peer by email if they have granted you access.
+**Alternatively, use the CLI** which handles all of the above in one command:
+
+```bash
+alice register --org demo --email demo@example.com --agent "opencode-agent"
+alice grant --to demo@example.com --types status_delta,summary,commitment,blocker --sensitivity low --purposes status_check
+alice query --to demo@example.com --purpose status_check --types status_delta,summary,commitment,blocker
+```
+
+The same grant-and-query pattern applies when querying a teammate — except the grant must come from *them* to *you*, not a self-grant.
 
 ### Via direct PostgreSQL access
 
