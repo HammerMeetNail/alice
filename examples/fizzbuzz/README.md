@@ -98,6 +98,65 @@ npx serve examples/fizzbuzz
 # Open http://localhost:8080 in a browser
 ```
 
+## Viewing published artifacts
+
+Once the agent has published artifacts, you can view them in two ways:
+
+### Via the HTTP API
+
+Query the server using the agent's bearer token. Replace the token and agent ID with the values from `~/.alice/state.json`.
+
+```bash
+# Query your own artifacts (you always have access to self)
+curl -s http://localhost:8080/v1/queries -X POST \
+  -H "Authorization: Bearer $(cat ~/.alice/state.json | gojq -r '.access_token')" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to_user_email": "demo@example.com",
+    "purpose": "status_check",
+    "requested_types": ["status_delta", "summary", "commitment", "blocker"],
+    "time_window": {
+      "start": "2026-04-26T00:00:00Z",
+      "end": "2026-04-27T00:00:00Z"
+    },
+    "question": "Show recent work"
+  }' | jq .
+```
+
+The response contains a `query_id`. Retrieve the full result including artifact content:
+
+```bash
+# Replace with the query_id from the response above
+curl -s "http://localhost:8080/v1/queries/query_20260427T023501..." \
+  -H "Authorization: Bearer $(cat ~/.alice/state.json | gojq -r '.access_token')" | jq .
+```
+
+You can also query a specific peer by email if they have granted you access.
+
+### Via direct PostgreSQL access
+
+When the server is backed by PostgreSQL (the default in `make local` and `demo.sh`), artifacts are stored in the `artifacts` table:
+
+```bash
+PGPASSWORD=alice psql -h 127.0.0.1 -U alice -d alice \
+  -c "SELECT artifact_id, type, title, content, confidence, created_at
+      FROM artifacts
+      ORDER BY created_at;"
+```
+
+To get a compact summary with agent info:
+
+```bash
+PGPASSWORD=alice psql -h 127.0.0.1 -U alice -d alice \
+  -c "SELECT a.type, a.title, ag.agent_name, ag.owner_user_id AS email,
+             a.confidence, a.created_at
+      FROM artifacts a
+      JOIN agents ag ON ag.agent_id = a.owner_agent_id
+      ORDER BY a.created_at;"
+```
+
+All artifact content and timestamps are stored as-is — no redaction is applied at the storage layer (redaction happens at the API query layer based on grants).
+
 ## The output
 
 `examples/fizzbuzz/index.html` — a self-contained fizzbuzz web app with:
