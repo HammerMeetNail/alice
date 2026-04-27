@@ -41,12 +41,30 @@ done
 
 # 3. Start coordination server with Postgres
 echo "--- Starting coordination server on :$ALICE_PORT ---"
+
+# Kill any process already bound to the target port so a previous
+# orphaned server (e.g. from a killed go run) doesn't steal healthz.
+for i in $(seq 1 3); do
+  PID=$(lsof -ti ":$ALICE_PORT" 2>/dev/null || true)
+  if [ -n "$PID" ]; then
+    kill $PID 2>/dev/null || true
+    sleep 0.2
+  else
+    break
+  fi
+done
+
 SERVER_STARTED=false
 for attempt in 1 2; do
   ALICE_LISTEN_ADDR=":$ALICE_PORT" ALICE_DATABASE_URL="$DB_URL" ./bin/alice-server &
   SERVER_PID=$!
 
   for i in $(seq 1 30); do
+    if ! kill -0 $SERVER_PID 2>/dev/null; then
+      # Server died — port likely in use by an old orphan
+      kill $SERVER_PID 2>/dev/null || true
+      break
+    fi
     if curl -sf "http://localhost:$ALICE_PORT/healthz" >/dev/null 2>&1; then
       SERVER_STARTED=true
       break 2
@@ -54,9 +72,8 @@ for attempt in 1 2; do
     sleep 0.3
   done
 
-  # Server didn't start — kill it, try another port
+  # Server didn't start — try another port
   OLD_PORT=$ALICE_PORT
-  kill $SERVER_PID 2>/dev/null || true
   if [ $attempt -eq 2 ]; then
     echo "error: server did not become ready after 2 attempts" >&2
     exit 1
