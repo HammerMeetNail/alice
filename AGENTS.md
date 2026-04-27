@@ -4,7 +4,7 @@
 
 When you work in this repository, use the alice MCP tools for EVERY task. This is not optional — it is how teammates track what you're doing.
 
-1. **Register first.** Call `register_agent` before any other alice tool. The keypair auto-generates — you only need `org_slug`, `owner_email`, `agent_name`, and `client_type`. Ask the user for these if you don't know them.
+1. **Registration is automatic.** The alice-auto plugin registers you on `session.created` — you do NOT need to call `register_agent`. Do not ask the user for registration details.
 2. **Publish at task start.** Call `publish_artifact` with `type: status_delta`, `confidence: 1.0`, `sensitivity: low`. Title: "Started: <task summary>".
 3. **Publish at task completion.** Same format, title: "Completed: <task summary>".
 4. **Publish blockers.** When stuck or blocked, call `publish_artifact` with `type: blocker`.
