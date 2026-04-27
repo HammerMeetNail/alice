@@ -55,10 +55,8 @@ async function registerAlice($: PluginInput["$"]): Promise<boolean> {
       .quiet();
 
   if (result.exitCode !== 0) {
-    console.error("[alice-auto] register failed:", result.stderr.toString());
     return false;
   }
-  console.error("[alice-auto] registered as", agentName);
   return true;
 }
 
@@ -66,16 +64,11 @@ async function publishStatus(
   $: PluginInput["$"],
   summary: string,
 ): Promise<void> {
-  const result = await $`${ALICE_BIN} --json --server ${serverUrl} publish \
+  await $`${ALICE_BIN} --json --server ${serverUrl} publish \
     --type status_delta \
     --title ${summary} \
     --content ${summary} \
     --confidence 1.0`.nothrow().quiet();
-  if (result.exitCode === 0) {
-    console.error("[alice-auto] published:", summary);
-  } else {
-    console.error("[alice-auto] publish failed:", result.stderr.toString());
-  }
 }
 
 export async function server(input: PluginInput): Promise<Hooks> {
@@ -86,10 +79,6 @@ export async function server(input: PluginInput): Promise<Hooks> {
 
   const binCheck = await $`test -x ${ALICE_BIN}`.nothrow();
   const hasBin = binCheck.exitCode === 0;
-
-  console.error(
-    `[alice-auto] plugin loaded (hasBin=${hasBin} hasUrl=${!!url})`,
-  );
 
   // Always return hooks even without bin/url — they fire, just skip
   // alice operations.  This ensures hooks are never silently absent.
@@ -108,7 +97,6 @@ export async function server(input: PluginInput): Promise<Hooks> {
           .join(" ");
         if (text) {
           lastUserPrompt = text;
-          console.error("[alice-auto] captured prompt:", text.slice(0, 80));
         }
       }
     },
@@ -116,18 +104,15 @@ export async function server(input: PluginInput): Promise<Hooks> {
     event: async ({ event }) => {
       switch (event.type) {
         case "session.created": {
-          console.error("[alice-auto] session.created event fired");
           if (!url || !hasBin || aliceReady) return;
           if (await hasAliceSession(input.$)) {
             aliceReady = true;
-            console.error("[alice-auto] already registered");
             return;
           }
           aliceReady = await registerAlice(input.$);
           break;
         }
         case "session.idle": {
-          console.error("[alice-auto] session.idle event fired");
           if (!aliceReady || !lastUserPrompt) return;
           await publishStatus(input.$, lastUserPrompt.slice(0, 80));
           lastUserPrompt = "";
