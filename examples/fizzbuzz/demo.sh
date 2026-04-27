@@ -8,9 +8,6 @@ DB_URL="postgres://alice:alice@127.0.0.1:5432/alice?sslmode=disable"
 ALICE_PORT="${ALICE_LISTEN_ADDR:-:8080}"
 ALICE_PORT="${ALICE_PORT#:}"
 
-# Ensure port is free (kill any stale server from a prior run)
-fuser -k "$ALICE_PORT/tcp" 2>/dev/null || true
-
 echo "=== alice fizzbuzz demo ==="
 echo ""
 
@@ -44,20 +41,35 @@ done
 
 # 3. Start coordination server with Postgres
 echo "--- Starting coordination server on :$ALICE_PORT ---"
-ALICE_LISTEN_ADDR=":$ALICE_PORT" ALICE_DATABASE_URL="$DB_URL" go run ./cmd/server &
-SERVER_PID=$!
-trap 'kill $SERVER_PID 2>/dev/null; echo ""; echo "--- server stopped ---"' EXIT
+SERVER_STARTED=false
+for attempt in 1 2; do
+  ALICE_LISTEN_ADDR=":$ALICE_PORT" ALICE_DATABASE_URL="$DB_URL" go run ./cmd/server &
+  SERVER_PID=$!
 
-for i in $(seq 1 30); do
-  if curl -sf "http://localhost:$ALICE_PORT/healthz" >/dev/null 2>&1; then
-    break
-  fi
-  if [ $i -eq 30 ]; then
-    echo "error: server did not become ready" >&2
+  for i in $(seq 1 30); do
+    if curl -sf "http://localhost:$ALICE_PORT/healthz" >/dev/null 2>&1; then
+      SERVER_STARTED=true
+      break 2
+    fi
+    sleep 0.3
+  done
+
+  # Server didn't start — kill it, try another port
+  kill $SERVER_PID 2>/dev/null || true
+  if [ $attempt -eq 2 ]; then
+    echo "error: server did not become ready after 2 attempts" >&2
     exit 1
   fi
-  sleep 0.3
+  ALICE_PORT=8081
+  echo "--- Port $ALICE_PORT in use, trying :$ALICE_PORT ---"
 done
+
+if ! $SERVER_STARTED; then
+  echo "error: server did not become ready" >&2
+  exit 1
+fi
+
+trap 'kill $SERVER_PID 2>/dev/null; echo ""; echo "--- server stopped ---"' EXIT
 
 export ALICE_SERVER_URL="http://localhost:$ALICE_PORT"
 
